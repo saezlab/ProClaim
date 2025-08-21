@@ -12,7 +12,9 @@ plt.style.use("./rw_visualization.mplstyle")
 current_palette = seaborn.color_palette()
 
 if __name__ == "__main__":
-    remove_edge_num = 1
+    remove_edge_num = 8
+    model = 'qwen3:8b'
+    model = model.replace(':', '_')
     path = Path(f"./results/moon_score/correct_{remove_edge_num}_edge")
     
     for i in range(10):
@@ -47,6 +49,6 @@ if __name__ == "__main__":
     # Add labels and legend after the loop
     plt.xlabel('Concentration')
     plt.ylabel('Value')
-    plt.title(f'BRAF Dabrafenib, remove {remove_edge_num} edge, 10 repeats')
+    plt.title(f'BRAF Dabrafenib, {model}, remove {remove_edge_num} edge, 10 repeats')
     plt.legend()
     plt.savefig(path / Path("moon_score_plot.png"))
