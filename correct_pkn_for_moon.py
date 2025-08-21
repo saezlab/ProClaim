@@ -2,42 +2,11 @@ import pandas as pd
 import numpy as np
 import random
 import ollama
-from typing import Set, Tuple
 from pathlib import Path
 from tqdm import tqdm
-# import json
+from graph_utils import trace_downstream_network
 
-def trace_downstream_network(pkn, start_gene, max_layers=3):
-    """Trace downstream network layers from a starting gene"""
-    layers = {}
-    current_layer = {start_gene}
-    
-    for layer_num in range(max_layers):
-        if not current_layer:
-            break
-            
-        # Find all targets of genes in current layer
-        next_layer = set()
-        layer_interactions = {}
-  
-        for gene in current_layer:
-            targets = pkn[pkn['source'] == gene]
-            for _, row in targets.iterrows():
-                next_layer.add(row['target'])
-                if gene not in layer_interactions:
-                    layer_interactions[gene] = []
-                layer_interactions[gene].append((row['target'], row['interaction']))
-        
-        if next_layer:
-            layers[layer_num + 1] = {
-                'genes': next_layer,
-                'interactions': layer_interactions
-            }
-            current_layer = next_layer
-        else:
-            break
-    
-    return layers
+
 
 if __name__ == "__main__":
     # Set random seed for reproducibility
