@@ -210,3 +210,5 @@ __marimo__/
 data/
 # Ignore results folder
 results/moon_score/
+results/llm/recover_edge/
+results/llm/recover_edge_ICL/

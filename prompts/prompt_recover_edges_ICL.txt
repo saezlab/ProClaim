@@ -1,0 +1,16 @@
+You are a molecular biologist expert in biological interaction networks. Given a gene regulatory network (GRN) with a hierarchical gene interaction network structure where a {start_gene} serves as the root of a multi-layered regulatory cascade.
+Aim: I'm using a method to score the activity of nodes of the network that relies on propagating activities of transcription factors (TFs) to upstream regulators. Therefore, it is critical for me that the interactions downstream of a given gene do not contain erroneous entries connecting wrong TFs with upstream regulators. Furthermore, since only the TFs found in the closest layer of neighbours downstream of a given node are actually used for the score calculation, it's very important that there isn't a wrong TF target in an intermediate layer downstream of a given gene. 
+
+GRN to analyze: {downstream_network_text}
+GRN structure: The network is organized in layers by shortest path distance from the root gene {start_gene}. Layer 1 genes are directly regulated by {start_gene}. Layer 2 genes are regulated by Layer 1 genes. Each row shows: Source gene → Target gene with interaction value (1 = activation, -1 = inhibition).
+Task: Remove edges in the GRN based on established knowledge of cellular pathways, protein functions, and regulatory mechanisms.
+
+Valid edges examples (keep these types of edges): {valid_edge_example}
+Invalid edges example (Remove these types of edges): {invalid_edge_example}
+
+Steps: 
+0. Identify the potential nodes to analyze from provided GRN.
+1. Provide reasoning for the correction you identify 
+2. Output your results at the end, one correction per line, in the format: [REMOVE, SOURCE, TARGET, interaction]  
+3. The SOURCE and TARGET node names should be the same as in the original network 
+4. EMPTY OUTPUT is forbidden. You must provide outputs even if you are not sure. Do not ask any questions, just provide the output.

@@ -1,12 +1,12 @@
 from typing import Dict, Set, List, Tuple, Any
 import pandas as pd
 
-def trace_downstream_network(pkn: pd.DataFrame, start_gene: str, max_layers: int=3) -> Dict[int, Dict[str, Any]]:
+def trace_downstream_network(pkn: pd.DataFrame, start_gene: str, max_layer: int=3) -> Dict[int, Dict[str, Any]]:
     """Trace downstream network layers from a starting gene"""
     layers = {}
     current_layer = {start_gene}
     
-    for layer_num in range(max_layers):
+    for layer_num in range(max_layer):
         if not current_layer:
             break
             
@@ -32,3 +32,11 @@ def trace_downstream_network(pkn: pd.DataFrame, start_gene: str, max_layers: int
             break
     
     return layers
+
+def convert_edge_list_to_text(edge_list: list):
+    text_output = ""
+    text_output += "\nSource genes, Target genes, Interactions:\n"
+    for row in edge_list:
+        text_output += f"{row[0]}, {row[1]}, {row[2]}\n"
+
+    return text_output
