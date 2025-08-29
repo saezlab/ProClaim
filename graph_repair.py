@@ -2,45 +2,37 @@ import pandas as pd
 import numpy as np
 import random
 import ollama
-from typing import Set, Tuple, Dict, Any
+from typing import Set, Tuple, Dict, Any, List
 from pathlib import Path
 from tqdm import tqdm
 import networkx as nx
 import re
 import json
+from pydantic import BaseModel, Field
 from graph_utils import trace_downstream_network, convert_edge_list_to_text
 
+# Define Pydantic models for structured output
+class EdgeRemoval(BaseModel):
+    reasoning: str = Field(description="Biological reasoning for removal")
+    source: str = Field(description="Source gene name")
+    target: str = Field(description="Target gene name") 
+    interaction: int = Field(description="Interaction value (1 or -1)")
+
+class NetworkAnalysis(BaseModel):
+    thinking: str = Field(description="Thinking process for identifying the best edges to remove from the GRN")
+    edge_removals: List[EdgeRemoval] = Field(description="List of edges to remove with reasoning")
+
 def random_modify_network_edges(G: nx.DiGraph, 
-                                remove_rate: float=0.1,
-                                add_num: int=1,
-                                change_rate: float=0.0) -> Tuple[nx.DiGraph, Dict[str, Any]]:
+                                add_num: int=1) -> Tuple[nx.DiGraph, Dict[str, Any]]:
     """Randomly modify the edges of a directed graph."""
     modified_G = G.copy()
-    total_edges = modified_G.number_of_edges()
-    edges_to_remove = int(total_edges * remove_rate)
     edges_to_add = add_num
-    edges_to_change = int(total_edges * change_rate)
 
     modification_log = {
         'removed': [],
         'added': [],
         'changed': []
     }
-
-    # # Remove edges
-    # if edges_to_remove > 0 and modified_G.number_of_edges() > 0:
-    #     all_edges = list(modified_G.edges(data=True))
-    #     edges_to_remove_list = random.sample(all_edges, min(edges_to_remove, len(all_edges)))
-        
-    #     for u, v, data in edges_to_remove_list:
-    #         modification_log['removed'].append({
-    #             'source': u,
-    #             'target': v,
-    #             'interaction': data.get('interaction')
-    #         })
-    #         modified_G.remove_edge(u, v)
-        
-    #     print(f"Removed {len(edges_to_remove_list)} edges")
 
     # Add edges
     if edges_to_add > 0:
@@ -54,7 +46,6 @@ def random_modify_network_edges(G: nx.DiGraph,
                 modified_G.add_edge(source, target, interaction=interaction)
                 modification_log['added'].append([source, target, interaction])
                 count += 1
-        # print(f"Added {count} edges")
 
     return modified_G, modification_log
     
@@ -132,10 +123,7 @@ def nx_graph_to_layered_structure(G: nx.DiGraph, start_gene: str, max_layer: int
     Convert a directed graph to a layered structure starting from a given gene.
     This matches the behavior of trace_downstream_network function.
     """
-
     layered_structure = {}
-
-
     
     # Get first layer targets
     first_layer_nodes = set()
@@ -148,7 +136,6 @@ def nx_graph_to_layered_structure(G: nx.DiGraph, start_gene: str, max_layer: int
             targets.append((target, interaction))
             first_layer_nodes.add(target)
    
-        
         if targets:
             first_layer_interactions[start_gene] = targets
     
@@ -158,7 +145,6 @@ def nx_graph_to_layered_structure(G: nx.DiGraph, start_gene: str, max_layer: int
             'genes': first_layer_nodes.copy(),
             'interactions': first_layer_interactions
         }
-    
     
     current_layer_nodes = first_layer_nodes
     # Continue with subsequent layers
@@ -187,9 +173,7 @@ def nx_graph_to_layered_structure(G: nx.DiGraph, start_gene: str, max_layer: int
         
         current_layer_nodes = next_layer_nodes
 
-    
     return layered_structure
-
 
 def convert_network_to_text(layered_structure: Dict[int, Dict[str, Any]], start_gene: str) -> str:
     """
@@ -209,6 +193,24 @@ def convert_network_to_text(layered_structure: Dict[int, Dict[str, Any]], start_
     
     return text_representation
 
+def parse_structured_response(response_content: str) -> List[List]:
+    """
+    Parse the structured JSON response and extract edge removals in the original format.
+    """
+    try:
+        # Parse the JSON response
+        analysis = NetworkAnalysis.model_validate_json(response_content)
+        
+        # Convert to the original format expected by the rest of the code
+        results = []
+        for edge_removal in analysis.edge_removals:
+            results.append([edge_removal.source, edge_removal.target, edge_removal.interaction])
+        
+        return results
+    except Exception as e:
+        print(f"Error parsing structured response: {e}")
+        # Fallback to original regex parsing
+        return llm_result_to_edges(response_content)
 
 def llm_result_to_edges(llm_result: str):
     # Find all lines that match the pattern [REMOVE, gene1, gene2, number]
@@ -247,6 +249,7 @@ if __name__ == "__main__":
 
     # Set the model
     model = 'qwen3:8b'
+    # model = 'qwen3:30b'
     print(f"Using model: {model}")
     result_path = Path(f"./results/llm/recover_edge_ICL/{model.replace(':', '_')}")
     print(f"Results will be saved to: {result_path}")
@@ -255,83 +258,80 @@ if __name__ == "__main__":
     
     # Get downstream network of the target gene
     start_gene = "BRAF"
-    # max_layers = [2, 3]
     max_layers = [3]
-    repeat = 1
-    # add_nums = [1, 2, 4, 8, 16]
-    add_nums = [8]
-    ICL_size = 10
+    repeat = 50
+    add_nums = [1, 2, 4, 8, 16]
+    ICL_sizes = [0, 10]
+    
     for max_layer in max_layers:
         downstream_network = trace_downstream_network(pkn, start_gene, max_layer=max_layer)
-        # print('original: ', downstream_network)
         # Convert the downstream network to networkx graph
         G = nx.DiGraph()
         for layer, data in downstream_network.items():
             for source, targets in data['interactions'].items():
                 for target, interaction in targets:
                     G.add_edge(source, target, interaction=interaction)
-        # # print(f"Original graph has {G.number_of_edges()} edges.")
-
 
         for add_num in add_nums:
             for i in tqdm(range(repeat)):
-                G_modify, modification_log = random_modify_network_edges(G, remove_rate=0.0, 
-                                                                        add_num=add_num)
-                valid_example, invalid_example = ICL_example(G, modification_log, ICL_size=ICL_size)
-                valid_example_text = convert_edge_list_to_text(valid_example)
-                invalid_example_text = convert_edge_list_to_text(invalid_example)
+                for ICL_size in ICL_sizes:
+                    G_modify, modification_log = random_modify_network_edges(G, add_num=add_num)
+                    valid_example, invalid_example = ICL_example(G, modification_log, ICL_size=ICL_size)
+                    valid_example_text = convert_edge_list_to_text(valid_example)
+                    invalid_example_text = convert_edge_list_to_text(invalid_example)
 
-                layer_struct_G_modify = nx_graph_to_layered_structure(G_modify, start_gene, max_layer=max_layer+1) # max_layer+1 becaude there can be a added edge from the last layer connect back to the previous layers' nodes
-                # print('modified: ', layer_struct_G_modify)
+                    layer_struct_G_modify = nx_graph_to_layered_structure(G_modify, start_gene, max_layer=max_layer+1)
 
-                downstream_network_text = convert_network_to_text(layer_struct_G_modify, start_gene)
-                # # print(downstream_network_text)
+                    downstream_network_text = convert_network_to_text(layer_struct_G_modify, start_gene)
 
-                # Load prompt
-                prompt_file = Path(f"./prompts/prompt_recover_edges_ICL.txt")
-                if not prompt_file.exists():
-                    raise FileNotFoundError(f"Prompt file {prompt_file} does not exist.")
-                with open(prompt_file, 'r') as f:
-                    prompt = f.read()
-                # Replace placeholders in the prompt with actual values
-                prompt = prompt.format(start_gene=start_gene,
-                                       valid_edge_example=valid_example_text,
-                                       invalid_edge_example=invalid_example_text,
-                                       downstream_network_text=downstream_network_text)
-                # save the prompt
-                prompt_file = Path(f"prompt_used_add_num_{add_num}_max_layer_{max_layer}_{i}.txt")
-                with open(result_path/prompt_file, 'w') as f:
-                    f.write(prompt)
-                
-                
-                # llm response
-                result = ollama.generate(model=model, prompt=prompt,
-                                    options={"temperature": 0.7},
-                                    stream=False)
-                with open(result_path / f"llm_response_add_num_{add_num}_max_layer_{max_layer}_{i}.txt", 'w') as f:
-                    f.write(result['response'])
+                    # Load prompt
+                    prompt_file = Path(f"./prompts/prompt_recover_edges_ICL.txt")
+                    if not prompt_file.exists():
+                        raise FileNotFoundError(f"Prompt file {prompt_file} does not exist.")
+                    with open(prompt_file, 'r') as f:
+                        prompt = f.read()
+                    # Replace placeholders in the prompt with actual values
+                    prompt = prompt.format(start_gene=start_gene,
+                                        valid_example_text=valid_example_text,
+                                        invalid_example_text=invalid_example_text,
+                                        downstream_network_text=downstream_network_text)
+                    # save the prompt
+                    prompt_file = Path(f"prompt_used_add_num_{add_num}_max_layer_{max_layer}_example_size_{ICL_size}_{i}.txt")
+                    with open(result_path/prompt_file, 'w') as f:
+                        f.write(prompt)
+                    
+                    
+                    # Use structured output with ollama.generate
+                    result = ollama.generate(
+                        model=model, 
+                        prompt=prompt,
+                        format=NetworkAnalysis.model_json_schema(),
+                        options={"temperature": 0.7},
+                        stream=False
+                    )
+                    
+                    with open(result_path / f"llm_response_add_num_{add_num}_max_layer_{max_layer}_example_size_{ICL_size}_{i}.txt", 'w') as f:
+                        f.write(result['response'])
 
-                ground_truth = modification_log['added']
-                llm_result_edges = llm_result_to_edges(result['response'])
+                    ground_truth = modification_log['added']
+                    llm_result_edges = parse_structured_response(result['response'])
 
+                    gt_edges = set((edge[0], edge[1]) for edge in ground_truth)
+                    pred_edges = set((edge[0], edge[1]) for edge in llm_result_edges)
+                    
+                    precision, recall, f1 = evaluate(gt_edges, pred_edges)
 
-                gt_edges = set((edge[0], edge[1]) for edge in ground_truth)
-                pred_edges = set((edge[0], edge[1]) for edge in llm_result_edges)
-                
-                precision, recall, f1 = evaluate(gt_edges, pred_edges)
-
-                # Save the ground truth and predicted edges to dictionary and save to file
-                eval_dict = {
-                    'original_num_edges': G.number_of_edges(),
-                    'original_num_nodes': G.number_of_nodes(),
-                    'modified_num_edges': G_modify.number_of_edges(),
-                    'modified_num_nodes': G_modify.number_of_nodes(),
-                    'ground_truth': list(gt_edges),
-                    'predicted': list(pred_edges),
-                    'precision': precision,
-                    'recall': recall,
-                    'f1': f1
-                }
-                with open(result_path / f"evaluation_results_add_num_{add_num}_max_layer_{max_layer}_{i}.json", "w") as f:
-                    json.dump(eval_dict, f, indent=4)
-            
+                    # Save the ground truth and predicted edges to dictionary and save to file
+                    eval_dict = {
+                        'original_num_edges': G.number_of_edges(),
+                        'original_num_nodes': G.number_of_nodes(),
+                        'modified_num_edges': G_modify.number_of_edges(),
+                        'modified_num_nodes': G_modify.number_of_nodes(),
+                        'ground_truth': list(gt_edges),
+                        'predicted': list(pred_edges),
+                        'precision': precision,
+                        'recall': recall,
+                        'f1': f1
+                    }
+                    with open(result_path / f"evaluation_results_add_num_{add_num}_max_layer_{max_layer}_example_size_{ICL_size}_{i}.json", "w") as f:
+                        json.dump(eval_dict, f, indent=4)

@@ -89,13 +89,18 @@ if __name__ == "__main__":
             precisions = []
             recalls = []
             f1s = []
-            for i in range(repeat):
+            attemps = 0
+            while attemps < repeat:
                 file = result_path / Path(model) / Path(f"evaluation_results_add_num_{add_num}_max_layer_{max_layer}_{i}.json")
                 with open(file, 'r') as f:
                     eval_dict = json.load(f)
-                precisions.append(eval_dict['precision'])
-                recalls.append(eval_dict['recall'])
-                f1s.append(eval_dict['f1'])
+                if eval_dict['predicted']:
+                    precisions.append(eval_dict['precision'])
+                    recalls.append(eval_dict['recall'])
+                    f1s.append(eval_dict['f1'])
+                    attemps += 1
+                else:
+                    print(f'Empty prediction (index {attemps})')
             eval_precisions[add_num] = precisions
             eval_recalls[add_num] = recalls
             eval_f1s[add_num] = f1s
