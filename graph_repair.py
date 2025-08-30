@@ -259,7 +259,7 @@ if __name__ == "__main__":
     # Get downstream network of the target gene
     start_gene = "BRAF"
     max_layers = [3]
-    repeat = 50
+    repeat = 100
     add_nums = [1, 2, 4, 8, 16]
     ICL_sizes = [0, 10]
     
