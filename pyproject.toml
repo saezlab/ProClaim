@@ -1,0 +1,10 @@
+[project]
+name = "grn_denoising"
+version = "0.1.0"
+description = "GRN Denoising."
+
+[build-system]
+build-backend = 'setuptools.build_meta'
+requires = [
+    'setuptools',
+]
