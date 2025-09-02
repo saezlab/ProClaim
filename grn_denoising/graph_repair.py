@@ -224,17 +224,73 @@ def llm_result_to_edges(llm_result: str):
     
     return results
 
-def evaluate(gt_edges, pred_edges):
+# def evaluate(gt_edges, pred_edges):
+#     true_positives = len(gt_edges.intersection(pred_edges))
+#     false_positives = len(pred_edges - gt_edges)
+#     false_negatives = len(gt_edges - pred_edges)
+
+#     # Calculate Precision and Recall
+#     precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+#     recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+#     f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+
+#     return precision, recall, f1
+
+def calculate_mrr(gt_edges, pred_edges_ranked):
+    """
+    Calculate Mean Reciprocal Rank
+    
+    Args:
+        gt_edges: Set of ground truth edges
+        pred_edges_ranked: List of predicted edges in ranking order (best predictions first)
+    
+    Returns:
+        float: MRR score between 0 and 1
+    """
+    if len(gt_edges) == 0:
+        return 0.0
+    
+    reciprocal_ranks = []
+    
+    for gt_edge in gt_edges:
+        # Find the rank (1-indexed) of this ground truth edge in predictions
+        try:
+            rank = pred_edges_ranked.index(gt_edge) + 1  # +1 for 1-indexed ranking
+            reciprocal_ranks.append(1.0 / rank)
+        except ValueError:
+            # Ground truth edge not found in predictions
+            reciprocal_ranks.append(0.0)
+    
+    mrr = sum(reciprocal_ranks) / len(gt_edges)
+    return mrr
+
+# Enhanced evaluation function that includes MRR
+def evaluate(gt_edges, pred_edges_ranked):
+    """
+    Comprehensive evaluation including MRR
+    
+    Args:
+        gt_edges: Set of ground truth edges
+        pred_edges_ranked: List of predicted edges in ranking order
+    
+    Returns:
+        tuple: (precision, recall, f1, mrr)
+    """
+    pred_edges = set(pred_edges_ranked)  # Convert to set for other metrics
+    
     true_positives = len(gt_edges.intersection(pred_edges))
     false_positives = len(pred_edges - gt_edges)
     false_negatives = len(gt_edges - pred_edges)
 
-    # Calculate Precision and Recall
+    # Calculate Precision, Recall, F1
     precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
     recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
     f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-
-    return precision, recall, f1
+    
+    # Calculate MRR
+    mrr = calculate_mrr(gt_edges, pred_edges_ranked)
+    
+    return precision, recall, f1, mrr
 
 if __name__ == "__main__":
     # Set random seed for reproducibility
@@ -259,9 +315,9 @@ if __name__ == "__main__":
     # Get downstream network of the target gene
     start_gene = "BRAF"
     max_layers = [3]
-    repeat = 30
+    repeat = 100
     add_nums = [1, 2, 4, 8, 16]
-    ICL_sizes = [10]
+    ICL_sizes = [0, 10]
     
     for max_layer in max_layers:
         downstream_network = trace_downstream_network(pkn, start_gene, max_layer=max_layer)
@@ -277,8 +333,8 @@ if __name__ == "__main__":
                 for i in tqdm(range(repeat)):               
                     G_modify, modification_log = random_modify_network_edges(G, add_num=add_num)
                     valid_example, invalid_example = ICL_example(G, modification_log, ICL_size=ICL_size)
-                    # valid_example_text = convert_edge_list_to_text(valid_example)
-                    valid_example_text = "\nSource genes, Target genes, Interactions:\nMAPK3, TP53, 1\nMAPK1, MYC, 1\nMAPK3, GSK3B, -1\nMAPK1, FOXO3, -1\nMAPK3, BRAF, -1\nMAPK1, APC_AXIN1_GSK3B, -1\nMAPK3, BCL2, 1\nMAPK1, RPS6KB1, 1\nMAPK3, HIF1A, 1\nMAPK1, PPARG, -1\n"
+                    valid_example_text = convert_edge_list_to_text(valid_example)
+                    # valid_example_text = "\nSource genes, Target genes, Interactions:\nMAPK3, TP53, 1\nMAPK1, MYC, 1\nMAPK3, GSK3B, -1\nMAPK1, FOXO3, -1\nMAPK3, BRAF, -1\nMAPK1, APC_AXIN1_GSK3B, -1\nMAPK3, BCL2, 1\nMAPK1, RPS6KB1, 1\nMAPK3, HIF1A, 1\nMAPK1, PPARG, -1\n"
                     invalid_example_text = convert_edge_list_to_text(invalid_example)
 
                     layer_struct_G_modify = nx_graph_to_layered_structure(G_modify, start_gene, max_layer=max_layer+1)
@@ -318,9 +374,9 @@ if __name__ == "__main__":
                     llm_result_edges = parse_structured_response(result['response'])
 
                     gt_edges = set((edge[0], edge[1]) for edge in ground_truth)
-                    pred_edges = set((edge[0], edge[1]) for edge in llm_result_edges)
-                    
-                    precision, recall, f1 = evaluate(gt_edges, pred_edges)
+                    pred_edges = [(edge[0], edge[1]) for edge in llm_result_edges]
+     
+                    precision, recall, f1, mrr = evaluate(gt_edges, pred_edges)
 
                     # Save the ground truth and predicted edges to dictionary and save to file
                     eval_dict = {
@@ -332,7 +388,8 @@ if __name__ == "__main__":
                         'predicted': list(pred_edges),
                         'precision': precision,
                         'recall': recall,
-                        'f1': f1
+                        'f1': f1,
+                        'mrr': mrr
                     }
                     with open(result_path / f"evaluation_results_add_num_{add_num}_max_layer_{max_layer}_example_size_{ICL_size}_{i}.json", "w") as f:
                         json.dump(eval_dict, f, indent=4)

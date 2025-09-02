@@ -212,6 +212,5 @@ __marimo__/
 # Ignore data folder
 # data/
 # Ignore results folder
-results/moon_score/
-results/llm/recover_edge/
-results/llm/recover_edge_ICL/
+grn_denoising/results/llm/
+/results
