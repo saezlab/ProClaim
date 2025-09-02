@@ -120,7 +120,7 @@ def main(args):
     print("----------------------------\n")
 
     model = GNNLinkPredictor(node_features.shape[1], 128, 64).to(device)
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=0.01)
+    optimizer = torch.optim.AdamW(params=model.parameters(), lr=0.001)
     criterion = torch.nn.BCEWithLogitsLoss()
 
     def train():
@@ -149,7 +149,7 @@ def main(args):
     best_val_auc = 0
     best_test_labels = None
     best_test_preds = None
-    for epoch in range(1, 201):
+    for epoch in range(1, 501):
         loss = train()
 
         # Get labels and predictions for validation and test sets
