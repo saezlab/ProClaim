@@ -66,10 +66,11 @@ def plot_complete_violin(data_dict, ax=None, show_points=True, show_stats=True, 
     return ax
 
 if __name__ == "__main__":
-    result_path = Path("./results/llm/recover_edge")
-    max_layers = [2, 3]
+    result_path = Path("./results/llm/recover_edge_ICL")
+    max_layers = [3]
     repeat = 30
     add_nums = [1, 2, 4, 8, 16]
+    ICL_sizes = 10
     # max_layers = [3]
     # repeat = 10
     # add_nums = [1]
@@ -90,8 +91,9 @@ if __name__ == "__main__":
             recalls = []
             f1s = []
             attemps = 0
-            while attemps < repeat:
-                file = result_path / Path(model) / Path(f"evaluation_results_add_num_{add_num}_max_layer_{max_layer}_{i}.json")
+            load_index = 0
+            while attemps <= repeat:
+                file = result_path / Path(model) / Path(f"evaluation_results_add_num_{add_num}_max_layer_{max_layer}_example_size_{ICL_sizes}_{load_index}.json")
                 with open(file, 'r') as f:
                     eval_dict = json.load(f)
                 if eval_dict['predicted']:
@@ -101,6 +103,7 @@ if __name__ == "__main__":
                     attemps += 1
                 else:
                     print(f'Empty prediction (index {attemps})')
+                load_index += 1
             eval_precisions[add_num] = precisions
             eval_recalls[add_num] = recalls
             eval_f1s[add_num] = f1s
@@ -108,14 +111,14 @@ if __name__ == "__main__":
         plot_complete_violin(eval_precisions)
         plt.xlabel('Number of edges added')
         plt.ylabel('Precision')
-        plt.savefig(plt_path / Path(f'precision_violin_plot_{model}_max_layer_{max_layer}_repeat_{repeat}.png'))
+        plt.savefig(plt_path / Path(f'precision_violin_plot_{model}_max_layer_{max_layer}_example_size_{ICL_sizes}_repeat_{repeat}.png'))
         # Recall plot
         plot_complete_violin(eval_recalls)
         plt.xlabel('Number of edges added')
         plt.ylabel('Recall')
-        plt.savefig(plt_path / Path(f'recall_violin_plot_{model}_max_layer_{max_layer}_repeat_{repeat}.png'))
+        plt.savefig(plt_path / Path(f'recall_violin_plot_{model}_max_layer_{max_layer}_example_size_{ICL_sizes}_repeat_{repeat}.png'))
         # # F1 plot
         plot_complete_violin(eval_f1s)
         plt.xlabel('Number of edges added')
         plt.ylabel('F1 Score')
-        plt.savefig(plt_path / Path(f'f1_violin_plot_{model}_max_layer_{max_layer}_repeat_{repeat}.png'))
+        plt.savefig(plt_path / Path(f'f1_violin_plot_{model}_max_layer_{max_layer}_example_size_{ICL_sizes}_repeat_{repeat}.png'))

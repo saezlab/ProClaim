@@ -6,10 +6,11 @@ GRN to analyze: {downstream_network_text}
 
 GRN structure: The network is organized in layers by shortest path distance from the root gene {start_gene}. Layer 1 genes are directly regulated by {start_gene}. Layer 2 genes are regulated by Layer 1 genes. Each row shows: Source gene → Target gene with interaction value (1 = activation, -1 = inhibition).
 
-Task: Remove edges in the GRN based on established knowledge of cellular pathways, protein functions, and regulatory mechanisms.
+Task: Remove edges in the GRN based on established knowledge of cellular pathways, protein functions, and regulatory mechanisms. Your task is to identify and remove these biologically implausible connections while preserving genuine regulatory relationships.
 
-Valid edges examples (keep these types of edges): {valid_example_text}
-Invalid edges example (Remove these types of edges): {invalid_example_text}
+Valid edges examples (keep these types of edges). These edges existed in the original ground truth PKN and represent experimentally validated biological relationships: {valid_example_text}
+
+Invalid edges examples (remove these types of edges). These invalid edges were artificially inserted by randomly connecting genes that should NOT be connected according to established biological knowledge. They represent computational noise that must be filtered out: {invalid_example_text}
 
 You must provide a structured analysis with:
 1. For each edge you want to remove, provide the biological reasoning, source, target, and interaction value.

@@ -99,7 +99,7 @@ def ICL_example(G: nx.DiGraph, modification_log, ICL_size: int = 10):
             
             # Add invalid example
             invalid_example.append([source, target, interaction])
-            
+
             # Add next unique valid example
             try:
                 random_valid_edge = next(valid_edge_iter)
@@ -115,7 +115,7 @@ def ICL_example(G: nx.DiGraph, modification_log, ICL_size: int = 10):
     
     if attempts >= max_attempts:
         print(f"Warning: Reached maximum attempts ({max_attempts}). Generated {len(invalid_example)} invalid examples.")
-    
+
     return valid_example, invalid_example
 
 def nx_graph_to_layered_structure(G: nx.DiGraph, start_gene: str, max_layer: int = 3) -> Dict:
@@ -259,9 +259,9 @@ if __name__ == "__main__":
     # Get downstream network of the target gene
     start_gene = "BRAF"
     max_layers = [3]
-    repeat = 100
+    repeat = 30
     add_nums = [1, 2, 4, 8, 16]
-    ICL_sizes = [0, 10]
+    ICL_sizes = [10]
     
     for max_layer in max_layers:
         downstream_network = trace_downstream_network(pkn, start_gene, max_layer=max_layer)
@@ -273,11 +273,12 @@ if __name__ == "__main__":
                     G.add_edge(source, target, interaction=interaction)
 
         for add_num in add_nums:
-            for i in tqdm(range(repeat)):
-                for ICL_size in ICL_sizes:
+            for ICL_size in ICL_sizes:
+                for i in tqdm(range(repeat)):               
                     G_modify, modification_log = random_modify_network_edges(G, add_num=add_num)
                     valid_example, invalid_example = ICL_example(G, modification_log, ICL_size=ICL_size)
-                    valid_example_text = convert_edge_list_to_text(valid_example)
+                    # valid_example_text = convert_edge_list_to_text(valid_example)
+                    valid_example_text = "\nSource genes, Target genes, Interactions:\nMAPK3, TP53, 1\nMAPK1, MYC, 1\nMAPK3, GSK3B, -1\nMAPK1, FOXO3, -1\nMAPK3, BRAF, -1\nMAPK1, APC_AXIN1_GSK3B, -1\nMAPK3, BCL2, 1\nMAPK1, RPS6KB1, 1\nMAPK3, HIF1A, 1\nMAPK1, PPARG, -1\n"
                     invalid_example_text = convert_edge_list_to_text(invalid_example)
 
                     layer_struct_G_modify = nx_graph_to_layered_structure(G_modify, start_gene, max_layer=max_layer+1)
