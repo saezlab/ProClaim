@@ -1,0 +1,22 @@
+You are an expert knowledge graph agent. Your task is to identify wrong edges from the provided graph that should be removed.
+
+**REFERENCE EXAMPLES (DO NOT RETURN THESE):**
+
+Valid edge patterns (what correct edges look like):
+{valid_example_text}
+
+Invalid edge patterns (what wrong edges look like):
+{invalid_example_text}
+
+**YOUR ACTUAL TASK:**
+Analyze the following graph and identify 5 wrong edges that should be removed:
+
+{downstream_network_text}
+
+**REQUIREMENTS:**
+1. Identify 5 edges from the graph above that appear to be incorrectly connected
+1. Sort the results in order so that the first removed edge is the one you consider most problematic.
+3. For each edge, provide reasoning why it should be removed
+4. Use exact node names as they appear in the graph
+5. You must provide exactly 5 edges - no empty output
+6. **DO NOT return any edges from the reference examples above**

@@ -22,7 +22,7 @@ def plot_violin_plot_point(data_dict, ax=None):
     data = pd.DataFrame.from_dict(data_dict)
     if ax is None:
         ax = plt.gca()
-    return sns.swarmplot(data=data, color='black', alpha=0.5, size=4, ax=ax)
+    return sns.swarmplot(data=data, color='black', alpha=0.5, size=2, ax=ax)
 
 def plot_mean_median_dots(data_dict, ax=None):
     """Add mean and median dots to violin plot"""
@@ -68,9 +68,9 @@ def plot_complete_violin(data_dict, ax=None, show_points=True, show_stats=True, 
 if __name__ == "__main__":
     result_path = Path("./results/llm/recover_edge_ICL")
     max_layers = [3]
-    repeat = 30
+    repeat = 80
     add_nums = [1, 2, 4, 8, 16]
-    ICL_sizes = 10
+    ICL_sizes = 0
     # max_layers = [3]
     # repeat = 10
     # add_nums = [1]
@@ -84,12 +84,14 @@ if __name__ == "__main__":
     eval_precisions = {}
     eval_recalls = {}
     eval_f1s = {}
+    eval_mrrs = {}
     for max_layer in max_layers:
         for add_num in add_nums:
             # plt.figure()
             precisions = []
             recalls = []
             f1s = []
+            mrrs = []
             attemps = 0
             load_index = 0
             while attemps <= repeat:
@@ -100,6 +102,7 @@ if __name__ == "__main__":
                     precisions.append(eval_dict['precision'])
                     recalls.append(eval_dict['recall'])
                     f1s.append(eval_dict['f1'])
+                    mrrs.append(eval_dict['mrr'])
                     attemps += 1
                 else:
                     print(f'Empty prediction (index {attemps})')
@@ -107,6 +110,7 @@ if __name__ == "__main__":
             eval_precisions[add_num] = precisions
             eval_recalls[add_num] = recalls
             eval_f1s[add_num] = f1s
+            eval_mrrs[add_num] = mrrs
         # Precision plot
         plot_complete_violin(eval_precisions)
         plt.xlabel('Number of edges added')
@@ -122,3 +126,8 @@ if __name__ == "__main__":
         plt.xlabel('Number of edges added')
         plt.ylabel('F1 Score')
         plt.savefig(plt_path / Path(f'f1_violin_plot_{model}_max_layer_{max_layer}_example_size_{ICL_sizes}_repeat_{repeat}.png'))
+        # # MRR plot
+        plot_complete_violin(eval_mrrs)
+        plt.xlabel('Number of edges added')
+        plt.ylabel('Mean reciprocal rank')
+        plt.savefig(plt_path / Path(f'mrr_violin_plot_{model}_max_layer_{max_layer}_example_size_{ICL_sizes}_repeat_{repeat}.png'))

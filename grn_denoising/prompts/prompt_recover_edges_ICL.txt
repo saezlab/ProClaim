@@ -15,4 +15,5 @@ Invalid edges examples (remove these types of edges). These invalid edges were a
 You must provide a structured analysis with:
 1. For each edge you want to remove, provide the biological reasoning, source, target, and interaction value.
 2. The SOURCE and TARGET node names should be the same as in the original network.
+3. Do not return the edges in the invalid edges examples.
 3. EMPTY OUTPUT is forbidden. You must provide outputs even if you are not sure. Do not ask any questions, just provide the output.

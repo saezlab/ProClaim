@@ -10,20 +10,23 @@ import re
 import json
 from pydantic import BaseModel, Field
 from graph_utils import trace_downstream_network, convert_edge_list_to_text
+import matplotlib.pyplot as plt
 
 # Define Pydantic models for structured output
 class EdgeRemoval(BaseModel):
     reasoning: str = Field(description="Biological reasoning for removal")
     source: str = Field(description="Source gene name")
     target: str = Field(description="Target gene name") 
-    interaction: int = Field(description="Interaction value (1 or -1)")
+    # interaction: int = Field(description="Interaction value (1 or -1)")
 
 class NetworkAnalysis(BaseModel):
     thinking: str = Field(description="Thinking process for identifying the best edges to remove from the GRN")
     edge_removals: List[EdgeRemoval] = Field(description="List of edges to remove with reasoning")
 
 def random_modify_network_edges(G: nx.DiGraph, 
-                                add_num: int=1) -> Tuple[nx.DiGraph, Dict[str, Any]]:
+                                add_num: int=1,
+                                max_layer: int=3,
+                                source_gene: str='BRAF') -> Tuple[nx.DiGraph, Dict[str, Any]]:
     """Randomly modify the edges of a directed graph."""
     modified_G = G.copy()
     edges_to_add = add_num
@@ -37,9 +40,13 @@ def random_modify_network_edges(G: nx.DiGraph,
     # Add edges
     if edges_to_add > 0:
         all_nodes = list(modified_G.nodes())
+        # print("all_nodes", all_nodes)
         count = 0
         while count < edges_to_add:
-            source = random.choice(all_nodes)
+            # The candidate source nodes are all nodes with steps <= max_layer from the source gene
+            source = random.choice([node for node in all_nodes 
+                       if nx.shortest_path_length(modified_G, source_gene, node) <= max_layer - 1
+                       and nx.has_path(modified_G, source_gene, node)])
             target = random.choice(all_nodes)
             if source != target and not modified_G.has_edge(source, target):
                 interaction = random.choice([1, -1])
@@ -49,7 +56,7 @@ def random_modify_network_edges(G: nx.DiGraph,
 
     return modified_G, modification_log
     
-def ICL_example(G: nx.DiGraph, modification_log, ICL_size: int = 10):
+def ICL_example(G: nx.DiGraph, modification_log, ICL_size: int = 10, max_layer: int=3, source_gene: str='BRAF') -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     valid_example = []
     invalid_example = []
     
@@ -84,7 +91,9 @@ def ICL_example(G: nx.DiGraph, modification_log, ICL_size: int = 10):
         attempts += 1
         
         # Generate random edge
-        source = random.choice(all_nodes)
+        source = random.choice([node for node in all_nodes 
+                       if nx.shortest_path_length(G, source_gene, node) <= max_layer - 1
+                       and nx.has_path(G, source_gene, node)])
         target = random.choice(all_nodes)
         interaction = random.choice([1, -1])
         
@@ -193,6 +202,19 @@ def convert_network_to_text(layered_structure: Dict[int, Dict[str, Any]], start_
     
     return text_representation
 
+def convert_network_to_text_no_layer(layered_structure: Dict[int, Dict[str, Any]], start_gene: str) -> str:
+    """
+    Convert the layered structure of the network to a text format.
+    """
+    text_representation = f"Start gene: {start_gene}\n"
+    text_representation += "Source genes, Target genes:\n"
+    for layer, data in layered_structure.items():
+        for source, targets in data['interactions'].items():
+            for target, interaction in targets:
+                text_representation += f"{source}, {target}\n"
+    
+    return text_representation
+
 def parse_structured_response(response_content: str) -> List[List]:
     """
     Parse the structured JSON response and extract edge removals in the original format.
@@ -204,7 +226,8 @@ def parse_structured_response(response_content: str) -> List[List]:
         # Convert to the original format expected by the rest of the code
         results = []
         for edge_removal in analysis.edge_removals:
-            results.append([edge_removal.source, edge_removal.target, edge_removal.interaction])
+            # results.append([edge_removal.source, edge_removal.target, edge_removal.interaction])
+            results.append([edge_removal.source, edge_removal.target])
         
         return results
     except Exception as e:
@@ -306,6 +329,7 @@ if __name__ == "__main__":
     # Set the model
     model = 'qwen3:8b'
     # model = 'qwen3:30b'
+    # model = 'gpt-oss:20b'
     print(f"Using model: {model}")
     result_path = Path(f"./results/llm/recover_edge_ICL/{model.replace(':', '_')}")
     print(f"Results will be saved to: {result_path}")
@@ -315,9 +339,10 @@ if __name__ == "__main__":
     # Get downstream network of the target gene
     start_gene = "BRAF"
     max_layers = [3]
-    repeat = 100
-    add_nums = [1, 2, 4, 8, 16]
-    ICL_sizes = [0, 10]
+    repeat = 5
+    # add_nums = [1, 2, 4, 8, 16]
+    add_nums = [1, 2, 4]
+    ICL_sizes = [0, 3]
     
     for max_layer in max_layers:
         downstream_network = trace_downstream_network(pkn, start_gene, max_layer=max_layer)
@@ -326,23 +351,42 @@ if __name__ == "__main__":
         for layer, data in downstream_network.items():
             for source, targets in data['interactions'].items():
                 for target, interaction in targets:
-                    G.add_edge(source, target, interaction=interaction)
+                    G.add_edge(source, target, interaction=interaction)           
+        # Plot G
+        # pos = nx.spring_layout(G, k=3)
+        # nx.draw(G, pos, with_labels=True)
+        # plt.title(f"Downstream network of {start_gene} with max_layer {max_layer}")
+        # plt.savefig(f"./results/llm/recover_edge_ICL/{model.replace(':', '_')}/downstream_network.png")
+        # plt.show()
+
 
         for add_num in add_nums:
             for ICL_size in ICL_sizes:
                 for i in tqdm(range(repeat)):               
-                    G_modify, modification_log = random_modify_network_edges(G, add_num=add_num)
-                    valid_example, invalid_example = ICL_example(G, modification_log, ICL_size=ICL_size)
+                    G_modify, modification_log = random_modify_network_edges(G, add_num=add_num, max_layer=max_layer, source_gene=start_gene)
+                    # print(modification_log)
+                    # print(G_modify["BRAF"])
+                    # Plot G_modify
+                    # plt.figure()
+                    # nx.draw(G_modify, pos, with_labels=True)
+                    # plt.title(f"Modified network of {start_gene} with max_layer {max_layer} and add_num {add_num}")
+                    # plt.savefig(f"./results/llm/recover_edge_ICL/{model.replace(':', '_')}/modified_network.png")
+                    # plt.show()  
+                    valid_example, invalid_example = ICL_example(G, modification_log, ICL_size=ICL_size, max_layer=max_layer, source_gene=start_gene)
+                    # Add the invalid_example to the G_modify
+        #             # for edge in invalid_example:
+        #             #     G_modify.add_edge(edge[0], edge[1], interaction=edge[2])
                     valid_example_text = convert_edge_list_to_text(valid_example)
-                    # valid_example_text = "\nSource genes, Target genes, Interactions:\nMAPK3, TP53, 1\nMAPK1, MYC, 1\nMAPK3, GSK3B, -1\nMAPK1, FOXO3, -1\nMAPK3, BRAF, -1\nMAPK1, APC_AXIN1_GSK3B, -1\nMAPK3, BCL2, 1\nMAPK1, RPS6KB1, 1\nMAPK3, HIF1A, 1\nMAPK1, PPARG, -1\n"
+        #             # valid_example_text = "\nSource genes, Target genes, Interactions:\nMAPK3, TP53, 1\nMAPK1, MYC, 1\nMAPK3, GSK3B, -1\nMAPK1, FOXO3, -1\nMAPK3, BRAF, -1\nMAPK1, APC_AXIN1_GSK3B, -1\nMAPK3, BCL2, 1\nMAPK1, RPS6KB1, 1\nMAPK3, HIF1A, 1\nMAPK1, PPARG, -1\n"
                     invalid_example_text = convert_edge_list_to_text(invalid_example)
 
-                    layer_struct_G_modify = nx_graph_to_layered_structure(G_modify, start_gene, max_layer=max_layer+1)
-
-                    downstream_network_text = convert_network_to_text(layer_struct_G_modify, start_gene)
+                    layer_struct_G_modify = nx_graph_to_layered_structure(G_modify, start_gene, max_layer=max_layer)
+                    
+                    downstream_network_text = convert_network_to_text_no_layer(layer_struct_G_modify, start_gene)
+                    # downstream_network_text = convert_network_to_text(layer_struct_G_modify, start_gene)
 
                     # Load prompt
-                    prompt_file = Path(f"./prompts/prompt_recover_edges_ICL.txt")
+                    prompt_file = Path(f"./prompts/prompt_recover_edges_general.txt")
                     if not prompt_file.exists():
                         raise FileNotFoundError(f"Prompt file {prompt_file} does not exist.")
                     with open(prompt_file, 'r') as f:
