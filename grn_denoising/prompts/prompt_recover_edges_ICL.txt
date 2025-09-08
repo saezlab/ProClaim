@@ -2,18 +2,21 @@ You are a molecular biologist expert in biological interaction networks. Given a
 
 Aim: I'm using a method to score the activity of nodes of the network that relies on propagating activities of transcription factors (TFs) to upstream regulators. Therefore, it is critical for me that the interactions downstream of a given gene do not contain erroneous entries connecting wrong TFs with upstream regulators. Furthermore, since only the TFs found in the closest layer of neighbours downstream of a given gene are actually used for the score calculation, it's very important that there isn't a wrong TF target in an intermediate layer downstream of a given gene. 
 
-GRN to analyze: {downstream_network_text}
+**REFERENCE EXAMPLES (DO NOT RETURN THESE):**
+Valid edge patterns (what correct edges look like). These edges existed in the original ground truth PKN and represent experimentally validated biological relationships:
+{valid_example_text}
 
-GRN structure: The network is organized in layers by shortest path distance from the root gene {start_gene}. Layer 1 genes are directly regulated by {start_gene}. Layer 2 genes are regulated by Layer 1 genes. Each row shows: Source gene → Target gene with interaction value (1 = activation, -1 = inhibition).
+Invalid edge patterns (what wrong edges look like). These invalid edges were artificially inserted by randomly connecting genes that should NOT be connected according to established biological knowledge. They represent computational noise that must be filtered out:
+{invalid_example_text}
 
-Remove sixteen edges from the GRN based on established knowledge of cellular pathways, protein functions, and regulatory mechanisms. Your task is to identify and remove biologically implausible connections while preserving genuine regulatory relationships. Sort the results in order so that the first removed edge is the one you consider most problematic.
+**YOUR ACTUAL TASK:**
+Analyze the following graph and identify 16 wrong edges that should be removed based on established knowledge of cellular pathways, protein functions, and regulatory mechanisms. Your task is to identify and remove biologically implausible connections while preserving genuine regulatory relationships. Sort the results in order so that the first removed edge is the one you consider most problematic.:
+{downstream_network_text}
 
-Valid edges examples (keep these types of edges). These edges existed in the original ground truth PKN and represent experimentally validated biological relationships: {valid_example_text}
-
-Invalid edges examples (remove these types of edges). These invalid edges were artificially inserted by randomly connecting genes that should NOT be connected according to established biological knowledge. They represent computational noise that must be filtered out: {invalid_example_text}
-
-You must provide a structured analysis with:
-1. For each edge you want to remove, provide the biological reasoning, source, target, and interaction value.
-2. The SOURCE and TARGET node names should be the same as in the original network.
-3. Do not return the edges in the invalid edges examples.
-3. EMPTY OUTPUT is forbidden. You must provide outputs even if you are not sure. Do not ask any questions, just provide the output.
+**REQUIREMENTS:**
+1. Identify 16 edges from the graph above that appear to be incorrectly connected.
+2. Sort the results in order so that the first removed edge is the one you consider most problematic.
+3. For each edge, provide reasoning why it should be removed.
+4. Use exact node names as they appear in the graph.
+5. You must provide exactly 16 edges - no empty output.
+6. **DO NOT return any edges from the reference examples above**

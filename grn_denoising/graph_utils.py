@@ -35,8 +35,10 @@ def trace_downstream_network(pkn: pd.DataFrame, start_gene: str, max_layer: int=
 
 def convert_edge_list_to_text(edge_list: list):
     text_output = ""
-    text_output += "\nSource genes, Target genes, Interactions:\n"
+    # text_output += "Source genes, Target genes, Interactions:\n"
+    text_output += "Source genes, Target genes:\n"
     for row in edge_list:
-        text_output += f"{row[0]}, {row[1]}, {row[2]}\n"
+        # text_output += f"{row[0]}, {row[1]}, {row[2]}\n"
+        text_output += f"{row[0]}, {row[1]}\n"
 
     return text_output

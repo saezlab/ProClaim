@@ -339,10 +339,10 @@ if __name__ == "__main__":
     # Get downstream network of the target gene
     start_gene = "BRAF"
     max_layers = [3]
-    repeat = 5
-    # add_nums = [1, 2, 4, 8, 16]
-    add_nums = [1, 2, 4]
-    ICL_sizes = [0, 3]
+    repeat = 50
+    add_nums = [1, 2, 4, 8, 16]
+    # add_nums = [1]
+    ICL_sizes = [0, 10]
     
     for max_layer in max_layers:
         downstream_network = trace_downstream_network(pkn, start_gene, max_layer=max_layer)
@@ -386,7 +386,7 @@ if __name__ == "__main__":
                     # downstream_network_text = convert_network_to_text(layer_struct_G_modify, start_gene)
 
                     # Load prompt
-                    prompt_file = Path(f"./prompts/prompt_recover_edges_general.txt")
+                    prompt_file = Path(f"./prompts/prompt_recover_edges_ICL.txt")
                     if not prompt_file.exists():
                         raise FileNotFoundError(f"Prompt file {prompt_file} does not exist.")
                     with open(prompt_file, 'r') as f:
