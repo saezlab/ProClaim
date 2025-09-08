@@ -1,9 +1,12 @@
 import pandas as pd
 import torch
 import torch.nn as nn
+
 from torch_geometric.nn import GCNConv, GATv2Conv, GINConv, GATConv
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, roc_curve, precision_recall_curve
+from grn_denoising.graph_utils import trace_downstream_network
+
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
@@ -44,6 +47,24 @@ def get_f1_score(labels, preds):
     optimal_f1 = f1_scores[best_f1_idx]
     return optimal_f1
 
+def noise_positive_edges(positive_edge_index): # [2 x E]
+    existing_edges = set(tuple(e) for e in positive_edge_index.t().tolist())
+    existing_nodes = sorted(list(set(positive_edge_index.flatten().tolist())))
+
+    num_negative_edges = positive_edge_index.shape[1]
+    negative_edges_list = []
+    negative_edges_set = set()
+    while len(negative_edges_list) < num_negative_edges:
+        u, v = np.random.randint(0, len(existing_nodes), 2)
+        u, v = existing_nodes[u], existing_nodes[v]
+        if u != v and (u, v) not in existing_edges and (u, v) not in negative_edges_set:
+            negative_edges_list.append([u, v])
+            negative_edges_set.add((u, v))
+
+    negative_edge_index = torch.tensor(negative_edges_list).t().contiguous()
+    return negative_edge_index
+
+
 def main(args):
     # --- Load and Preprocess Data ---
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -54,6 +75,32 @@ def main(args):
     all_nodes = pd.unique(df[['source', 'target']].values.ravel())
     node_to_idx = {name: i for i, name in enumerate(all_nodes)}
     num_nodes = len(all_nodes)
+
+    # Want to exclude this from the training set, and make this the "secondary" test set.
+    downstream_network = trace_downstream_network(df, "BRAF", 3)
+    downstream_src = []
+    downstream_target = []
+
+    before_remove = len(df)
+    for layer, data in downstream_network.items():
+        for source, targets in data['interactions'].items():
+            for target, interaction in targets:
+                # Yes, slow.
+                row = df[ (df['source'] == source) & (df['target'] == target) ]
+                df.drop(row.index, inplace=True)
+
+                downstream_src.append(node_to_idx[source])
+                downstream_target.append(node_to_idx[target])
+    print("Removed {} rows because of BRAF network".format(before_remove - len(df)))
+
+    downstream_positive_edge_index = torch.tensor([downstream_src, downstream_target], dtype=torch.long)
+    downstream_negative_edge_index = noise_positive_edges(downstream_positive_edge_index)
+    print("BRAF network: {} positive edges, {} negative edges".format(len(downstream_positive_edge_index), len(downstream_negative_edge_index)))
+
+    downstream_positive_edge_labels = torch.ones(downstream_positive_edge_index.shape[1])
+    downstream_negative_edge_labels = torch.zeros(downstream_negative_edge_index.shape[1])
+    all_downstream_edges = torch.cat([downstream_positive_edge_index, downstream_negative_edge_index], dim=1)
+    all_downstream_labels = torch.cat([downstream_positive_edge_labels, downstream_negative_edge_labels], dim=0)
 
     source_nodes = [node_to_idx[name] for name in df['source']]
     target_nodes = [node_to_idx[name] for name in df['target']]
@@ -76,18 +123,7 @@ def main(args):
     print(f"\nOriginal graph has {num_nodes} nodes and {positive_edge_index.shape[1]} edges.")
 
     # --- Perturb the Graph with Negative Edges ---
-    print("Perturbing graph with random negative edges...")
-    existing_edges = set(tuple(e) for e in positive_edge_index.t().tolist())
-    num_negative_edges = positive_edge_index.shape[1]
-    negative_edges_list = []
-    negative_edges_set = set()
-    while len(negative_edges_list) < num_negative_edges:
-        u, v = np.random.randint(0, num_nodes, 2)
-        if u != v and (u, v) not in existing_edges and (u, v) not in negative_edges_set:
-            negative_edges_list.append([u, v])
-            negative_edges_set.add((u, v))
-
-    negative_edge_index = torch.tensor(negative_edges_list).t().contiguous()
+    negative_edge_index = noise_positive_edges(positive_edge_index)
     print(f"Added {negative_edge_index.shape[1]} negative edges.")
 
     # --- Create Labels and Combine Edges ---
@@ -145,6 +181,17 @@ def main(args):
         preds = out.cpu().numpy()
         return labels, preds
 
+    @torch.no_grad()
+    def test_braf_with_all(braf_label_index, braf_edge_label):
+        model.eval()
+
+        # Use everything for braf inference
+        z = model.encode(node_features.to(device), all_edges.to(device))
+        out = model.decode(z, braf_label_index.to(device)).sigmoid()
+        labels = braf_edge_label.cpu().numpy()
+        preds = out.cpu().numpy()
+        return labels, preds
+
     print("--- Starting Model Training (on full, perturbed graph) ---")
     best_val_auc = 0
     best_test_labels = None
@@ -168,14 +215,18 @@ def main(args):
             best_test_labels = test_labels
             best_test_preds = test_preds
             print(
-                f"Epoch: {epoch:03d}, Loss: {loss:.4f}, Val AUC: {val_auc:.4f}, Val F1: {val_auc:.4f}, Test AUC: {test_auc:.4f}, Test F1: {test_f1:.4f} (New Best)")
+                f"Epoch: {epoch:03d}, Loss: {loss:.4f}, Val AUC: {val_auc:.4f}, Val F1: {val_f1:.4f}, Test AUC: {test_auc:.4f}, Test F1: {test_f1:.4f} (New Best)")
         elif epoch % 20 == 0:
             print(
-                f"Epoch: {epoch:03d}, Loss: {loss:.4f}, Val AUC: {val_auc:.4f}, Val F1: {val_auc:.4f}, Test AUC: {test_auc:.4f}, Test F1: {test_f1:.4f}")
+                f"Epoch: {epoch:03d}, Loss: {loss:.4f}, Val AUC: {val_auc:.4f}, Val F1: {val_f1:.4f}, Test AUC: {test_auc:.4f}, Test F1: {test_f1:.4f}")
+
+    test_braf_label, test_braf_preds = test_braf_with_all(all_downstream_edges, all_downstream_labels)
+    test_braf_auc = roc_auc_score(test_braf_label, test_braf_preds)
+    test_braf_f1 = get_f1_score(test_braf_label, test_braf_preds)
 
     print("\n--- Training Finished ---")
     final_auc = roc_auc_score(best_test_labels, best_test_preds) if best_test_labels is not None else 0
-    print(f"\nFinal Test AUC: {final_auc:.4f}")
+    print(f"\n Final Test AUC: {final_auc:.4f}, Downstream BRAF AUC: {test_braf_auc:.4f}, Downstream BRAF F1: {test_braf_f1:.4f}")
     print("-------------------------")
 
     if best_test_labels is not None and best_test_preds is not None:
