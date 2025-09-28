@@ -486,7 +486,7 @@ Where True means there is strong scientific evidence supporting the interaction,
 
 if __name__ == "__main__":
     # Initialize assistant
-    assistant = WebSearchAssistant(verbose=False, enable_history=True)
+    assistant = WebSearchAssistant(verbose=False, enable_history=False)
 
     # Load signor negative edges csv file
     data_path = Path('../all_removed_edges_with_sources.csv')
@@ -495,11 +495,10 @@ if __name__ == "__main__":
     targets = data['ENTITYB'].tolist()
     interactions = data['EFFECT'].tolist()
 
-    repeat = 2
-    # for i in range(len(sources)):
+    repeat = 50
     for r in tqdm(range(repeat)):
         results = []
-        for i in range(5):
+        for i in range(len(sources)):
             source = sources[i]
             target = targets[i]
             interaction = interactions[i]
