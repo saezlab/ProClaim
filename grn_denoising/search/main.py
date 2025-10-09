@@ -23,7 +23,9 @@ def load_config():
         'max_retries': 3,
         'history_file': 'search_history.json',
         'enable_colors': True,
-        'streaming_delay': 0.02
+        'streaming_delay': 0.02,
+        'request_delay': 2.0,
+        'ncbi_delay': 3.0
     }
     
     try:
@@ -61,9 +63,32 @@ class WebSearchAssistant:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
         })
+
+        # Track last request time for rate limiting
+        self.last_request_time = {}
         
         if self.verbose:
             print(f"WebSearchAssistant initialized - Model: {CONFIG['model']}")
+
+    def _rate_limit(self, domain: str, is_ncbi: bool = False):
+        """
+        Ensure sufficient delay between requests to the same domain
+        
+        Args:
+            domain: Domain name to rate limit
+            is_ncbi: Whether this is an NCBI domain (uses longer delay)
+        """
+        delay = CONFIG.get('ncbi_delay', 3.0) if is_ncbi else CONFIG.get('request_delay', 2.0)
+        
+        if domain in self.last_request_time:
+            elapsed = time.time() - self.last_request_time[domain]
+            if elapsed < delay:
+                wait_time = delay - elapsed
+                if self.verbose:
+                    print(f"Rate limiting: waiting {wait_time:.1f}s for {domain}")
+                time.sleep(wait_time)
+        
+        self.last_request_time[domain] = time.time()
 
     def model_response(self, model: str, message: str, max_retries: int = None) -> Optional[str]:
         """
@@ -109,28 +134,44 @@ class WebSearchAssistant:
         """Load search history from file"""
         try:
             if os.path.exists(CONFIG['history_file']):
-                with open(CONFIG['history_file'], 'r') as f:
+                with open(CONFIG['history_file'], 'r', encoding='utf-8') as f:
                     return json.load(f)
         except Exception:
             pass
         return []
     
-    def browse_web(self, query: str) -> Optional[List[Dict]]:
+    def browse_web(self, query: str, after_year: Optional[int] = None) -> Optional[List[Dict]]:
         """
         Search the web using multiple SearxNG instances with fallback
-        
-        Args:
-            query: Search query string
-            
-        Returns:
-            List of search results or None if all instances failed
         """
         if self.verbose:
             print(f"Searching web for: {query}")
+            if after_year:
+                print(f"Filtering results after year: {after_year}")
+        
+        # Add year filter to query if specified
+        search_query = query
+        if after_year:
+            search_query = f"{query} after:{after_year}"
         
         for instance in CONFIG['searxng_instances']:
             try:
-                search_url = f"{instance}?q={query}&format=json&categories=general"
+                # SearXNG rate limiting
+                parsed = urlparse(instance)
+                searxng_delay = CONFIG.get('searxng_delay', 3.0)
+                
+                # SearXNG delay
+                if parsed.netloc in self.last_request_time:
+                    elapsed = time.time() - self.last_request_time[parsed.netloc]
+                    if elapsed < searxng_delay:
+                        wait_time = searxng_delay - elapsed
+                        if self.verbose:
+                            print(f"Rate limiting SearXNG: waiting {wait_time:.1f}s")
+                        time.sleep(wait_time)
+                
+                self.last_request_time[parsed.netloc] = time.time()
+                
+                search_url = f"{instance}/search?q={search_query}&format=json&categories=general"
                 
                 response = self.session.get(search_url, timeout=CONFIG['timeout'])
                 response.raise_for_status()
@@ -143,12 +184,12 @@ class WebSearchAssistant:
                     if self.verbose:
                         print(f"Found {len(limited_results)} results from {instance}")
                     return limited_results
-                    
+                        
             except Exception as e:
                 if self.verbose:
                     print(f"Search instance {instance} failed: {str(e)}")
                 continue
-                
+                    
         if self.verbose:
             print("All search instances failed")
         return None
@@ -170,6 +211,14 @@ class WebSearchAssistant:
             # Ensure URL has protocol
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
+
+            # Parse URL to check domain and apply appropriate rate limiting
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc
+            is_ncbi = 'ncbi.nlm.nih.gov' in domain
+
+            # Apply rate limiting before making request
+            self._rate_limit(domain, is_ncbi=is_ncbi)
                 
             base_url = "https://r.jina.ai/"
             response = self.session.get(
@@ -427,11 +476,10 @@ Where True means there is strong scientific evidence supporting the interaction,
                 print(f"Starting search for: {question}")
             
             # Step 1: Search the web using question directly as query
-            search_results = self.browse_web(question)
+            search_results = self.browse_web(question, after_year=2018)
             if not search_results:
                 result['error'] = "No search results found"
                 return result
-            
             # Step 2: Select best result using AI
             selected_result = self.select_best_result(question, search_results)
             if not selected_result:
@@ -484,6 +532,7 @@ Where True means there is strong scientific evidence supporting the interaction,
             return result
 
 
+
 if __name__ == "__main__":
     # Initialize assistant
     assistant = WebSearchAssistant(verbose=False, enable_history=False)
@@ -495,9 +544,10 @@ if __name__ == "__main__":
     targets = data['ENTITYB'].tolist()
     interactions = data['EFFECT'].tolist()
 
-    repeat = 50
-    for r in tqdm(range(repeat)):
+    repeat = 20
+    for r in tqdm(range(12, repeat)):
         results = []
+        # for i in range(1):
         for i in range(len(sources)):
             source = sources[i]
             target = targets[i]

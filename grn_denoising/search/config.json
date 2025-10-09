@@ -1,12 +1,15 @@
 {
   "model": "gpt-oss:20b",
   "searxng_instances": [
-    "http://localhost:8889"
+    "http://localhost:8888"
   ],
   "max_results": 8,
   "timeout": 50,
   "max_retries": 3,
   "history_file": "search_history.json",
   "enable_colors": true,
-  "streaming_delay": 0.02
+  "streaming_delay": 0.02,
+  "request_delay": 5.0,
+  "ncbi_delay": 5.0,
+  "searxng_delay": 3.0
 }
