@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 import re
 from tqdm import tqdm
+import random
 
 def load_config():
     """Load configuration from file with fallback to defaults"""
@@ -25,7 +26,14 @@ def load_config():
         'enable_colors': True,
         'streaming_delay': 0.02,
         'request_delay': 2.0,
-        'ncbi_delay': 3.0
+        'ncbi_delay': 3.0,
+        'searxng_delay': 3.0,
+        'exclude_ncbi_domains': False,  # Set to True to exclude NCBI/PMC results
+        'ncbi_domains': [
+            'ncbi.nlm.nih.gov',
+            'pubmed.ncbi.nlm.nih.gov',
+            'pmc.ncbi.nlm.nih.gov'
+        ]
     }
     
     try:
@@ -41,16 +49,29 @@ def load_config():
 CONFIG = load_config()
 
 class WebSearchAssistant:
-    def __init__(self, enable_history: bool = True, verbose: bool = False):
+    def __init__(self, enable_history: bool = True, verbose: bool = False, exclude_ncbi: Optional[bool] = None):
         """
         Initialize WebSearchAssistant
         
         Args:
             enable_history: Whether to load/save search history
             verbose: Whether to print status messages
+            exclude_ncbi: Override config setting to exclude NCBI domains (None uses config value)
         """
         self.verbose = verbose
         self.enable_history = enable_history
+        
+        # Allow runtime override of NCBI exclusion
+        if exclude_ncbi is not None:
+            self.exclude_ncbi = exclude_ncbi
+        else:
+            self.exclude_ncbi = CONFIG.get('exclude_ncbi_domains', False)
+        
+        self.ncbi_domains = CONFIG.get('ncbi_domains', [
+            'ncbi.nlm.nih.gov',
+            'pubmed.ncbi.nlm.nih.gov',
+            'pmc.ncbi.nlm.nih.gov'
+        ])
         
         # Load search history if enabled
         if self.enable_history:
@@ -69,6 +90,44 @@ class WebSearchAssistant:
         
         if self.verbose:
             print(f"WebSearchAssistant initialized - Model: {CONFIG['model']}")
+            if self.exclude_ncbi:
+                print(f"⚠️  NCBI/PMC domains will be excluded from results")
+
+    def _is_ncbi_domain(self, url: str) -> bool:
+        """
+        Check if URL belongs to NCBI/PMC domains
+        
+        Args:
+            url: URL to check
+            
+        Returns:
+            True if URL is from NCBI/PMC domain
+        """
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        
+        return any(ncbi_domain in domain for ncbi_domain in self.ncbi_domains)
+
+    def _filter_ncbi_results(self, results: List[Dict]) -> List[Dict]:
+        """
+        Filter out NCBI/PMC results if configured to do so
+        
+        Args:
+            results: List of search results
+            
+        Returns:
+            Filtered list of results
+        """
+        if not self.exclude_ncbi:
+            return results
+        
+        filtered = [r for r in results if not self._is_ncbi_domain(r.get('url', ''))]
+        
+        if self.verbose and len(filtered) < len(results):
+            excluded_count = len(results) - len(filtered)
+            print(f"🚫 Excluded {excluded_count} NCBI/PMC result(s)")
+        
+        return filtered
 
     def _rate_limit(self, domain: str, is_ncbi: bool = False):
         """
@@ -79,6 +138,7 @@ class WebSearchAssistant:
             is_ncbi: Whether this is an NCBI domain (uses longer delay)
         """
         delay = CONFIG.get('ncbi_delay', 3.0) if is_ncbi else CONFIG.get('request_delay', 2.0)
+        delay = random.uniform(delay - 1.0, delay + 1.0)  # Add jitter
         
         if domain in self.last_request_time:
             elapsed = time.time() - self.last_request_time[domain]
@@ -179,6 +239,9 @@ class WebSearchAssistant:
                 data = response.json()
                 results = data.get('results', [])
                 
+                # Filter NCBI results if configured
+                results = self._filter_ncbi_results(results)
+                
                 if results:
                     limited_results = results[:CONFIG['max_results']]
                     if self.verbose:
@@ -215,7 +278,7 @@ class WebSearchAssistant:
             # Parse URL to check domain and apply appropriate rate limiting
             parsed_url = urlparse(url)
             domain = parsed_url.netloc
-            is_ncbi = 'ncbi.nlm.nih.gov' in domain
+            is_ncbi = self._is_ncbi_domain(url)
 
             # Apply rate limiting before making request
             self._rate_limit(domain, is_ncbi=is_ncbi)
@@ -534,8 +597,15 @@ Where True means there is strong scientific evidence supporting the interaction,
 
 
 if __name__ == "__main__":
-    # Initialize assistant
+    # Initialize assistant with NCBI exclusion
+    # Option 1: Use config file setting
     assistant = WebSearchAssistant(verbose=False, enable_history=False)
+    
+    # Option 2: Override at runtime to exclude NCBI
+    # assistant = WebSearchAssistant(verbose=False, enable_history=False, exclude_ncbi=True)
+    
+    # Option 3: Override at runtime to include NCBI
+    # assistant = WebSearchAssistant(verbose=False, enable_history=False, exclude_ncbi=False)
 
     # Load signor negative edges csv file
     data_path = Path('../all_removed_edges_with_sources.csv')
@@ -545,7 +615,7 @@ if __name__ == "__main__":
     interactions = data['EFFECT'].tolist()
 
     repeat = 20
-    for r in tqdm(range(12, repeat)):
+    for r in tqdm(range(14, repeat)):
         results = []
         # for i in range(1):
         for i in range(len(sources)):
