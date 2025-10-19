@@ -8,8 +8,13 @@
   "max_retries": 3,
   "history_file": "search_history.json",
   "enable_colors": true,
-  "streaming_delay": 0.02,
-  "request_delay": 5.0,
-  "ncbi_delay": 5.0,
-  "searxng_delay": 3.0
+  "request_delay": 20.0,
+  "ncbi_delay": 3.0,
+  "searxng_delay": 30.0,
+  "exclude_ncbi_domains": true,
+  "ncbi_domains": [
+      "ncbi.nlm.nih.gov",
+      "pubmed.ncbi.nlm.nih.gov",
+      "pmc.ncbi.nlm.nih.gov"
+  ]
 }

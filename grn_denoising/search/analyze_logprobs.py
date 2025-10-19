@@ -17,15 +17,47 @@ class LogprobsAnalyzer:
         self,
         prompt: str,
         n_probs: int = 2,
-        stream: bool = False
+        stream: bool = False,
+        temperature: float = 0.7,
+        max_tokens: int = -1,
+        repeat_penalty: float = 1.2,
+        repeat_last_n: int = 64,
+        stop: Optional[List[str]] = None
     ) -> Dict:
-        """Query LLM and get logprobs"""
+        """Query LLM and get logprobs with anti-repetition controls
+
+        Args:
+            prompt: The prompt to send to the LLM
+            n_probs: Number of top probabilities to return
+            stream: Whether to stream the response
+            temperature: Sampling temperature (default: 0.7)
+            max_tokens: Maximum tokens to generate (-1 = unlimited)
+            repeat_penalty: Penalty for repeating tokens (default: 1.2)
+            repeat_last_n: Number of last tokens to consider for repeat penalty (default: 64)
+            stop: List of stop sequences to end generation
+        """
         url = f"{self.api_url}/completion"
-        
+
+        # Default stop sequences if not provided
+        if stop is None:
+            stop = [
+                "\n\nThus answer:",
+                "\nThus answer:",
+                "Thus the answer:",
+                "<|end|>",
+                "<|start|>",
+                "<|message|>"
+            ]
+
         payload = {
             "prompt": prompt,
             "stream": stream,
-            "n_probs": n_probs
+            "n_probs": n_probs,
+            "temperature": temperature,
+            "n_predict": max_tokens,
+            "repeat_penalty": repeat_penalty,
+            "repeat_last_n": repeat_last_n,
+            "stop": stop
         }
         
         try:
@@ -152,20 +184,31 @@ class LogprobsAnalyzer:
         self,
         questions: List[str],
         output_dir: str = "results",
-        n_probs: int = 10
+        n_probs: int = 10,
+        temperature: float = 0.7,
+        max_tokens: int = -1,
+        repeat_penalty: float = 1.2,
+        repeat_last_n: int = 64
     ):
-        """Batch query multiple questions"""
+        """Batch query multiple questions with anti-repetition controls"""
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        
+
         results_summary = []
-        
+
         print(f"\nStarting batch query for {len(questions)} questions...\n")
-        
+
         for i, question in enumerate(questions, 1):
             print(f"[{i}/{len(questions)}] Query: {question[:60]}...")
-            
-            # Query
-            result = self.query_llm(question, n_probs=n_probs)
+
+            # Query with anti-repetition parameters
+            result = self.query_llm(
+                question,
+                n_probs=n_probs,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                repeat_penalty=repeat_penalty,
+                repeat_last_n=repeat_last_n
+            )
             
             # Analyze
             analysis = self.analyze_true_false(result)
@@ -223,14 +266,18 @@ def main():
 Examples:
   # Query single question
   python3 analyze_logprobs.py --prompt "Does TP53 inhibit BCL2L1?"
-  
+
   # Analyze existing result
   python3 analyze_logprobs.py --analyze result.json
-  
+
   # Batch queries from file
   python3 analyze_logprobs.py --batch questions.txt --output-dir results/
 
-  python analyze_logprobs.py --batch questions.txt --n-probs 5 --output-dir ./
+  # Batch with custom anti-repetition settings
+  python3 analyze_logprobs.py --batch questions.txt --n-probs 5 --output-dir ./ --repeat-penalty 1.5 --temperature 0.3
+
+  # Single query with strict anti-repetition
+  python3 analyze_logprobs.py --prompt "Does TP53 activate MDM2?" --repeat-penalty 1.5 --max-tokens 100
         """
     )
     
@@ -242,6 +289,12 @@ Examples:
     parser.add_argument('--n-probs', type=int, default=10, help='Number of top probabilities (default: 10)')
     parser.add_argument('--api-url', type=str, default='http://localhost:8080', help='API URL (default: http://localhost:8080)')
     parser.add_argument('--simple', action='store_true', help='Simple output without alternatives')
+
+    # Anti-repetition parameters
+    parser.add_argument('--temperature', type=float, default=0.7, help='Sampling temperature (default: 0.7)')
+    parser.add_argument('--max-tokens', type=int, default=-1, help='Maximum tokens to generate, -1 = unlimited (default: -1)')
+    parser.add_argument('--repeat-penalty', type=float, default=1.2, help='Penalty for repeating tokens (default: 1.2)')
+    parser.add_argument('--repeat-last-n', type=int, default=64, help='Number of last tokens to consider for repeat penalty (default: 64)')
     
     args = parser.parse_args()
     
@@ -264,20 +317,28 @@ Examples:
     elif args.batch:
         with open(args.batch, 'r') as f:
             questions = [line.strip() for line in f if line.strip()]
-        
+
         analyzer.batch_query(
             questions,
             output_dir=args.output_dir,
-            n_probs=args.n_probs
+            n_probs=args.n_probs,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+            repeat_penalty=args.repeat_penalty,
+            repeat_last_n=args.repeat_last_n
         )
     
     # Mode 3: Single query
     elif args.prompt:
         print(f"Query: {args.prompt}\n")
-        
+
         result = analyzer.query_llm(
             args.prompt,
-            n_probs=args.n_probs
+            n_probs=args.n_probs,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+            repeat_penalty=args.repeat_penalty,
+            repeat_last_n=args.repeat_last_n
         )
         
         # Save full result

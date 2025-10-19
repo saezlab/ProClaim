@@ -598,14 +598,9 @@ Where True means there is strong scientific evidence supporting the interaction,
 
 if __name__ == "__main__":
     # Initialize assistant with NCBI exclusion
-    # Option 1: Use config file setting
-    assistant = WebSearchAssistant(verbose=False, enable_history=False)
-    
-    # Option 2: Override at runtime to exclude NCBI
-    # assistant = WebSearchAssistant(verbose=False, enable_history=False, exclude_ncbi=True)
-    
-    # Option 3: Override at runtime to include NCBI
-    # assistant = WebSearchAssistant(verbose=False, enable_history=False, exclude_ncbi=False)
+
+    assistant = WebSearchAssistant(verbose=True, enable_history=True)
+
 
     # Load signor negative edges csv file
     data_path = Path('../all_removed_edges_with_sources.csv')
@@ -614,8 +609,8 @@ if __name__ == "__main__":
     targets = data['ENTITYB'].tolist()
     interactions = data['EFFECT'].tolist()
 
-    repeat = 20
-    for r in tqdm(range(14, repeat)):
+    repeat = 31
+    for r in tqdm(range(26, repeat)):
         results = []
         # for i in range(1):
         for i in range(len(sources)):
