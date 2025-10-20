@@ -392,5 +392,5 @@ if __name__ == "__main__":
         print(f"Total attempts: {result['retry_count']}")
         print(f"{'='*60}\n")
 
-    print(app.get_graph().draw_mermaid())
-    app.get_graph().print_ascii()
+    # print(app.get_graph().draw_mermaid())
+    # app.get_graph().print_ascii()
