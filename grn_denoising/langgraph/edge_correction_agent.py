@@ -5,7 +5,10 @@ import requests
 from pydantic import BaseModel, Field
 import math
 import json
+from langchain_community.tools.tavily_search import TavilySearchResults
+from dotenv import load_dotenv
 
+load_dotenv()
 
 class Alternative(BaseModel):
     token: str = Field(description="The alternative token")
@@ -31,6 +34,8 @@ class GraphState(TypedDict):
     original_question: str  # Track the original question for relevance evaluation
     max_retries: int  # Maximum number of retry attempts
     relevance_threshold: float  # Minimum relevance score required
+    search_results: str  # Web search results to provide context for the LLM
+    use_search: bool  # Whether to use web search or not
 
 
 def query_llm(
@@ -65,13 +70,27 @@ def ask_gene_regulation_question(
     source_gene: str,
     target_gene: str,
     relationship: str = "activate",
+    search_context: str = "",
     api_url: str = "http://localhost:8080",
     n_probs: int = 5
 ) -> StructuredOutcome:
+    # Build the prompt with search context if available
+    context_section = ""
+    if search_context:
+        context_section = f"""
+Here is some relevant research context from recent publications:
+
+{search_context}
+
+Use this information to inform your answer.
+
+"""
+
     prompt = f"""<|start|>system<|message|>You are a molecular biologist expert in biological interaction.
 You must analyze the question and provide reasoning, then answer with ONLY 'Yes' or 'No'.<|end|>
 <|start|>user<|message|>Question: Does {source_gene} {relationship} {target_gene}?
-
+{context_section}
+Focusing on recent evidence from 2018 onwards.
 First provide your reasoning, then on a new line write "Answer: Yes" or "Answer: No".
 
 Reasoning:<|end|>
@@ -193,11 +212,15 @@ def llm_node(state: GraphState) -> GraphState:
     else:
         source_gene, target_gene, relationship = "HCK", "BCR", "activate"
 
-    # Call the LLM
+    # Get search results from state
+    search_context = state.get("search_results", "")
+
+    # Call the LLM with search results as context
     result = ask_gene_regulation_question(
         source_gene=source_gene,
         target_gene=target_gene,
         relationship=relationship,
+        search_context=search_context,
         n_probs=10
     )
 
@@ -208,6 +231,25 @@ def llm_node(state: GraphState) -> GraphState:
         "retry_count": state["retry_count"] + 1
     }
 
+def search_node(state: GraphState) -> GraphState:
+    """Search for relevant publications using Tavily Search."""
+    source_gene = state["messages"][0].split("|")[0]
+    target_gene = state["messages"][0].split("|")[1]
+    relationship = state["messages"][0].split("|")[2]
+    query = f"Does {source_gene} {relationship} {target_gene}?"
+
+    search_tool = TavilySearchResults(max_results=5, start_date="2018-01-01")
+    results = search_tool.invoke({"query": query})
+
+    # Combine search results
+    search_text = "\n\n".join([
+        result.get('content', '')
+        for result in results
+    ])
+
+    return {
+        "search_results": search_text
+    }
 
 def reflect_node(state: GraphState) -> GraphState:
     """Node that reflects on the LLM response quality and reasoning relevance."""
@@ -266,13 +308,15 @@ Respond with JSON only, example format: {{"score": <your_number_here>}}<|end|>
 
     # Save this attempt to a separate JSON file
     attempt_number = state["retry_count"]
-    output_file = f"gene_regulation_attempt_{attempt_number}.json"
+    search_suffix = "_with_search" if state.get("use_search", False) else "_no_search"
+    output_file = f"gene_regulation_attempt_{attempt_number}{search_suffix}.json"
 
     attempt_data = {
         "attempt_number": attempt_number,
         "question": original_question,
         "structured_outcome": state["structured_outcome"].model_dump(),
-        "relevance_score": relevance_score
+        "relevance_score": relevance_score,
+        "used_search": state.get("use_search", False)
     }
 
     with open(output_file, 'w') as f:
@@ -319,8 +363,13 @@ def should_retry(state: GraphState) -> str:
     return END
 
 
-def build_graph() -> StateGraph:
-    """Build the LangGraph with start -> llm -> reflect -> (retry or end) structure."""
+def build_graph(use_search: bool = False) -> StateGraph:
+    """Build the LangGraph with optional search node.
+
+    Args:
+        use_search: If True, flow is search -> llm -> reflect -> (retry or end)
+                   If False, flow is llm -> reflect -> (retry or end)
+    """
     # Create the graph
     workflow = StateGraph(GraphState)
 
@@ -328,8 +377,15 @@ def build_graph() -> StateGraph:
     workflow.add_node("llm", llm_node)
     workflow.add_node("reflect", reflect_node)
 
-    # Set entry point
-    workflow.set_entry_point("llm")
+    if use_search:
+        workflow.add_node("search", search_node)
+        # Set entry point to search
+        workflow.set_entry_point("search")
+        # Add edge from search to llm
+        workflow.add_edge("search", "llm")
+    else:
+        # Set entry point to llm
+        workflow.set_entry_point("llm")
 
     # Add edge from llm to reflect
     workflow.add_edge("llm", "reflect")
@@ -349,14 +405,17 @@ def build_graph() -> StateGraph:
 
 
 if __name__ == "__main__":
+    # Configuration
+    USE_SEARCH = True  # Set to True to use web search, False to skip search
+
     # Build the graph
-    app = build_graph()
+    app = build_graph(use_search=USE_SEARCH)
 
     # Example: Does HCK activate BCR?
     # Format: "source_gene|target_gene|relationship"
-    source_gene = "HCK"
-    target_gene = "BCR"
-    relationship = "activate"
+    source_gene = "Apoptosis"
+    target_gene = "LZTR1"
+    relationship = "down-regulate"
 
     initial_state = {
         "messages": [f"{source_gene}|{target_gene}|{relationship}"],
@@ -367,17 +426,21 @@ if __name__ == "__main__":
         "relevance_score": -1.0,  # Initialize to error state
         "original_question": f"Does {source_gene} {relationship} {target_gene}?",
         "max_retries": 10,  # Maximum number of retry attempts
-        "relevance_threshold": 0.7  # Minimum relevance score required
+        "relevance_threshold": 0.7,  # Minimum relevance score required
+        "search_results": "",  # Will be populated by search_node if USE_SEARCH is True
+        "use_search": USE_SEARCH
     }
 
     # Run the graph
     result = app.invoke(initial_state)
 
     # Save result to JSON file
-    output_file = "gene_regulation_result.json"
+    search_suffix = "_with_search" if USE_SEARCH else "_no_search"
+    output_file = f"gene_regulation_result{search_suffix}.json"
     if result["structured_outcome"]:
         result_data = result["structured_outcome"].model_dump()
         result_data["relevance_score"] = result.get("relevance_score", -1.0)
+        result_data["used_search"] = USE_SEARCH
 
         with open(output_file, 'w') as f:
             json.dump(result_data, f, indent=2)
@@ -390,6 +453,7 @@ if __name__ == "__main__":
         print(f"Answer probability: {result['structured_outcome'].probability:.3f}")
         print(f"Relevance score: {result.get('relevance_score', -1.0):.3f}")
         print(f"Total attempts: {result['retry_count']}")
+        print(f"Used web search: {USE_SEARCH}")
         print(f"{'='*60}\n")
 
     # print(app.get_graph().draw_mermaid())

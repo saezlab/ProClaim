@@ -3,6 +3,9 @@ from dotenv import load_dotenv
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.graph import StateGraph, END
 from typing import TypedDict
+from datetime import datetime
+import json
+import os
 
 load_dotenv()
 
@@ -16,6 +19,14 @@ class GraphState(TypedDict):
     temperature: str
 
 
+def save_raw_search_result(search_function_name: str, raw_results):
+    """Save raw search results to a text file."""
+    filename = f"{search_function_name}.txt"
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(str(raw_results))
+    print(f"Saved to: {filename}")
+
+
 def search_node(state: GraphState) -> GraphState:
     """Search for temperature information using Tavily."""
     city = state["city"]
@@ -25,6 +36,9 @@ def search_node(state: GraphState) -> GraphState:
 
     search_tool = TavilySearchResults(max_results=2)
     results = search_tool.invoke({"query": query})
+
+    # Save raw results
+    save_raw_search_result("tavily", results)
 
     # Get the first result URL
     best_url = results[0].get('url', '') if results else ''
@@ -58,6 +72,9 @@ def searxng_node(state: GraphState) -> GraphState:
 
         data = response.json()
         results = data.get('results', [])
+
+        # Save raw results
+        save_raw_search_result("searxng", data)
 
         # Take first 2 results and combine their content
         search_text = "\n\n".join([
@@ -166,7 +183,7 @@ def build_graph(use_searxng: bool = False) -> StateGraph:
 
 def main():
     city = "Cambridge"
-    use_searxng = True  # Set to True to use SearXNG, False to use Tavily
+    use_searxng = False  # Set to True to use SearXNG, False to use Tavily
 
     print(f"Using: {'SearXNG' if use_searxng else 'Tavily'}\n")
 
