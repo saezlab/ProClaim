@@ -30,10 +30,9 @@ class GraphState(TypedDict):
     structured_outcome: StructuredOutcome | None
     retry_count: int
     probability_threshold: float
-    relevance_score: float  # -1 indicates error, 0.0-1.0 indicates relevance
+    is_relevant: bool  # True if reasoning is relevant, False otherwise
     original_question: str  # Track the original question for relevance evaluation
     max_retries: int  # Maximum number of retry attempts
-    relevance_threshold: float  # Minimum relevance score required
     search_results: str  # Web search results to provide context for the LLM
     use_search: bool  # Whether to use web search or not
 
@@ -54,14 +53,26 @@ def query_llm(
         "post_sampling_probs": True,
     }
 
+    # Handle logit_bias separately to ensure proper formatting
+    if "logit_bias" in kwargs:
+        payload["logit_bias"] = kwargs["logit_bias"]
+
     for key, value in kwargs.items():
-        if key not in ["temperature", "max_tokens", "n_probs"]:
+        if key not in ["temperature", "max_tokens", "n_probs", "logit_bias"]:
             payload[key] = value
 
     try:
         response = requests.post(url, json=payload, timeout=300)
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+
+        # Debug logging
+        print(f"[DEBUG] API Response keys: {result.keys()}")
+        print(f"[DEBUG] Content length: {len(result.get('content', ''))}")
+        print(f"[DEBUG] Content preview: {result.get('content', '')[:200]}")
+        print(f"[DEBUG] Has completion_probabilities: {'completion_probabilities' in result}")
+
+        return result
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"API request failed: {e}")
 
@@ -72,43 +83,87 @@ def ask_gene_regulation_question(
     relationship: str = "activate",
     search_context: str = "",
     api_url: str = "http://localhost:8080",
-    n_probs: int = 5
+    n_probs: int = 5,
+    logit_bias: dict = None
 ) -> StructuredOutcome:
-    # Build the prompt with search context if available
-    context_section = ""
+    
     if search_context:
-        context_section = f"""
-Here is some relevant research context from recent publications:
+        prompt = f"""<|start|>developer<|message|># Instructions
+    You are a molecular biologist expert in biological interactions.
+    Reasoning: low
 
-{search_context}
+    CRITICAL: You MUST end your response with EXACTLY this format:
+    "ANSWER: [Yes]" or "ANSWER: [No]"
 
-Use this information to inform your answer.
+    Focus on evidence from 2018 onwards.<|end|>
+    <|start|>user<|message|>Does p53 activate BAX?<|end|>
+    <|start|>assistant<|message|>p53 is a transcription factor that directly activates BAX expression in response to DNA damage. Multiple studies from 2018-2023 confirm this direct regulatory relationship.
+    ANSWER: [Yes]<|end|>
+    <|start|>user<|message|>Does insulin inhibit glucagon?<|end|>
+    <|start|>assistant<|message|>While insulin and glucagon have opposing effects on glucose metabolism, insulin does not directly inhibit glucagon secretion. The relationship involves complex paracrine signaling in pancreatic islets.
+    ANSWER: [No]<|end|>
+    <|start|>user<|message|>Does TNF-alpha induce apoptosis?<|end|>
+    <|start|>assistant<|message|>TNF-alpha binds to death receptors (TNFR1) and activates caspase-8, initiating the extrinsic apoptotic pathway. Recent studies (2019-2024) demonstrate this occurs in multiple cell types under inflammatory conditions.
+    ANSWER: [Yes]<|end|>
+    <|start|>user<|message|>Does AMPK activate mTOR?<|end|>
+    <|start|>assistant<|message|>AMPK actually inhibits mTOR through phosphorylation of TSC2 and Raptor, acting as an energy sensor that suppresses anabolic processes. Multiple studies from 2018-2024 confirm AMPK and mTOR have an antagonistic relationship.
+    ANSWER: [No]<|end|>
+    <|start|>user<|message|>Here is the scientific context for the next question:
+    {search_context}
 
-"""
+    Based on this context, does {source_gene} {relationship} {target_gene}?<|end|>
+    <|start|>assistant<|message|>"""
+    else:
+        prompt = f"""<|start|>developer<|message|># Instructions
+    You are a molecular biologist expert in biological interactions.
+    Reasoning: low
 
-    prompt = f"""<|start|>system<|message|>You are a molecular biologist expert in biological interaction.
-You must analyze the question and provide reasoning, then answer with ONLY 'Yes' or 'No'.<|end|>
-<|start|>user<|message|>Question: Does {source_gene} {relationship} {target_gene}?
-{context_section}
-Focusing on recent evidence from 2018 onwards.
-First provide your reasoning, then on a new line write "Answer: Yes" or "Answer: No".
+    CRITICAL: You MUST end your response with EXACTLY this format:
+    "ANSWER: [Yes]" or "ANSWER: [No]"
 
-Reasoning:<|end|>
-<|start|>assistant<|message|>"""
+    Focus on evidence from 2018 onwards.<|end|>
+    <|start|>user<|message|>Does p53 activate BAX?<|end|>
+    <|start|>assistant<|message|>p53 is a transcription factor that directly activates BAX expression in response to DNA damage. Multiple studies from 2018-2023 confirm this direct regulatory relationship.
+    ANSWER: [Yes]<|end|>
+    <|start|>user<|message|>Does insulin inhibit glucagon?<|end|>
+    <|start|>assistant<|message|>While insulin and glucagon have opposing effects on glucose metabolism, insulin does not directly inhibit glucagon secretion. The relationship involves complex paracrine signaling in pancreatic islets.
+    ANSWER: [No]<|end|>
+    <|start|>user<|message|>Does TNF-alpha induce apoptosis?<|end|>
+    <|start|>assistant<|message|>TNF-alpha binds to death receptors (TNFR1) and activates caspase-8, initiating the extrinsic apoptotic pathway. Recent studies (2019-2024) demonstrate this occurs in multiple cell types under inflammatory conditions.
+    ANSWER: [Yes]<|end|>
+    <|start|>user<|message|>Does AMPK activate mTOR?<|end|>
+    <|start|>assistant<|message|>AMPK actually inhibits mTOR through phosphorylation of TSC2 and Raptor, acting as an energy sensor that suppresses anabolic processes. Multiple studies from 2018-2024 confirm AMPK and mTOR have an antagonistic relationship.
+    ANSWER: [No]<|end|>
+    <|start|>user<|message|>Does {source_gene} {relationship} {target_gene}?<|end|>
+    <|start|>assistant<|message|>"""
+
+    # Prepare kwargs for query_llm
+    query_kwargs = {
+        "temperature": 0.1,
+        "max_tokens": -1,
+        "n_probs": n_probs,
+        "repeat_penalty": 1.0,
+        "repeat_last_n": 64
+    }
+
+    # Add logit_bias if provided
+    if logit_bias is not None:
+        query_kwargs["logit_bias"] = logit_bias
 
     response = query_llm(
         prompt=prompt,
         api_url=api_url,
-        temperature=0.7,
-        max_tokens=-1,
-        n_probs=n_probs,
-        repeat_penalty=1.2,
-        repeat_last_n=64,
-        stop=["<|end|>", "<|start|>"]
+        **query_kwargs
     )
 
     full_content = response.get("content", "").strip()
     completion_probs = response.get("completion_probabilities", [])
+
+    # Validation and debug logging
+    if len(full_content) < 20:
+        print(f"[WARNING] Suspiciously short response: {repr(full_content)}")
+    if not completion_probs:
+        print(f"[WARNING] No completion probabilities in response")
 
     # Find the answer line and corresponding token
     lines = full_content.split('\n')
@@ -193,6 +248,11 @@ Reasoning:<|end|>
                 answer_value = True
             elif "no" in generated.lower():
                 answer_value = False
+        else:
+            print(f"[WARNING] Could not find yes/no token in answer line")
+            print(f"[DEBUG] Answer line index: {answer_line_index}")
+            print(f"[DEBUG] Answer text: {answer_text}")
+            print(f"[DEBUG] Total tokens: {len(completion_probs)}")
 
     return StructuredOutcome(
         reasoning=reasoning,
@@ -238,7 +298,7 @@ def search_node(state: GraphState) -> GraphState:
     relationship = state["messages"][0].split("|")[2]
     query = f"Does {source_gene} {relationship} {target_gene}?"
 
-    search_tool = TavilySearchResults(max_results=5, start_date="2018-01-01")
+    search_tool = TavilySearchResults(max_results=2, search_depth="basic", start_date="2018-01-01")
     results = search_tool.invoke({"query": query})
 
     # Combine search results
@@ -247,6 +307,10 @@ def search_node(state: GraphState) -> GraphState:
         for result in results
     ])
 
+    # Save raw results to a file for debugging
+    # with open(f"search_results_{state['retry_count'] + 1}.txt", 'w') as f:
+    #     f.write(search_text)
+
     return {
         "search_results": search_text
     }
@@ -254,7 +318,7 @@ def search_node(state: GraphState) -> GraphState:
 def reflect_node(state: GraphState) -> GraphState:
     """Node that reflects on the LLM response quality and reasoning relevance."""
     if state["structured_outcome"] is None:
-        return {"relevance_score": -1.0}
+        return {"is_relevant": False}
 
     reasoning = state["structured_outcome"].reasoning
     original_question = state["original_question"]
@@ -262,28 +326,27 @@ def reflect_node(state: GraphState) -> GraphState:
     # JSON grammar to ensure structured output
     json_grammar = r'''
 root ::= object
-object ::= "{" ws "\"score\"" ws ":" ws number ws "}"
-number ::= "0." [0-9]+
+object ::= "{" ws "\"relevant\"" ws ":" ws boolean ws "}"
+boolean ::= "true" | "false"
 ws ::= [ \t\n]*
 '''
 
     # Evaluate relevance with clear instructions
     relevance_prompt = f"""<|start|>system<|message|>You are evaluating reasoning relevance.
-You must respond with ONLY a JSON object with a "score" field.<|end|>
+You must respond with ONLY a JSON object with a "relevant" field.<|end|>
 <|start|>user<|message|>Original Question: {original_question}
 
 Reasoning provided: {reasoning}
 
-Rate how relevant and focused the reasoning is to answering the original question.
-Score from 0.0 (completely irrelevant) to 1.0 (perfectly relevant).
+Is the reasoning relevant and focused on answering the original question?
 
-Respond with JSON only, example format: {{"score": <your_number_here>}}<|end|>
+Respond with JSON only, example format: {{"relevant": true}} or {{"relevant": false}}<|end|>
 <|start|>assistant<|message|>"""
 
     try:
         response = query_llm(
             prompt=relevance_prompt,
-            temperature=0.1,
+            temperature=0.7,
             max_tokens=30,
             grammar=json_grammar
         )
@@ -292,19 +355,19 @@ Respond with JSON only, example format: {{"score": <your_number_here>}}<|end|>
 
         # Parse JSON response
         parsed = json.loads(content)
-        relevance_score = float(parsed.get("score", -1.0))
+        is_relevant = parsed.get("relevant", False)
 
-        # Clamp to valid range (0.0-1.0)
-        if relevance_score < 0.0 or relevance_score > 1.0:
-            relevance_score = -1.0
-            print(f"Warning: Invalid relevance score {relevance_score}, setting to -1")
+        # Ensure it's a boolean
+        if not isinstance(is_relevant, bool):
+            is_relevant = False
+            print(f"Warning: Invalid relevance type, setting to False")
 
-        print(f"Relevance evaluation - Raw: '{content}' -> Score: {relevance_score}")
+        print(f"Relevance evaluation - Raw: '{content}' -> Relevant: {is_relevant}")
 
     except (json.JSONDecodeError, ValueError, KeyError, RuntimeError) as e:
-        # Set to -1 to indicate error
-        relevance_score = -1.0
-        print(f"Error in relevance evaluation: {e}, setting score to -1")
+        # Set to False to indicate error/failure
+        is_relevant = False
+        print(f"Error in relevance evaluation: {e}, setting to False")
 
     # Save this attempt to a separate JSON file
     attempt_number = state["retry_count"]
@@ -315,7 +378,7 @@ Respond with JSON only, example format: {{"score": <your_number_here>}}<|end|>
         "attempt_number": attempt_number,
         "question": original_question,
         "structured_outcome": state["structured_outcome"].model_dump(),
-        "relevance_score": relevance_score,
+        "is_relevant": is_relevant,
         "used_search": state.get("use_search", False)
     }
 
@@ -324,7 +387,7 @@ Respond with JSON only, example format: {{"score": <your_number_here>}}<|end|>
 
     print(f"Saved attempt {attempt_number} to {output_file}")
 
-    return {"relevance_score": relevance_score}
+    return {"is_relevant": is_relevant}
 
 
 def should_retry(state: GraphState) -> str:
@@ -346,18 +409,12 @@ def should_retry(state: GraphState) -> str:
         print(f"Low probability: {probability:.3f} < {state['probability_threshold']}, retrying...")
         return "llm"
 
-    # Check relevance score
-    relevance = state.get("relevance_score", -1.0)  # Default to -1 (error) if not present
-    relevance_threshold = state.get("relevance_threshold", 0.7)  # Get from state, default to 0.7
+    # Check relevance
+    is_relevant = state.get("is_relevant", False)  # Default to False if not present
 
-    # If relevance evaluation failed (score = -1), we should retry
-    if relevance < 0.0:
-        print(f"Relevance evaluation failed (score={relevance}), retrying...")
-        return "llm"
-
-    # If relevance is too low, retry
-    if relevance < relevance_threshold:
-        print(f"Low relevance score: {relevance} < {relevance_threshold}, retrying...")
+    # If not relevant (either failed or not relevant), retry
+    if not is_relevant:
+        print(f"Reasoning not relevant (is_relevant={is_relevant}), retrying...")
         return "llm"
 
     return END
@@ -406,16 +463,16 @@ def build_graph(use_search: bool = False) -> StateGraph:
 
 if __name__ == "__main__":
     # Configuration
-    USE_SEARCH = True  # Set to True to use web search, False to skip search
+    USE_SEARCH = False  # Set to True to use web search, False to skip search
 
     # Build the graph
     app = build_graph(use_search=USE_SEARCH)
 
     # Example: Does HCK activate BCR?
     # Format: "source_gene|target_gene|relationship"
-    source_gene = "Apoptosis"
-    target_gene = "LZTR1"
-    relationship = "down-regulate"
+    source_gene = "HCK"
+    target_gene = "BCR"
+    relationship = "activate"
 
     initial_state = {
         "messages": [f"{source_gene}|{target_gene}|{relationship}"],
@@ -423,10 +480,9 @@ if __name__ == "__main__":
         "structured_outcome": None,
         "retry_count": 0,
         "probability_threshold": 0.9,
-        "relevance_score": -1.0,  # Initialize to error state
+        "is_relevant": False,  # Initialize to False
         "original_question": f"Does {source_gene} {relationship} {target_gene}?",
-        "max_retries": 10,  # Maximum number of retry attempts
-        "relevance_threshold": 0.7,  # Minimum relevance score required
+        "max_retries": 5,  # Maximum number of retry attempts
         "search_results": "",  # Will be populated by search_node if USE_SEARCH is True
         "use_search": USE_SEARCH
     }
@@ -439,7 +495,7 @@ if __name__ == "__main__":
     output_file = f"gene_regulation_result{search_suffix}.json"
     if result["structured_outcome"]:
         result_data = result["structured_outcome"].model_dump()
-        result_data["relevance_score"] = result.get("relevance_score", -1.0)
+        result_data["is_relevant"] = result.get("is_relevant", False)
         result_data["used_search"] = USE_SEARCH
 
         with open(output_file, 'w') as f:
@@ -451,7 +507,7 @@ if __name__ == "__main__":
         print(f"Question: {result['original_question']}")
         print(f"Answer: {result['structured_outcome'].answer}")
         print(f"Answer probability: {result['structured_outcome'].probability:.3f}")
-        print(f"Relevance score: {result.get('relevance_score', -1.0):.3f}")
+        print(f"Reasoning relevant: {result.get('is_relevant', False)}")
         print(f"Total attempts: {result['retry_count']}")
         print(f"Used web search: {USE_SEARCH}")
         print(f"{'='*60}\n")
