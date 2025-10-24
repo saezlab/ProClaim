@@ -49,29 +49,22 @@ def query_llm(
         "temperature": kwargs.get("temperature", 0.1),
         "n_predict": kwargs.get("max_tokens", -1),
         "stream": False,
-        "n_probs": kwargs.get("n_probs", 5),
+        "n_probs": kwargs.get("n_probs", 0),
         "post_sampling_probs": True,
     }
 
     # Handle logit_bias separately to ensure proper formatting
-    if "logit_bias" in kwargs:
-        payload["logit_bias"] = kwargs["logit_bias"]
+    # if "logit_bias" in kwargs:
+    #     payload["logit_bias"] = kwargs["logit_bias"]
 
     for key, value in kwargs.items():
-        if key not in ["temperature", "max_tokens", "n_probs", "logit_bias"]:
+        if key not in ["temperature", "max_tokens", "n_probs"]:
             payload[key] = value
 
     try:
         response = requests.post(url, json=payload, timeout=300)
         response.raise_for_status()
         result = response.json()
-
-        # Debug logging
-        print(f"[DEBUG] API Response keys: {result.keys()}")
-        print(f"[DEBUG] Content length: {len(result.get('content', ''))}")
-        print(f"[DEBUG] Content preview: {result.get('content', '')[:200]}")
-        print(f"[DEBUG] Has completion_probabilities: {'completion_probabilities' in result}")
-
         return result
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"API request failed: {e}")
@@ -83,59 +76,37 @@ def ask_gene_regulation_question(
     relationship: str = "activate",
     search_context: str = "",
     api_url: str = "http://localhost:8080",
-    n_probs: int = 5,
-    logit_bias: dict = None
+    n_probs: int = 5
 ) -> StructuredOutcome:
     
+    base_system = """<|start|>system<|message|>You are a molecular biologist expert in biological interactions.
+Reasoning: low
+# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|>
+<|start|>developer<|message|># Instructions
+Focus on evidence from 2018 onwards. CRITICAL: You MUST end your response with EXACTLY this format: "ANSWER: [Yes]" or "ANSWER: [No]" Provide concise, direct answers without extensive reasoning.<|end|>"""
+
+    examples = """<|start|>user<|message|>Does p53 activate BAX?<|end|>
+<|start|>assistant<|channel|>final<|message|>p53 is a transcription factor that directly activates BAX expression in response to DNA damage. Multiple studies from 2018-2023 confirm this direct regulatory relationship.
+ANSWER: [Yes]<|end|>
+<|start|>user<|message|>Does insulin inhibit glucagon?<|end|>
+<|start|>assistant<|channel|>final<|message|>While insulin and glucagon have opposing effects on glucose metabolism, insulin does not directly inhibit glucagon secretion. The relationship involves complex paracrine signaling in pancreatic islets.
+ANSWER: [No]<|end|>
+<|start|>user<|message|>Does TNF-alpha induce apoptosis?<|end|>
+<|start|>assistant<|channel|>final<|message|>TNF-alpha binds to death receptors (TNFR1) and activates caspase-8, initiating the extrinsic apoptotic pathway. Recent studies (2019-2024) demonstrate this occurs in multiple cell types under inflammatory conditions.
+ANSWER: [Yes]<|end|>
+<|start|>user<|message|>Does AMPK activate mTOR?<|end|>
+<|start|>assistant<|channel|>final<|message|>AMPK actually inhibits mTOR through phosphorylation of TSC2 and Raptor, acting as an energy sensor that suppresses anabolic processes. Multiple studies from 2018-2024 confirm AMPK and mTOR have an antagonistic relationship.
+ANSWER: [No]<|end|>"""
+
     if search_context:
-        prompt = f"""<|start|>developer<|message|># Instructions
-    You are a molecular biologist expert in biological interactions.
-    Reasoning: low
-
-    CRITICAL: You MUST end your response with EXACTLY this format:
-    "ANSWER: [Yes]" or "ANSWER: [No]"
-
-    Focus on evidence from 2018 onwards.<|end|>
-    <|start|>user<|message|>Does p53 activate BAX?<|end|>
-    <|start|>assistant<|message|>p53 is a transcription factor that directly activates BAX expression in response to DNA damage. Multiple studies from 2018-2023 confirm this direct regulatory relationship.
-    ANSWER: [Yes]<|end|>
-    <|start|>user<|message|>Does insulin inhibit glucagon?<|end|>
-    <|start|>assistant<|message|>While insulin and glucagon have opposing effects on glucose metabolism, insulin does not directly inhibit glucagon secretion. The relationship involves complex paracrine signaling in pancreatic islets.
-    ANSWER: [No]<|end|>
-    <|start|>user<|message|>Does TNF-alpha induce apoptosis?<|end|>
-    <|start|>assistant<|message|>TNF-alpha binds to death receptors (TNFR1) and activates caspase-8, initiating the extrinsic apoptotic pathway. Recent studies (2019-2024) demonstrate this occurs in multiple cell types under inflammatory conditions.
-    ANSWER: [Yes]<|end|>
-    <|start|>user<|message|>Does AMPK activate mTOR?<|end|>
-    <|start|>assistant<|message|>AMPK actually inhibits mTOR through phosphorylation of TSC2 and Raptor, acting as an energy sensor that suppresses anabolic processes. Multiple studies from 2018-2024 confirm AMPK and mTOR have an antagonistic relationship.
-    ANSWER: [No]<|end|>
-    <|start|>user<|message|>Here is the scientific context for the next question:
-    {search_context}
-
-    Based on this context, does {source_gene} {relationship} {target_gene}?<|end|>
-    <|start|>assistant<|message|>"""
+        query = f"""<|start|>user<|message|>Here is the scientific context for the next question: {search_context}
+Based on this context, does {source_gene} {relationship} {target_gene}?<|end|>
+<|start|>assistant<|channel|>final<|message|>"""
     else:
-        prompt = f"""<|start|>developer<|message|># Instructions
-    You are a molecular biologist expert in biological interactions.
-    Reasoning: low
+        query = f"""<|start|>user<|message|>Does {source_gene} {relationship} {target_gene}?<|end|>
+<|start|>assistant<|channel|>final<|message|>"""
 
-    CRITICAL: You MUST end your response with EXACTLY this format:
-    "ANSWER: [Yes]" or "ANSWER: [No]"
-
-    Focus on evidence from 2018 onwards.<|end|>
-    <|start|>user<|message|>Does p53 activate BAX?<|end|>
-    <|start|>assistant<|message|>p53 is a transcription factor that directly activates BAX expression in response to DNA damage. Multiple studies from 2018-2023 confirm this direct regulatory relationship.
-    ANSWER: [Yes]<|end|>
-    <|start|>user<|message|>Does insulin inhibit glucagon?<|end|>
-    <|start|>assistant<|message|>While insulin and glucagon have opposing effects on glucose metabolism, insulin does not directly inhibit glucagon secretion. The relationship involves complex paracrine signaling in pancreatic islets.
-    ANSWER: [No]<|end|>
-    <|start|>user<|message|>Does TNF-alpha induce apoptosis?<|end|>
-    <|start|>assistant<|message|>TNF-alpha binds to death receptors (TNFR1) and activates caspase-8, initiating the extrinsic apoptotic pathway. Recent studies (2019-2024) demonstrate this occurs in multiple cell types under inflammatory conditions.
-    ANSWER: [Yes]<|end|>
-    <|start|>user<|message|>Does AMPK activate mTOR?<|end|>
-    <|start|>assistant<|message|>AMPK actually inhibits mTOR through phosphorylation of TSC2 and Raptor, acting as an energy sensor that suppresses anabolic processes. Multiple studies from 2018-2024 confirm AMPK and mTOR have an antagonistic relationship.
-    ANSWER: [No]<|end|>
-    <|start|>user<|message|>Does {source_gene} {relationship} {target_gene}?<|end|>
-    <|start|>assistant<|message|>"""
+    prompt = base_system + examples + query
 
     # Prepare kwargs for query_llm
     query_kwargs = {
@@ -147,8 +118,8 @@ def ask_gene_regulation_question(
     }
 
     # Add logit_bias if provided
-    if logit_bias is not None:
-        query_kwargs["logit_bias"] = logit_bias
+    # if logit_bias is not None:
+    #     query_kwargs["logit_bias"] = logit_bias
 
     response = query_llm(
         prompt=prompt,
@@ -158,12 +129,6 @@ def ask_gene_regulation_question(
 
     full_content = response.get("content", "").strip()
     completion_probs = response.get("completion_probabilities", [])
-
-    # Validation and debug logging
-    if len(full_content) < 20:
-        print(f"[WARNING] Suspiciously short response: {repr(full_content)}")
-    if not completion_probs:
-        print(f"[WARNING] No completion probabilities in response")
 
     # Find the answer line and corresponding token
     lines = full_content.split('\n')
@@ -298,7 +263,7 @@ def search_node(state: GraphState) -> GraphState:
     relationship = state["messages"][0].split("|")[2]
     query = f"Does {source_gene} {relationship} {target_gene}?"
 
-    search_tool = TavilySearchResults(max_results=2, search_depth="basic", start_date="2018-01-01")
+    search_tool = TavilySearchResults(max_results=2, search_depth="advanced", start_date="2018-01-01")
     results = search_tool.invoke({"query": query})
 
     # Combine search results
@@ -315,12 +280,42 @@ def search_node(state: GraphState) -> GraphState:
         "search_results": search_text
     }
 
+
+def clean_reasoning(reasoning: str) -> str:
+    """Remove prompt formatting artifacts from the reasoning text.
+
+    This function removes special tokens used by the LLM while preserving
+    the original content, spacing, and formatting.
+
+    Args:
+        reasoning: Raw reasoning text containing special tokens
+
+    Returns:
+        Cleaned reasoning text with only special tokens removed
+    """
+    # Remove all special tokens while preserving original content
+    cleaned = reasoning
+
+    # Remove channel-specific markers
+    cleaned = cleaned.replace("<|start|>assistant<|channel|>analysis<|message|>", "")
+    cleaned = cleaned.replace("<|start|>assistant<|channel|>final<|message|>", "")
+    cleaned = cleaned.replace("<|start|>assistant<|channel|>commentary<|message|>", "")
+
+    # Remove generic special tokens
+    cleaned = cleaned.replace("<|start|>", "")
+    cleaned = cleaned.replace("<|end|>", "")
+    cleaned = cleaned.replace("<|message|>", "")
+    cleaned = cleaned.replace("<|channel|>", "")
+
+    return cleaned.strip()
+
 def reflect_node(state: GraphState) -> GraphState:
     """Node that reflects on the LLM response quality and reasoning relevance."""
     if state["structured_outcome"] is None:
         return {"is_relevant": False}
 
     reasoning = state["structured_outcome"].reasoning
+    cleand_reasoning = clean_reasoning(reasoning)
     original_question = state["original_question"]
 
     # JSON grammar to ensure structured output
@@ -332,22 +327,14 @@ ws ::= [ \t\n]*
 '''
 
     # Evaluate relevance with clear instructions
-    relevance_prompt = f"""<|start|>system<|message|>You are evaluating reasoning relevance.
-You must respond with ONLY a JSON object with a "relevant" field.<|end|>
-<|start|>user<|message|>Original Question: {original_question}
-
-Reasoning provided: {reasoning}
-
-Is the reasoning relevant and focused on answering the original question?
-
-Respond with JSON only, example format: {{"relevant": true}} or {{"relevant": false}}<|end|>
-<|start|>assistant<|message|>"""
+    relevance_prompt = f"""You are evaluating reasoning relevance. You must respond with ONLY a JSON object with a "relevant" field.
+Original Question: "{original_question}" Reasoning provided: "{cleand_reasoning}" Is the reasoning relevant and focused on answering the original question? Respond with JSON only, example format: {{"relevant": true}} or {{"relevant": false}}"""
 
     try:
         response = query_llm(
             prompt=relevance_prompt,
-            temperature=0.7,
-            max_tokens=30,
+            temperature=0.1,
+            max_tokens=10,
             grammar=json_grammar
         )
 
@@ -479,7 +466,7 @@ if __name__ == "__main__":
         "response": "",
         "structured_outcome": None,
         "retry_count": 0,
-        "probability_threshold": 0.9,
+        "probability_threshold": 0.6,
         "is_relevant": False,  # Initialize to False
         "original_question": f"Does {source_gene} {relationship} {target_gene}?",
         "max_retries": 5,  # Maximum number of retry attempts
