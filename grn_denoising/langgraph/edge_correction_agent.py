@@ -7,8 +7,36 @@ import math
 import json
 from langchain_community.tools.tavily_search import TavilySearchResults
 from dotenv import load_dotenv
+import pandas as pd
+from pathlib import Path
 
 load_dotenv()
+
+
+def load_removed_edges(csv_path: str = "../all_removed_edges_with_sources.csv") -> pd.DataFrame:
+    """Load the removed edges from CSV file.
+
+    Args:
+        csv_path: Path to the all_removed_edges_with_sources.csv file
+
+    Returns:
+        DataFrame with columns including ENTITYA (source_gene), ENTITYB (target_gene), EFFECT (relationship)
+    """
+    csv_file = Path(__file__).parent / csv_path
+    df = pd.read_csv(csv_file)
+
+    # Filter to keep only protein-protein interactions
+    df_ppi = df[(df['TYPEA'] == 'protein') & (df['TYPEB'] == 'protein')].copy()
+
+    # Rename columns for clarity
+    df_ppi.rename(columns={
+        'ENTITYA': 'source_gene',
+        'ENTITYB': 'target_gene',
+        'EFFECT': 'relationship'
+    }, inplace=True)
+
+    return df_ppi
+
 
 class Alternative(BaseModel):
     token: str = Field(description="The alternative token")
@@ -70,6 +98,26 @@ def query_llm(
         raise RuntimeError(f"API request failed: {e}")
 
 
+def get_interaction_prompt(source: str, target: str, interaction: str) -> str:
+    """Convert interaction type to natural language prompt."""
+    if interaction == 'down-regulates':
+        return f"{source} down-regulate {target}"
+    elif interaction == 'down-regulates activity':
+        return f"{source} inhibit the activity of {target}"
+    elif interaction == 'form complex':
+        return f"{source} form a complex with {target}"
+    elif interaction == 'up-regulates':
+        return f"{source} up-regulate {target}"
+    elif interaction == 'up-regulates activity':
+        return f"{source} activate {target}"
+    elif interaction == 'up-regulates quantity':
+        return f"{source} increase {target} expression"
+    elif interaction == 'up-regulates quantity by expression':
+        return f"{source} increase {target} expression"
+    else:  # handles 'unknown' and any other unexpected interactions
+        return f"{source} interact with {target}"
+
+
 def ask_gene_regulation_question(
     source_gene: str,
     target_gene: str,
@@ -85,25 +133,28 @@ Reasoning: low
 <|start|>developer<|message|># Instructions
 Focus on evidence from 2018 onwards. CRITICAL: You MUST end your response with EXACTLY this format: "ANSWER: [Yes]" or "ANSWER: [No]" Provide concise, direct answers without extensive reasoning.<|end|>"""
 
-    examples = """<|start|>user<|message|>Does p53 activate BAX?<|end|>
+    examples = """<|start|>user<|message|>Does p53 up-regulate BAX?<|end|>
 <|start|>assistant<|channel|>final<|message|>p53 is a transcription factor that directly activates BAX expression in response to DNA damage. Multiple studies from 2018-2023 confirm this direct regulatory relationship.
 ANSWER: [Yes]<|end|>
-<|start|>user<|message|>Does insulin inhibit glucagon?<|end|>
+<|start|>user<|message|>Does insulin inhibit the activity of glucagon?<|end|>
 <|start|>assistant<|channel|>final<|message|>While insulin and glucagon have opposing effects on glucose metabolism, insulin does not directly inhibit glucagon secretion. The relationship involves complex paracrine signaling in pancreatic islets.
 ANSWER: [No]<|end|>
-<|start|>user<|message|>Does TNF-alpha induce apoptosis?<|end|>
+<|start|>user<|message|>Does TNF-alpha up-regulate apoptosis?<|end|>
 <|start|>assistant<|channel|>final<|message|>TNF-alpha binds to death receptors (TNFR1) and activates caspase-8, initiating the extrinsic apoptotic pathway. Recent studies (2019-2024) demonstrate this occurs in multiple cell types under inflammatory conditions.
 ANSWER: [Yes]<|end|>
 <|start|>user<|message|>Does AMPK activate mTOR?<|end|>
 <|start|>assistant<|channel|>final<|message|>AMPK actually inhibits mTOR through phosphorylation of TSC2 and Raptor, acting as an energy sensor that suppresses anabolic processes. Multiple studies from 2018-2024 confirm AMPK and mTOR have an antagonistic relationship.
 ANSWER: [No]<|end|>"""
 
+    # Get natural language prompt based on relationship type
+    interaction_prompt = get_interaction_prompt(source_gene, target_gene, relationship)
+
     if search_context:
         query = f"""<|start|>user<|message|>Here is the scientific context for the next question: {search_context}
-Based on this context, does {source_gene} {relationship} {target_gene}?<|end|>
+Based on this context, does {interaction_prompt}?<|end|>
 <|start|>assistant<|channel|>final<|message|>"""
     else:
-        query = f"""<|start|>user<|message|>Does {source_gene} {relationship} {target_gene}?<|end|>
+        query = f"""<|start|>user<|message|>Does {interaction_prompt}?<|end|>
 <|start|>assistant<|channel|>final<|message|>"""
 
     prompt = base_system + examples + query
@@ -261,7 +312,10 @@ def search_node(state: GraphState) -> GraphState:
     source_gene = state["messages"][0].split("|")[0]
     target_gene = state["messages"][0].split("|")[1]
     relationship = state["messages"][0].split("|")[2]
-    query = f"Does {source_gene} {relationship} {target_gene}?"
+
+    # Use natural language prompt for search query
+    interaction_prompt = get_interaction_prompt(source_gene, target_gene, relationship)
+    query = f"Does {interaction_prompt}?"
 
     search_tool = TavilySearchResults(max_results=2, search_depth="advanced", start_date="2018-01-01")
     results = search_tool.invoke({"query": query})
@@ -356,10 +410,14 @@ Original Question: "{original_question}" Reasoning provided: "{cleand_reasoning}
         is_relevant = False
         print(f"Error in relevance evaluation: {e}, setting to False")
 
+    # Create results directory if it doesn't exist
+    results_dir = Path("./results/negative_edges")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
     # Save this attempt to a separate JSON file
     attempt_number = state["retry_count"]
     search_suffix = "_with_search" if state.get("use_search", False) else "_no_search"
-    output_file = f"gene_regulation_attempt_{attempt_number}{search_suffix}.json"
+    output_file = results_dir / f"gene_regulation_attempt_{attempt_number}{search_suffix}.json"
 
     attempt_data = {
         "attempt_number": attempt_number,
@@ -452,52 +510,79 @@ if __name__ == "__main__":
     # Configuration
     USE_SEARCH = False  # Set to True to use web search, False to skip search
 
+    # Load removed edges from CSV
+    removed_edges_df = load_removed_edges()
+    print(f"Loaded {len(removed_edges_df)} removed protein-protein edges")
+    print(f"\nFirst few edges:")
+    print(removed_edges_df[['source_gene', 'target_gene', 'relationship']].head())
+
     # Build the graph
     app = build_graph(use_search=USE_SEARCH)
 
-    # Example: Does HCK activate BCR?
-    # Format: "source_gene|target_gene|relationship"
-    source_gene = "HCK"
-    target_gene = "BCR"
-    relationship = "activate"
+    # Create results directory if it doesn't exist
+    results_dir = Path("./results/negative_edges")
+    results_dir.mkdir(parents=True, exist_ok=True)
 
-    initial_state = {
-        "messages": [f"{source_gene}|{target_gene}|{relationship}"],
-        "response": "",
-        "structured_outcome": None,
-        "retry_count": 0,
-        "probability_threshold": 0.6,
-        "is_relevant": False,  # Initialize to False
-        "original_question": f"Does {source_gene} {relationship} {target_gene}?",
-        "max_retries": 5,  # Maximum number of retry attempts
-        "search_results": "",  # Will be populated by search_node if USE_SEARCH is True
-        "use_search": USE_SEARCH
-    }
-
-    # Run the graph
-    result = app.invoke(initial_state)
-
-    # Save result to JSON file
-    search_suffix = "_with_search" if USE_SEARCH else "_no_search"
-    output_file = f"gene_regulation_result{search_suffix}.json"
-    if result["structured_outcome"]:
-        result_data = result["structured_outcome"].model_dump()
-        result_data["is_relevant"] = result.get("is_relevant", False)
-        result_data["used_search"] = USE_SEARCH
-
-        with open(output_file, 'w') as f:
-            json.dump(result_data, f, indent=2)
+    # Loop through all removed edges
+    removed_edges_df = removed_edges_df[0:2]  # For testing, limit to first 5 edges
+    for idx, edge in removed_edges_df.iterrows():
+        source_gene = edge['source_gene']
+        target_gene = edge['target_gene']
+        relationship = edge['relationship']
 
         print(f"\n{'='*60}")
-        print(f"Final Results:")
+        print(f"Processing edge {idx + 1}/{len(removed_edges_df)}")
+        print(f"Edge: {source_gene} -> {target_gene} ({relationship})")
         print(f"{'='*60}")
-        print(f"Question: {result['original_question']}")
-        print(f"Answer: {result['structured_outcome'].answer}")
-        print(f"Answer probability: {result['structured_outcome'].probability:.3f}")
-        print(f"Reasoning relevant: {result.get('is_relevant', False)}")
-        print(f"Total attempts: {result['retry_count']}")
-        print(f"Used web search: {USE_SEARCH}")
-        print(f"{'='*60}\n")
+
+        # Generate natural language question
+        interaction_prompt = get_interaction_prompt(source_gene, target_gene, relationship)
+        original_question = f"Does {interaction_prompt}?"
+
+        initial_state = {
+            "messages": [f"{source_gene}|{target_gene}|{relationship}"],
+            "response": "",
+            "structured_outcome": None,
+            "retry_count": 0,
+            "probability_threshold": 0.6,
+            "is_relevant": False,  # Initialize to False
+            "original_question": original_question,
+            "max_retries": 5,  # Maximum number of retry attempts
+            "search_results": "",  # Will be populated by search_node if USE_SEARCH is True
+            "use_search": USE_SEARCH
+        }
+
+        # Run the graph
+        result = app.invoke(initial_state)
+
+        # Save result to JSON file with edge index in filename
+        search_suffix = "_with_search" if USE_SEARCH else "_no_search"
+        output_file = results_dir / f"gene_regulation_result_{idx}_{source_gene}_{target_gene}{search_suffix}.json"
+
+        if result["structured_outcome"]:
+            result_data = result["structured_outcome"].model_dump()
+            result_data["is_relevant"] = result.get("is_relevant", False)
+            result_data["used_search"] = USE_SEARCH
+            result_data["edge_index"] = int(idx)
+            result_data["source_gene"] = source_gene
+            result_data["target_gene"] = target_gene
+            result_data["relationship"] = relationship
+
+            with open(output_file, 'w') as f:
+                json.dump(result_data, f, indent=2)
+
+            print(f"\nFinal Results for edge {idx + 1}:")
+            print(f"Question: {result['original_question']}")
+            print(f"Answer: {result['structured_outcome'].answer}")
+            print(f"Answer probability: {result['structured_outcome'].probability:.3f}")
+            print(f"Reasoning relevant: {result.get('is_relevant', False)}")
+            print(f"Total attempts: {result['retry_count']}")
+            print(f"Results saved to: {output_file}")
+
+    print(f"\n{'='*60}")
+    print(f"All edges processed! Total: {len(removed_edges_df)}")
+    print(f"Results saved in: {results_dir}")
+    print(f"{'='*60}\n")
 
     # print(app.get_graph().draw_mermaid())
     # app.get_graph().print_ascii()
