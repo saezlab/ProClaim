@@ -9,6 +9,7 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from dotenv import load_dotenv
 import pandas as pd
 from pathlib import Path
+from tqdm import tqdm
 
 load_dotenv()
 
@@ -508,7 +509,8 @@ def build_graph(use_search: bool = False) -> StateGraph:
 
 if __name__ == "__main__":
     # Configuration
-    USE_SEARCH = False  # Set to True to use web search, False to skip search
+    USE_SEARCH = True  # Set to True to use web search, False to skip search
+    NUM_REPETITIONS = 20  # Number of times to repeat the simulation
 
     # Load removed edges from CSV
     removed_edges_df = load_removed_edges()
@@ -519,70 +521,79 @@ if __name__ == "__main__":
     # Build the graph
     app = build_graph(use_search=USE_SEARCH)
 
-    # Create results directory if it doesn't exist
-    results_dir = Path("./results/negative_edges")
-    results_dir.mkdir(parents=True, exist_ok=True)
+    # Repeat the simulation NUM_REPETITIONS times
+    for run_number in range(NUM_REPETITIONS):
+        print(f"\n{'#'*80}")
+        print(f"# STARTING RUN {run_number}/{NUM_REPETITIONS - 1}")
+        print(f"{'#'*80}\n")
 
-    # Loop through all removed edges
-    removed_edges_df = removed_edges_df[0:2]  # For testing, limit to first 5 edges
-    for idx, edge in removed_edges_df.iterrows():
-        source_gene = edge['source_gene']
-        target_gene = edge['target_gene']
-        relationship = edge['relationship']
+        # Create results directory for this run
+        results_dir = Path(f"./results/negative_edges_run_{run_number}")
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        # Loop through all removed edges
+        for idx, edge in removed_edges_df.iterrows():
+            source_gene = edge['source_gene']
+            target_gene = edge['target_gene']
+            relationship = edge['relationship']
+
+            print(f"\n{'='*60}")
+            print(f"Run {run_number} - Edge: {source_gene} -> {target_gene} ({relationship})")
+            print(f"{'='*60}")
+
+            # Generate natural language question
+            interaction_prompt = get_interaction_prompt(source_gene, target_gene, relationship)
+            original_question = f"Does {interaction_prompt}?"
+
+            initial_state = {
+                "messages": [f"{source_gene}|{target_gene}|{relationship}"],
+                "response": "",
+                "structured_outcome": None,
+                "retry_count": 0,
+                "probability_threshold": 0.6,
+                "is_relevant": False,  # Initialize to False
+                "original_question": original_question,
+                "max_retries": 5,  # Maximum number of retry attempts
+                "search_results": "",  # Will be populated by search_node if USE_SEARCH is True
+                "use_search": USE_SEARCH
+            }
+
+            # Run the graph
+            result = app.invoke(initial_state)
+
+            # Save result to JSON file with edge index in filename
+            search_suffix = "_with_search" if USE_SEARCH else "_no_search"
+            output_file = results_dir / f"gene_regulation_result_{source_gene}_{target_gene}{search_suffix}.json"
+
+            if result["structured_outcome"]:
+                result_data = result["structured_outcome"].model_dump()
+                result_data["is_relevant"] = result.get("is_relevant", False)
+                result_data["used_search"] = USE_SEARCH
+                result_data["edge_index"] = int(idx)
+                result_data["source_gene"] = source_gene
+                result_data["target_gene"] = target_gene
+                result_data["relationship"] = relationship
+                result_data["run_number"] = run_number
+
+                with open(output_file, 'w') as f:
+                    json.dump(result_data, f, indent=2)
+
+                print(f"\nFinal Results for edge {idx + 1}:")
+                print(f"Question: {result['original_question']}")
+                print(f"Answer: {result['structured_outcome'].answer}")
+                print(f"Answer probability: {result['structured_outcome'].probability:.3f}")
+                print(f"Reasoning relevant: {result.get('is_relevant', False)}")
+                print(f"Total attempts: {result['retry_count']}")
+                print(f"Results saved to: {output_file}")
 
         print(f"\n{'='*60}")
-        print(f"Processing edge {idx + 1}/{len(removed_edges_df)}")
-        print(f"Edge: {source_gene} -> {target_gene} ({relationship})")
-        print(f"{'='*60}")
+        print(f"Run {run_number} completed! Total edges processed: {len(removed_edges_df)}")
+        print(f"Results saved in: {results_dir}")
+        print(f"{'='*60}\n")
 
-        # Generate natural language question
-        interaction_prompt = get_interaction_prompt(source_gene, target_gene, relationship)
-        original_question = f"Does {interaction_prompt}?"
-
-        initial_state = {
-            "messages": [f"{source_gene}|{target_gene}|{relationship}"],
-            "response": "",
-            "structured_outcome": None,
-            "retry_count": 0,
-            "probability_threshold": 0.6,
-            "is_relevant": False,  # Initialize to False
-            "original_question": original_question,
-            "max_retries": 5,  # Maximum number of retry attempts
-            "search_results": "",  # Will be populated by search_node if USE_SEARCH is True
-            "use_search": USE_SEARCH
-        }
-
-        # Run the graph
-        result = app.invoke(initial_state)
-
-        # Save result to JSON file with edge index in filename
-        search_suffix = "_with_search" if USE_SEARCH else "_no_search"
-        output_file = results_dir / f"gene_regulation_result_{idx}_{source_gene}_{target_gene}{search_suffix}.json"
-
-        if result["structured_outcome"]:
-            result_data = result["structured_outcome"].model_dump()
-            result_data["is_relevant"] = result.get("is_relevant", False)
-            result_data["used_search"] = USE_SEARCH
-            result_data["edge_index"] = int(idx)
-            result_data["source_gene"] = source_gene
-            result_data["target_gene"] = target_gene
-            result_data["relationship"] = relationship
-
-            with open(output_file, 'w') as f:
-                json.dump(result_data, f, indent=2)
-
-            print(f"\nFinal Results for edge {idx + 1}:")
-            print(f"Question: {result['original_question']}")
-            print(f"Answer: {result['structured_outcome'].answer}")
-            print(f"Answer probability: {result['structured_outcome'].probability:.3f}")
-            print(f"Reasoning relevant: {result.get('is_relevant', False)}")
-            print(f"Total attempts: {result['retry_count']}")
-            print(f"Results saved to: {output_file}")
-
-    print(f"\n{'='*60}")
-    print(f"All edges processed! Total: {len(removed_edges_df)}")
-    print(f"Results saved in: {results_dir}")
-    print(f"{'='*60}\n")
+    print(f"\n{'#'*80}")
+    print(f"# ALL {NUM_REPETITIONS} RUNS COMPLETED!")
+    print(f"{'#'*80}\n")
 
     # print(app.get_graph().draw_mermaid())
     # app.get_graph().print_ascii()
