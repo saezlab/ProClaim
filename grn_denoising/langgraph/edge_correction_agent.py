@@ -41,7 +41,6 @@ def load_removed_edges(csv_path: str = "../all_removed_edges_with_sources.csv") 
 
 class Alternative(BaseModel):
     token: str = Field(description="The alternative token")
-    probability: float = Field(default=0.0, description="Probability of the token")
     logprob: float = Field(default=0.0)
 
 
@@ -50,6 +49,7 @@ class StructuredOutcome(BaseModel):
     answer_text: str = Field(description="Raw text answer from LLM")
     answer: bool = Field(description="True/False answer")
     probability: float = Field(description="Probability of the answer")
+    logprob: float = Field(default=-float('inf'), description="Log probability of the answer")
     alternatives: list[Alternative] = Field(default_factory=list, description="Alternative answers")
 
 
@@ -75,11 +75,11 @@ def query_llm(
 
     payload = {
         "prompt": prompt,
-        "temperature": kwargs.get("temperature", 0.1),
+        "temperature": kwargs.get("temperature", 1),
         "n_predict": kwargs.get("max_tokens", -1),
         "stream": False,
         "n_probs": kwargs.get("n_probs", 0),
-        "post_sampling_probs": True,
+        "post_sampling_probs": False,
     }
 
     # Handle logit_bias separately to ensure proper formatting
@@ -132,7 +132,7 @@ def ask_gene_regulation_question(
 Reasoning: low
 # Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|>
 <|start|>developer<|message|># Instructions
-Focus on evidence from 2018 onwards. CRITICAL: You MUST end your response with EXACTLY this format: "ANSWER: [Yes]" or "ANSWER: [No]" Provide concise, direct answers without extensive reasoning.<|end|>"""
+Focus on evidence from 2018 onwards. CRITICAL: You MUST end your response with EXACTLY this format: "ANSWER: [Yes]" or "ANSWER: [No]". You need to think about both side of the Yes/No possibilities.<|end|>"""
 
     examples = """<|start|>user<|message|>Does p53 up-regulate BAX?<|end|>
 <|start|>assistant<|channel|>final<|message|>p53 is a transcription factor that directly activates BAX expression in response to DNA damage. Multiple studies from 2018-2023 confirm this direct regulatory relationship.
@@ -162,7 +162,7 @@ Based on this context, does {interaction_prompt}?<|end|>
 
     # Prepare kwargs for query_llm
     query_kwargs = {
-        "temperature": 0.1,
+        "temperature": 1.0,
         "max_tokens": -1,
         "n_probs": n_probs,
         "repeat_penalty": 1.0,
@@ -178,6 +178,10 @@ Based on this context, does {interaction_prompt}?<|end|>
         api_url=api_url,
         **query_kwargs
     )
+
+    # Save the raw response for debugging
+    with open(f"llm_response_{source_gene}_{target_gene}.json", 'w') as f:
+        json.dump(response, f, indent=2)
 
     full_content = response.get("content", "").strip()
     completion_probs = response.get("completion_probabilities", [])
@@ -211,13 +215,14 @@ Based on this context, does {interaction_prompt}?<|end|>
     # Find the yes/no token in the answer line by reconstructing position in full text
     answer_value = False
     probability = -1.0
+    answer_logprob = -float('inf')
     alternatives = []
 
     if completion_probs and answer_line_index >= 0:
         # Calculate character position where answer line starts and ends
         char_pos_before_answer = sum(len(lines[i]) + 1 for i in range(answer_line_index))  # +1 for \n
         char_pos_after_answer = char_pos_before_answer + len(lines[answer_line_index])
-        print(f"Answer line: ", full_content[char_pos_before_answer:char_pos_after_answer])
+        # print(f"Answer line: ", full_content[char_pos_before_answer:char_pos_after_answer])
         # Find token that corresponds to yes/no in the answer line (search backwards)
         answer_token_index = -1
 
@@ -244,22 +249,24 @@ Based on this context, does {interaction_prompt}?<|end|>
         # If we found the token, extract probabilities
         if answer_token_index >= 0:
             answer_token = completion_probs[answer_token_index]
-            top_probs_list = answer_token.get("top_probs", [])
+            top_probs_list = answer_token.get("top_logprobs", [])
 
             for alt_data in top_probs_list:
                 if isinstance(alt_data, dict):
                     token = alt_data.get("token", "")
-                    prob = alt_data.get("prob", 0.0)
-                    logprob = math.log(prob) if prob > 0 else -float('inf')
+                    logprob = alt_data.get("logprob", -float('inf'))
+                    # Convert logprob to probability using exp
+                    prob = math.exp(logprob) if logprob != -float('inf') else -1.0
 
                     alternatives.append(Alternative(
                         token=token.strip(),
-                        probability=prob,
                         logprob=logprob
                     ))
 
             generated = answer_token.get("token", "")
-            probability = answer_token.get("prob", 0.0)
+            # Get logprob and convert to probability using exp
+            answer_logprob = answer_token.get("logprob", -float('inf'))
+            probability = math.exp(answer_logprob) if answer_logprob != -float('inf') else -1.0
 
             if "yes" in generated.lower():
                 answer_value = True
@@ -276,6 +283,7 @@ Based on this context, does {interaction_prompt}?<|end|>
         answer_text=answer_text,
         answer=answer_value,
         probability=probability,
+        logprob=answer_logprob,
         alternatives=alternatives
     )
 
@@ -388,7 +396,7 @@ Original Question: "{original_question}" Reasoning provided: "{cleand_reasoning}
     try:
         response = query_llm(
             prompt=relevance_prompt,
-            temperature=0.1,
+            temperature=1,
             max_tokens=10,
             grammar=json_grammar
         )
@@ -431,7 +439,7 @@ Original Question: "{original_question}" Reasoning provided: "{cleand_reasoning}
     with open(output_file, 'w') as f:
         json.dump(attempt_data, f, indent=2)
 
-    print(f"Saved attempt {attempt_number} to {output_file}")
+    # print(f"Saved attempt {attempt_number} to {output_file}")
 
     return {"is_relevant": is_relevant}
 
@@ -509,37 +517,38 @@ def build_graph(use_search: bool = False) -> StateGraph:
 
 if __name__ == "__main__":
     # Configuration
-    USE_SEARCH = True  # Set to True to use web search, False to skip search
-    NUM_REPETITIONS = 20  # Number of times to repeat the simulation
+    USE_SEARCH = False  # Set to True to use web search, False to skip search
+    NUM_REPETITIONS = 15  # Number of times to repeat the simulation
 
     # Load removed edges from CSV
     removed_edges_df = load_removed_edges()
-    print(f"Loaded {len(removed_edges_df)} removed protein-protein edges")
-    print(f"\nFirst few edges:")
-    print(removed_edges_df[['source_gene', 'target_gene', 'relationship']].head())
+    # print(f"Loaded {len(removed_edges_df)} removed protein-protein edges")
+    # print(f"\nFirst few edges:")
+    # print(removed_edges_df[['source_gene', 'target_gene', 'relationship']].head())
 
     # Build the graph
     app = build_graph(use_search=USE_SEARCH)
 
     # Repeat the simulation NUM_REPETITIONS times
-    for run_number in range(NUM_REPETITIONS):
-        print(f"\n{'#'*80}")
-        print(f"# STARTING RUN {run_number}/{NUM_REPETITIONS - 1}")
-        print(f"{'#'*80}\n")
+    for run_number in tqdm(range(NUM_REPETITIONS)):
+        # print(f"\n{'#'*80}")
+        # print(f"# STARTING RUN {run_number}/{NUM_REPETITIONS - 1}")
+        # print(f"{'#'*80}\n")
 
         # Create results directory for this run
         results_dir = Path(f"./results/negative_edges_run_{run_number}")
         results_dir.mkdir(parents=True, exist_ok=True)
 
         # Loop through all removed edges
+        # removed_edges_df = removed_edges_df[0:1]
         for idx, edge in removed_edges_df.iterrows():
             source_gene = edge['source_gene']
             target_gene = edge['target_gene']
             relationship = edge['relationship']
 
-            print(f"\n{'='*60}")
-            print(f"Run {run_number} - Edge: {source_gene} -> {target_gene} ({relationship})")
-            print(f"{'='*60}")
+            # print(f"\n{'='*60}")
+            # print(f"Run {run_number} - Edge: {source_gene} -> {target_gene} ({relationship})")
+            # print(f"{'='*60}")
 
             # Generate natural language question
             interaction_prompt = get_interaction_prompt(source_gene, target_gene, relationship)
@@ -578,22 +587,22 @@ if __name__ == "__main__":
                 with open(output_file, 'w') as f:
                     json.dump(result_data, f, indent=2)
 
-                print(f"\nFinal Results for edge {idx + 1}:")
-                print(f"Question: {result['original_question']}")
-                print(f"Answer: {result['structured_outcome'].answer}")
-                print(f"Answer probability: {result['structured_outcome'].probability:.3f}")
-                print(f"Reasoning relevant: {result.get('is_relevant', False)}")
-                print(f"Total attempts: {result['retry_count']}")
-                print(f"Results saved to: {output_file}")
+    #             print(f"\nFinal Results for edge {idx + 1}:")
+    #             print(f"Question: {result['original_question']}")
+    #             print(f"Answer: {result['structured_outcome'].answer}")
+    #             print(f"Answer probability: {result['structured_outcome'].probability:.3f}")
+    #             print(f"Reasoning relevant: {result.get('is_relevant', False)}")
+    #             print(f"Total attempts: {result['retry_count']}")
+    #             print(f"Results saved to: {output_file}")
 
-        print(f"\n{'='*60}")
-        print(f"Run {run_number} completed! Total edges processed: {len(removed_edges_df)}")
-        print(f"Results saved in: {results_dir}")
-        print(f"{'='*60}\n")
+    #     print(f"\n{'='*60}")
+    #     print(f"Run {run_number} completed! Total edges processed: {len(removed_edges_df)}")
+    #     print(f"Results saved in: {results_dir}")
+    #     print(f"{'='*60}\n")
 
-    print(f"\n{'#'*80}")
-    print(f"# ALL {NUM_REPETITIONS} RUNS COMPLETED!")
-    print(f"{'#'*80}\n")
+    # print(f"\n{'#'*80}")
+    # print(f"# ALL {NUM_REPETITIONS} RUNS COMPLETED!")
+    # print(f"{'#'*80}\n")
 
     # print(app.get_graph().draw_mermaid())
     # app.get_graph().print_ascii()
