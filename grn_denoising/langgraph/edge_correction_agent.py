@@ -128,42 +128,32 @@ def ask_gene_regulation_question(
     n_probs: int = 5
 ) -> StructuredOutcome:
     
-    base_system = """<|start|>system<|message|>You are a molecular biologist expert in biological interactions.
-Reasoning: low
-# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|>
-<|start|>developer<|message|># Instructions
-Focus on evidence from 2018 onwards. CRITICAL: You MUST end your response with EXACTLY this format: "ANSWER: [Yes]" or "ANSWER: [No]". You need to think about both side of the Yes/No possibilities.<|end|>"""
+    base_system = """You are a molecular biologist expert in biological interactions. Focus on evidence from 2018 onwards. Answer with ONLY a SINGLE Yes or No.
 
-    examples = """<|start|>user<|message|>Does p53 up-regulate BAX?<|end|>
-<|start|>assistant<|channel|>final<|message|>p53 is a transcription factor that directly activates BAX expression in response to DNA damage. Multiple studies from 2018-2023 confirm this direct regulatory relationship.
-ANSWER: [Yes]<|end|>
-<|start|>user<|message|>Does insulin inhibit the activity of glucagon?<|end|>
-<|start|>assistant<|channel|>final<|message|>While insulin and glucagon have opposing effects on glucose metabolism, insulin does not directly inhibit glucagon secretion. The relationship involves complex paracrine signaling in pancreatic islets.
-ANSWER: [No]<|end|>
-<|start|>user<|message|>Does TNF-alpha up-regulate apoptosis?<|end|>
-<|start|>assistant<|channel|>final<|message|>TNF-alpha binds to death receptors (TNFR1) and activates caspase-8, initiating the extrinsic apoptotic pathway. Recent studies (2019-2024) demonstrate this occurs in multiple cell types under inflammatory conditions.
-ANSWER: [Yes]<|end|>
-<|start|>user<|message|>Does AMPK activate mTOR?<|end|>
-<|start|>assistant<|channel|>final<|message|>AMPK actually inhibits mTOR through phosphorylation of TSC2 and Raptor, acting as an energy sensor that suppresses anabolic processes. Multiple studies from 2018-2024 confirm AMPK and mTOR have an antagonistic relationship.
-ANSWER: [No]<|end|>"""
+"""
+
+    examples = """Does p53 up-regulate BAX? Yes
+Does insulin inhibit the activity of glucagon? No
+Does TNF-alpha up-regulate apoptosis? Yes
+Does AMPK activate mTOR? No
+"""
 
     # Get natural language prompt based on relationship type
     interaction_prompt = get_interaction_prompt(source_gene, target_gene, relationship)
 
     if search_context:
-        query = f"""<|start|>user<|message|>Here is the scientific context for the next question: {search_context}
-Based on this context, does {interaction_prompt}?<|end|>
-<|start|>assistant<|channel|>final<|message|>"""
+        query = f"""Scientific context: {search_context}
+
+Does {interaction_prompt}?"""
     else:
-        query = f"""<|start|>user<|message|>Does {interaction_prompt}?<|end|>
-<|start|>assistant<|channel|>final<|message|>"""
+        query = f"""Does {interaction_prompt}?"""
 
     prompt = base_system + examples + query
 
     # Prepare kwargs for query_llm
     query_kwargs = {
         "temperature": 1.0,
-        "max_tokens": -1,
+        "max_tokens": 51200,
         "n_probs": n_probs,
         "repeat_penalty": 1.0,
         "repeat_last_n": 64
@@ -190,38 +180,32 @@ Based on this context, does {interaction_prompt}?<|end|>
     lines = full_content.split('\n')
     reasoning = full_content
     answer_text = "No"
-    answer_line_index = -1
 
-    # Look for answer line with keywords (thus, answer, etc.) containing yes/no
-    # Search from the beginning to find the first conclusive answer
-    for i in range(len(lines) - 1, -1, -1):
-        line_lower = lines[i].strip().lower()
-        if (("answer" in line_lower or "thus" in line_lower or "conclusion" in line_lower or "final" in line_lower)
-            and ("yes" in line_lower or "no" in line_lower)):
-            answer_text = lines[i].strip()
-            answer_line_index = i
-            break
-
-    # If no answer line found with keywords, fall back to last line with yes/no
-    if answer_line_index == -1:
-        for i in range(len(lines) - 1, -1, -1):
-            line_lower = lines[i].strip().lower()
-            if "yes" in line_lower or "no" in line_lower:
-                answer_text = lines[i].strip()
-                answer_line_index = i
-
-                break
-
-    # Find the yes/no token in the answer line by reconstructing position in full text
+    # Look for the special marker: <|start|>assistant<|channel|>final<|message|>
+    # The answer (Yes/No) comes after this marker
+    marker = "<|start|>assistant<|channel|>final<|message|>"
+    marker_pos = full_content.find(marker)
+    # Find the yes/no token after the marker
     answer_value = False
     probability = -1.0
     answer_logprob = -float('inf')
     alternatives = []
 
-    if completion_probs and answer_line_index >= 0:
-        # Calculate character position where answer line starts and ends
-        char_pos_before_answer = sum(len(lines[i]) + 1 for i in range(answer_line_index))  # +1 for \n
-        char_pos_after_answer = char_pos_before_answer + len(lines[answer_line_index])
+    if completion_probs and marker_pos >= 0:
+        # Calculate character position where to start looking for yes/no token
+        # Start looking right after the marker
+        char_pos_before_answer = marker_pos + len(marker)
+        # Look for the answer in the next 100 characters (should be enough for "Yes" or "No")
+        char_pos_after_answer = min(char_pos_before_answer + 100, len(full_content))
+
+        # Extract the answer text for debugging
+        answer_text = full_content[char_pos_before_answer:char_pos_after_answer].strip()
+        # Find the first line with yes/no for better display
+        answer_lines = answer_text.split('\n')
+        for line in answer_lines:
+            if 'yes' in line.lower() or 'no' in line.lower():
+                answer_text = line.strip()
+                break
         # print(f"Answer line: ", full_content[char_pos_before_answer:char_pos_after_answer])
         # Find token that corresponds to yes/no in the answer line (search backwards)
         answer_token_index = -1
@@ -234,16 +218,18 @@ Based on this context, does {interaction_prompt}?<|end|>
             token_positions.append((i, current_pos, current_pos + len(token_str)))
             current_pos += len(token_str)
 
-        # Search from the end for yes/no token within answer line region
-        for i in range(len(token_positions) - 1, -1, -1):
-            token_idx, start_pos, _ = token_positions[i]
+        # Search from the marker position forward for the first yes/no token
+        # We look for tokens that appear after the marker position
+        for i in range(len(token_positions)):
+            token_idx, start_pos, end_pos = token_positions[i]
             token_data = completion_probs[token_idx]
             token_str = token_data.get("token", "")
             token_lower = token_str.strip().lower()
 
-            # Check if token is in the answer line region and is yes/no
-            if start_pos >= char_pos_before_answer and start_pos < char_pos_after_answer and token_lower in ["yes", "no"]:
+            # Check if token is after the marker and is yes/no
+            if start_pos >= char_pos_before_answer and token_lower in ["yes", "no"]:
                 answer_token_index = token_idx
+                print(f"[DEBUG] Found answer token '{token_str}' at position {start_pos} (token index {token_idx})")
                 break
 
         # If we found the token, extract probabilities
@@ -268,13 +254,16 @@ Based on this context, does {interaction_prompt}?<|end|>
             answer_logprob = answer_token.get("logprob", -float('inf'))
             probability = math.exp(answer_logprob) if answer_logprob != -float('inf') else -1.0
 
+            # print(f"[DEBUG] Answer token: '{generated}', logprob: {answer_logprob}, probability: {probability}")
+            # print(f"[DEBUG] Top alternatives: {[(alt.token, alt.logprob, math.exp(alt.logprob)) for alt in alternatives[:3]]}")
+
             if "yes" in generated.lower():
                 answer_value = True
             elif "no" in generated.lower():
                 answer_value = False
         else:
-            print(f"[WARNING] Could not find yes/no token in answer line")
-            print(f"[DEBUG] Answer line index: {answer_line_index}")
+            print(f"[WARNING] Could not find yes/no token after marker")
+            print(f"[DEBUG] Marker position: {marker_pos}")
             print(f"[DEBUG] Answer text: {answer_text}")
             print(f"[DEBUG] Total tokens: {len(completion_probs)}")
 
