@@ -153,7 +153,7 @@ Does {interaction_prompt}?"""
     # Prepare kwargs for query_llm
     query_kwargs = {
         "temperature": 1.0,
-        "max_tokens": 51200,
+        "max_tokens": 2048,
         "n_probs": n_probs,
         "repeat_penalty": 1.0,
         "repeat_last_n": 64
@@ -169,9 +169,9 @@ Does {interaction_prompt}?"""
         **query_kwargs
     )
 
-    # Save the raw response for debugging
-    with open(f"llm_response_{source_gene}_{target_gene}.json", 'w') as f:
-        json.dump(response, f, indent=2)
+    # # Save the raw response for debugging
+    # with open(f"llm_response_{source_gene}_{target_gene}.json", 'w') as f:
+    #     json.dump(response, f, indent=2)
 
     full_content = response.get("content", "").strip()
     completion_probs = response.get("completion_probabilities", [])
@@ -507,10 +507,14 @@ def build_graph(use_search: bool = False) -> StateGraph:
 if __name__ == "__main__":
     # Configuration
     USE_SEARCH = False  # Set to True to use web search, False to skip search
-    NUM_REPETITIONS = 15  # Number of times to repeat the simulation
+    NUM_REPETITIONS = 3  # Number of times to repeat the simulation
+    # input_path = "../notebooks/random_true_edges.csv"
+    input_path = "../all_removed_edges_with_sources.csv"
+    # output_path = "./true_edges_results"
+    output_path = "./results"
 
     # Load removed edges from CSV
-    removed_edges_df = load_removed_edges()
+    removed_edges_df = load_removed_edges(csv_path=input_path)
     # print(f"Loaded {len(removed_edges_df)} removed protein-protein edges")
     # print(f"\nFirst few edges:")
     # print(removed_edges_df[['source_gene', 'target_gene', 'relationship']].head())
@@ -525,7 +529,8 @@ if __name__ == "__main__":
         # print(f"{'#'*80}\n")
 
         # Create results directory for this run
-        results_dir = Path(f"./results/negative_edges_run_{run_number}")
+        results_dir = Path(f"{output_path}/negative_edges_run_{run_number}")
+        # results_dir = Path(f"./results/negative_edges_run_{run_number}")
         results_dir.mkdir(parents=True, exist_ok=True)
 
         # Loop through all removed edges
