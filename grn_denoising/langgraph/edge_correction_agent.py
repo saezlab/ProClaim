@@ -153,7 +153,7 @@ Does {interaction_prompt}?"""
     # Prepare kwargs for query_llm
     query_kwargs = {
         "temperature": 1.0,
-        "max_tokens": 2048,
+        "max_tokens": 4096,
         "n_probs": n_probs,
         "repeat_penalty": 1.0,
         "repeat_last_n": 64

@@ -54,16 +54,37 @@ if __name__ == "__main__":
     input_file = Path("./candidate_true_edges.csv")
     output_path = Path("../langgraph/true_edges_results")
 
+    # Load already processed edges from true_edges.csv
+    seen_edges_file = Path("./true_edges_v2.csv")
+    seen_edges = set()
+    if seen_edges_file.exists():
+        seen_edges_df = pd.read_csv(seen_edges_file)
+        for _, row in seen_edges_df.iterrows():
+            # Use source_gene and target_gene instead of TYPEA and TYPEB
+            seen_edges.add((row["source_gene"], row["target_gene"]))
+        print(f"Seen edges: {len(seen_edges)}")
+    else:
+        print("No previous edges found, starting fresh")
+
     # Load data
     df = load_edges(input_file=input_file)
+
+    # Filter out already seen edges
+    df = df[~df.apply(lambda row: (row["source_gene"], row["target_gene"]) in seen_edges, axis=1)]
+    print(f"Remaining candidate edges after filtering: {len(df)}")
 
     # Build graph
     app = build_graph(use_search=False)
     
-    TARGET_TRUE_EDGE_NUM = 50
+    TARGET_TRUE_EDGE_NUM = 60
     TRUE_EDGE_COUNT = 0
     true_edges = []
     while TRUE_EDGE_COUNT < TARGET_TRUE_EDGE_NUM:
+        # Check if there are no more candidate edges available
+        if df.empty:
+            print(f"No more candidate edges available. Stopping with {TRUE_EDGE_COUNT} true edges found.")
+            break
+
         # Select a random row from the dataframe with no duplicates
         random_row = df.sample(n=1)
         # Get the source and target genes
@@ -121,8 +142,9 @@ if __name__ == "__main__":
         if not found_valid_edge:
             df = df.drop(random_row.index)
 
-    # Save true_edges to CSV
+    # Save true_edges to CSV v2
     if true_edges:
         true_edges_df = pd.concat(true_edges, ignore_index=True)
-        output_csv = Path("./true_edges.csv")
+        output_csv = Path("./true_edges_v3.csv")
         true_edges_df.to_csv(output_csv, index=False)
+        print(f"Saved {len(true_edges_df)} new true edges to {output_csv}")
