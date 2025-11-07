@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 import re
 from tqdm import tqdm
+import random
 
 def load_config():
     """Load configuration from file with fallback to defaults"""
@@ -23,7 +24,16 @@ def load_config():
         'max_retries': 3,
         'history_file': 'search_history.json',
         'enable_colors': True,
-        'streaming_delay': 0.02
+        'streaming_delay': 0.02,
+        'request_delay': 2.0,
+        'ncbi_delay': 3.0,
+        'searxng_delay': 3.0,
+        'exclude_ncbi_domains': False,  # Set to True to exclude NCBI/PMC results
+        'ncbi_domains': [
+            'ncbi.nlm.nih.gov',
+            'pubmed.ncbi.nlm.nih.gov',
+            'pmc.ncbi.nlm.nih.gov'
+        ]
     }
     
     try:
@@ -39,16 +49,29 @@ def load_config():
 CONFIG = load_config()
 
 class WebSearchAssistant:
-    def __init__(self, enable_history: bool = True, verbose: bool = False):
+    def __init__(self, enable_history: bool = True, verbose: bool = False, exclude_ncbi: Optional[bool] = None):
         """
         Initialize WebSearchAssistant
         
         Args:
             enable_history: Whether to load/save search history
             verbose: Whether to print status messages
+            exclude_ncbi: Override config setting to exclude NCBI domains (None uses config value)
         """
         self.verbose = verbose
         self.enable_history = enable_history
+        
+        # Allow runtime override of NCBI exclusion
+        if exclude_ncbi is not None:
+            self.exclude_ncbi = exclude_ncbi
+        else:
+            self.exclude_ncbi = CONFIG.get('exclude_ncbi_domains', False)
+        
+        self.ncbi_domains = CONFIG.get('ncbi_domains', [
+            'ncbi.nlm.nih.gov',
+            'pubmed.ncbi.nlm.nih.gov',
+            'pmc.ncbi.nlm.nih.gov'
+        ])
         
         # Load search history if enabled
         if self.enable_history:
@@ -61,9 +84,71 @@ class WebSearchAssistant:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
         })
+
+        # Track last request time for rate limiting
+        self.last_request_time = {}
         
         if self.verbose:
             print(f"WebSearchAssistant initialized - Model: {CONFIG['model']}")
+            if self.exclude_ncbi:
+                print(f"⚠️  NCBI/PMC domains will be excluded from results")
+
+    def _is_ncbi_domain(self, url: str) -> bool:
+        """
+        Check if URL belongs to NCBI/PMC domains
+        
+        Args:
+            url: URL to check
+            
+        Returns:
+            True if URL is from NCBI/PMC domain
+        """
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        
+        return any(ncbi_domain in domain for ncbi_domain in self.ncbi_domains)
+
+    def _filter_ncbi_results(self, results: List[Dict]) -> List[Dict]:
+        """
+        Filter out NCBI/PMC results if configured to do so
+        
+        Args:
+            results: List of search results
+            
+        Returns:
+            Filtered list of results
+        """
+        if not self.exclude_ncbi:
+            return results
+        
+        filtered = [r for r in results if not self._is_ncbi_domain(r.get('url', ''))]
+        
+        if self.verbose and len(filtered) < len(results):
+            excluded_count = len(results) - len(filtered)
+            print(f"🚫 Excluded {excluded_count} NCBI/PMC result(s)")
+        
+        return filtered
+
+    def _rate_limit(self, domain: str, is_ncbi: bool = False):
+        """
+        Ensure sufficient delay between requests to the same domain
+        
+        Args:
+            domain: Domain name to rate limit
+            is_ncbi: Whether this is an NCBI domain (uses longer delay)
+        """
+        delay = CONFIG.get('ncbi_delay', 3.0) if is_ncbi else CONFIG.get('request_delay', 2.0)
+        delay = random.uniform(delay - 1.0, delay + 1.0)  # Add jitter
+        
+        if domain in self.last_request_time:
+            elapsed = time.time() - self.last_request_time[domain]
+            if elapsed < delay:
+                wait_time = delay - elapsed
+                if self.verbose:
+                    print(f"Rate limiting: waiting {wait_time:.1f}s for {domain}")
+                time.sleep(wait_time)
+        
+        self.last_request_time[domain] = time.time()
 
     def model_response(self, model: str, message: str, max_retries: int = None) -> Optional[str]:
         """
@@ -109,28 +194,44 @@ class WebSearchAssistant:
         """Load search history from file"""
         try:
             if os.path.exists(CONFIG['history_file']):
-                with open(CONFIG['history_file'], 'r') as f:
+                with open(CONFIG['history_file'], 'r', encoding='utf-8') as f:
                     return json.load(f)
         except Exception:
             pass
         return []
     
-    def browse_web(self, query: str) -> Optional[List[Dict]]:
+    def browse_web(self, query: str, after_year: Optional[int] = None) -> Optional[List[Dict]]:
         """
         Search the web using multiple SearxNG instances with fallback
-        
-        Args:
-            query: Search query string
-            
-        Returns:
-            List of search results or None if all instances failed
         """
         if self.verbose:
             print(f"Searching web for: {query}")
+            if after_year:
+                print(f"Filtering results after year: {after_year}")
+        
+        # Add year filter to query if specified
+        search_query = query
+        if after_year:
+            search_query = f"{query} after:{after_year}"
         
         for instance in CONFIG['searxng_instances']:
             try:
-                search_url = f"{instance}?q={query}&format=json&categories=general"
+                # SearXNG rate limiting
+                parsed = urlparse(instance)
+                searxng_delay = CONFIG.get('searxng_delay', 3.0)
+                
+                # SearXNG delay
+                if parsed.netloc in self.last_request_time:
+                    elapsed = time.time() - self.last_request_time[parsed.netloc]
+                    if elapsed < searxng_delay:
+                        wait_time = searxng_delay - elapsed
+                        if self.verbose:
+                            print(f"Rate limiting SearXNG: waiting {wait_time:.1f}s")
+                        time.sleep(wait_time)
+                
+                self.last_request_time[parsed.netloc] = time.time()
+                
+                search_url = f"{instance}/search?q={search_query}&format=json&categories=general"
                 
                 response = self.session.get(search_url, timeout=CONFIG['timeout'])
                 response.raise_for_status()
@@ -138,17 +239,20 @@ class WebSearchAssistant:
                 data = response.json()
                 results = data.get('results', [])
                 
+                # Filter NCBI results if configured
+                results = self._filter_ncbi_results(results)
+                
                 if results:
                     limited_results = results[:CONFIG['max_results']]
                     if self.verbose:
                         print(f"Found {len(limited_results)} results from {instance}")
                     return limited_results
-                    
+                        
             except Exception as e:
                 if self.verbose:
                     print(f"Search instance {instance} failed: {str(e)}")
                 continue
-                
+                    
         if self.verbose:
             print("All search instances failed")
         return None
@@ -170,6 +274,14 @@ class WebSearchAssistant:
             # Ensure URL has protocol
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
+
+            # Parse URL to check domain and apply appropriate rate limiting
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc
+            is_ncbi = self._is_ncbi_domain(url)
+
+            # Apply rate limiting before making request
+            self._rate_limit(domain, is_ncbi=is_ncbi)
                 
             base_url = "https://r.jina.ai/"
             response = self.session.get(
@@ -427,11 +539,10 @@ Where True means there is strong scientific evidence supporting the interaction,
                 print(f"Starting search for: {question}")
             
             # Step 1: Search the web using question directly as query
-            search_results = self.browse_web(question)
+            search_results = self.browse_web(question, after_year=2018)
             if not search_results:
                 result['error'] = "No search results found"
                 return result
-            
             # Step 2: Select best result using AI
             selected_result = self.select_best_result(question, search_results)
             if not selected_result:
@@ -484,9 +595,12 @@ Where True means there is strong scientific evidence supporting the interaction,
             return result
 
 
+
 if __name__ == "__main__":
-    # Initialize assistant
-    assistant = WebSearchAssistant(verbose=False, enable_history=False)
+    # Initialize assistant with NCBI exclusion
+
+    assistant = WebSearchAssistant(verbose=True, enable_history=True)
+
 
     # Load signor negative edges csv file
     data_path = Path('../all_removed_edges_with_sources.csv')
@@ -495,9 +609,10 @@ if __name__ == "__main__":
     targets = data['ENTITYB'].tolist()
     interactions = data['EFFECT'].tolist()
 
-    repeat = 50
-    for r in tqdm(range(repeat)):
+    repeat = 31
+    for r in tqdm(range(26, repeat)):
         results = []
+        # for i in range(1):
         for i in range(len(sources)):
             source = sources[i]
             target = targets[i]
