@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
+import os
+import numpy as np
 
 load_dotenv()
 
@@ -45,13 +47,56 @@ def query_llm(
         raise RuntimeError(f"API request failed: {e}")
     
 if __name__ == "__main__":
-    # prompt = """Reasoning: Low. Randomly pick Yes or No. In the new line, return either "ANSWER: [Yes]" or "ANSWER: [No]"."""
-    prompt = "You are a molecular biologist expert in biological interactions. Focus on evidence from 2018 onwards. Answer with ONLY a SINGLE Yes or No.\n\nDoes p53 up-regulate BAX? Yes\nDoes insulin inhibit the activity of glucagon? No\nDoes TNF-alpha up-regulate apoptosis? Yes\nDoes AMPK activate mTOR? No\nDoes FER activate CTTN?"
-    response = query_llm(
-        prompt=prompt,
-        temperature=1.0,
-        max_tokens=8,
-        n_probs=3
-    )
-    with open("tbd_output.json", "w") as f:
-        json.dump(response, f, indent=4)
+    # Loop through all reasoning files in the specified directories
+    base_dir = Path("results")
+    # search_types = ['no_search', 'with_search']
+    search_types = ['with_search']
+    for search_type in search_types:
+        combined_results = {}
+        print(f"Processing search type: {search_type}")
+        for run_dir in tqdm([f"negative_edges_run_{i}" for i in range(13)]):
+            reasoning_dir = base_dir / run_dir
+            for reasoning_file in reasoning_dir.glob(f"*{search_type}*.json"):
+                # print(f"Processing file: {reasoning_file}")
+                with open(reasoning_file, "r") as f:
+                    reasoning_data = json.load(f)
+                
+                # Extract source and target from the file name
+                file_name = reasoning_file.stem  # Get the file name without extension
+                parts = file_name.split("_")
+                source = parts[-4]  # Assuming the source is the fourth last part
+                target = parts[-3]  # Assuming the target is the third last part
+
+                reasoning = reasoning_data["reasoning"]
+                ptompt = "Now I will rate my confidence in the proposed answer as either 0 or 1.  Proposed confidence: ("
+                prompt = reasoning + "\n" + ptompt
+                # Use qwen2.5-14b to rate confidence
+                response = query_llm(
+                    prompt=prompt,
+                    temperature=0.02,
+                    max_tokens=8,
+                    n_probs=3
+                )
+
+                # Extract logprob value of "1" in the first token's top_logprobs
+                completion_probs = response.get("completion_probabilities", [])
+                logprob_of_1 = None
+                if completion_probs and isinstance(completion_probs[0], dict):
+                    top_logprobs = completion_probs[0].get("top_logprobs", [])
+                    if isinstance(top_logprobs, list):
+                        for entry in top_logprobs:
+                            if entry.get("token") == "1":
+                                logprob_of_1 = entry.get("logprob")
+                                break
+
+                # Store the logprob value in the combined dictionary as a list
+                if (source, target) not in combined_results:
+                    combined_results[(source, target)] = []
+                combined_results[(source, target)].append(np.exp(logprob_of_1))
+
+        # Save all results to a single JSON file
+        output_file = base_dir / f"llm_confidence_combined_results_{search_type}.json"
+        # Convert tuple keys to strings for JSON serialization
+        json_serializable_results = {f"{key[0]}_{key[1]}": value for key, value in combined_results.items()}
+        with open(output_file, "w") as f:
+            json.dump(json_serializable_results, f, indent=4)
