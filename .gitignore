@@ -218,6 +218,7 @@ __marimo__/
 grn_denoising/results/llm/
 /results
 grn_denoising/search/results/
+grn_denoising/langgraph/results/
 /grn_denoising/signor
 *.png
 *.json

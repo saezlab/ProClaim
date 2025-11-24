@@ -68,7 +68,8 @@ def ask_gene_regulation_question(
     search_context: str = "",
     llm: ChatOpenAI | None = None,
     save_raw_response: bool = True,
-    raw_response_path: str | None = None
+    raw_response_path: str | None = None,
+    repeat_idx: int | None = None
 ) -> StructuredOutcome:
     """Ask LLM about gene regulation relationship.
 
@@ -80,6 +81,7 @@ def ask_gene_regulation_question(
         llm: ChatOpenAI instance for reasoning
         save_raw_response: Whether to save raw LLM response
         raw_response_path: Path to save raw response (if None, uses current directory)
+        repeat_idx: Optional repeat index for multiple runs of same edge
 
     Returns:
         StructuredOutcome with reasoning and answer
@@ -101,13 +103,28 @@ Does {interaction_prompt}?"""
     response = llm.invoke(prompt)
 
     # Get the full response content
-    full_content = response.content.strip()
+    # GLM-4.6 with reasoning-parser returns content in reasoning_content field
+    full_content = response.content.strip() if response.content else ""
+
+    # Check if there's reasoning_content in additional_kwargs (for GLM-4.6)
+    if not full_content and 'reasoning_content' in response.additional_kwargs:
+        full_content = response.additional_kwargs['reasoning_content'].strip()
+
+    # If still empty, check response_metadata
+    if not full_content and isinstance(response.response_metadata, dict):
+        if 'reasoning_content' in response.response_metadata:
+            full_content = response.response_metadata['reasoning_content'].strip()
 
     # Save the raw response for debugging
     if save_raw_response and raw_response_path:
         raw_path = Path(raw_response_path)
         raw_path.mkdir(parents=True, exist_ok=True)
-        with open(raw_path / f"raw_{source_gene}_{target_gene}.txt", 'w') as f:
+        # Include repeat index in filename if provided
+        if repeat_idx is not None:
+            filename = f"raw_{source_gene}_{target_gene}_repeat{repeat_idx}.txt"
+        else:
+            filename = f"raw_{source_gene}_{target_gene}.txt"
+        with open(raw_path / filename, 'w') as f:
             f.write(str(response))
 
     # Find the answer line and extract reasoning, answer_text, and answer_value
@@ -157,13 +174,14 @@ if __name__ == "__main__":
     from tqdm import tqdm
 
     # Configuration
-    model = "gpt-oss-120b"
+    # model = "gpt-oss-120b"
+    model = "glm-4.6"
     llm = ChatOpenAI(
             base_url="http://localhost:8000/v1",
             api_key="sk-dummy",
             model=model,
             temperature=1,
-            max_tokens=2048,
+            max_tokens=4096,  # Increased for GLM-4.6 reasoning mode
         )
     single_test = False
     num_repeats = 10  # Number of times to repeat each edge
@@ -232,7 +250,8 @@ if __name__ == "__main__":
                         relationship=relationship,
                         llm=llm,
                         save_raw_response=True,
-                        raw_response_path=str(result_path)
+                        raw_response_path=str(result_path),
+                        repeat_idx=repeat_idx
                     )
 
                     # Save structured result with repeat index in filename
