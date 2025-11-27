@@ -215,11 +215,16 @@ __marimo__/
 # Ignore data folder
 # data/
 # Ignore results folder
-grn_denoising/results/llm/
+# Ignore results folder
+results/llm/
 /results
-grn_denoising/search/results/
-grn_denoising/langgraph/results/
-/grn_denoising/signor
+search/results/
+langgraph/results/
+moon_denoising/results/
+/signor
+data/signor/
 *.png
+*.pdf
 *.json
 *.csv
+*.pth
