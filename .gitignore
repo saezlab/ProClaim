@@ -228,3 +228,4 @@ data/signor/
 *.json
 *.csv
 *.pth
+*.txt

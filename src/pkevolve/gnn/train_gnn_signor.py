@@ -9,6 +9,7 @@ from sklearn.metrics import roc_auc_score, roc_curve, precision_recall_curve
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
+import os
 
 # --- Model Definition and Training ---
 class GNNLinkPredictor(torch.nn.Module):
@@ -84,7 +85,19 @@ def main(args):
 
     # === 1. Load Full Graph and Test Data ===
     print("\n--- Loading Graphs ---")
-    full_df = pd.read_csv('../data/signor/Oct2025_release.txt', sep='\t')
+    
+    # Get absolute paths to data files
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, '../../../'))
+    data_dir = os.path.join(project_root, 'data', 'signor')
+    
+    full_graph_path = os.path.join(data_dir, 'Oct2025_release.txt')
+    pos_edges_path = os.path.join(data_dir, 'true_positive_edges.csv')
+    neg_edges_path = os.path.join(data_dir, 'true_negative_edges.csv')
+
+    print(f"Loading data from: {data_dir}")
+
+    full_df = pd.read_csv(full_graph_path, sep='\t')
     full_df = full_df[(full_df['TYPEA'] == 'protein') & (full_df['TYPEB'] == 'protein')].copy()
     full_df = full_df.dropna(subset=['ENTITYA', 'ENTITYB'])
     full_df = full_df[full_df['ENTITYA'] != full_df['ENTITYB']]  # Remove self-loops
@@ -92,8 +105,8 @@ def main(args):
 
     # Load Test Data Early to Filter
     print("Loading True Labels for Test Set (to exclude from training)...")
-    pos_df = pd.read_csv('../data/signor/true_positive_edges.csv')
-    neg_df = pd.read_csv('../data/signor/true_negative_edges.csv')
+    pos_df = pd.read_csv(pos_edges_path)
+    neg_df = pd.read_csv(neg_edges_path)
 
     # Identify test edges to remove
     test_edges_set = set(zip(pos_df['ENTITYA'], pos_df['ENTITYB']))
