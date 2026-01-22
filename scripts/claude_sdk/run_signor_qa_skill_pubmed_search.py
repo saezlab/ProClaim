@@ -3,20 +3,24 @@ Batch test Signor edges using Claude SDK with full capabilities.
 
 Usage:
     # Test single edge per label
-    uv run python batch_test_signor.py --test-single
+    uv run python run_signor_qa_skill_pubmed_search.py --test-single
     
     # Process first 10 edges per label
-    uv run python batch_test_signor.py --max-edges 10
+    uv run python run_signor_qa_skill_pubmed_search.py --max-edges 10
+
+    # Select model (default: glm-4)
+    # Valid Claude models: claude-sonnet-4-20250514, claude-sonnet-4-5-20250929
+    uv run python run_signor_qa_skill_pubmed_search.py --model claude-sonnet-4-20250514
     
     # Process only true_positive edges
-    uv run python batch_test_signor.py --label true_positive
+    uv run python run_signor_qa_skill_pubmed_search.py --label true_positive
     
     # Run specific edge(s) - useful for re-running failed cases
-    uv run python batch_test_signor.py --edge CRTC2_AKT1_up-regulates --label true_negative
-    uv run python batch_test_signor.py --edge GNAS_ADCY1_up-regulatesactivity --label true_positive
+    uv run python run_signor_qa_skill_pubmed_search.py --edge CRTC2_AKT1_up-regulates --label true_negative
+    uv run python run_signor_qa_skill_pubmed_search.py --edge GNAS_ADCY1_up-regulatesactivity --label true_positive
     
     # Run full batch (all edges)
-    uv run python batch_test_signor.py
+    uv run python run_signor_qa_skill_pubmed_search.py
 
 This script:
 1. Reads Signor data from CSV files (true_positive_edges.csv, true_negative_edges.csv)
@@ -238,6 +242,7 @@ async def main():
     parser.add_argument("--max-edges", type=int, help="Maximum edges to test per label")
     parser.add_argument("--label", choices=["true_positive", "true_negative"], help="Test only specific label")
     parser.add_argument("--edge", type=str, help="Run specific edge in format: SOURCE_TARGET_EFFECT (e.g., CRTC2_AKT1_up-regulates)")
+    parser.add_argument("--model", type=str, default="glm-4", help="Model to use (e.g. glm-4, claude-3-5-sonnet-20241022)")
     args = parser.parse_args()
     
     # Validate arguments
@@ -281,21 +286,40 @@ async def main():
                     value = value[1:-1]
                 env_vars[key.strip()] = value
     
-    # Get auth token
-    auth_token = env_vars.get("GLM_API_KEY") or env_vars.get("ANTHROPIC_AUTH_TOKEN")
+    # Determine model and API configuration
+    model_name = args.model
+    is_glm = "glm" in model_name.lower()
     
+    if is_glm:
+        print(f"Using GLM model: {model_name}")
+        auth_token = env_vars.get("GLM_API_KEY")
+        base_url = env_vars.get("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
+    else:
+        print(f"Using Claude model: {model_name}")
+        auth_token = env_vars.get("CLAUDE_API_KEY")
+        base_url = None  # Use default Anthropic URL
+        
     if not auth_token:
-        print("Error: GLM_API_KEY or ANTHROPIC_AUTH_TOKEN not found in .env")
+        key_name = "GLM_API_KEY" if is_glm else "CLAUDE_API_KEY"
+        print(f"Error: {key_name} not found in .env")
         return
-    
+
+    import os
+    # Merge with current environment to preserve PATH and other vars
+    full_env = os.environ.copy()
+
     # Environment configuration
     env_config = {
-        "ANTHROPIC_AUTH_TOKEN": auth_token,
-        "ANTHROPIC_BASE_URL": env_vars.get("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic"),
         "API_TIMEOUT_MS": env_vars.get("API_TIMEOUT_MS", "3000000")
     }
     
-    print(f"Using API endpoint: {env_config['ANTHROPIC_BASE_URL']}")
+    if is_glm:
+        env_config["ANTHROPIC_API_KEY"] = auth_token
+        env_config["ANTHROPIC_BASE_URL"] = base_url
+    else:
+        env_config["ANTHROPIC_API_KEY"] = auth_token
+    
+    print(f"Using API endpoint: {base_url if base_url else 'Default Anthropic API'}")
     
     # Get project root directory (not test directory) for skill loading
     project_root = Path(__file__).resolve().parent.parent.parent
@@ -309,17 +333,47 @@ async def main():
     else:
         print(f"✓ Skills directory found: {claude_skills_dir}")
     
-    # Model configuration
-    model_name = env_vars.get("MODEL_NAME")
-    if model_name:
-        print(f"Using model: {model_name}")
-    else:
-        print("Using default Z.ai model (GLM)")
+    full_env.update(env_config)
     
+    if not is_glm:
+        print(f"Verifying access to model: {model_name}...")
+        try:
+            import urllib.request
+            # json is already imported globally
+            
+            headers = {
+                "x-api-key": auth_token,
+                "anthropic-version": "2023-06-01"
+            }
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/models",
+                headers=headers
+            )
+            try:
+                with urllib.request.urlopen(req) as response:
+                    data = json.loads(response.read().decode())
+                    available_models = [m['id'] for m in data.get('data', [])]
+                    
+                    if model_name not in available_models:
+                        print(f"\n❌ Error: Model '{model_name}' not found in your available Claude models.")
+                        print(f"   Available models (first 5): {', '.join(available_models[:5])}...")
+                        sonnet_models = [m for m in available_models if 'sonnet' in m]
+                        if sonnet_models:
+                            print(f"   Did you mean one of these? {', '.join(sonnet_models)}")
+                        return
+                    print(f"✓ Model '{model_name}' appears valid.")
+            except urllib.error.HTTPError as e:
+                print(f"⚠️  Warning: Could not list models (HTTP {e.code}). Proceeding anyway, but run might fail.")
+            except Exception as e:
+                print(f"⚠️  Warning: Could not list models ({e}). Proceeding anyway.")
+                
+        except ImportError:
+            pass
+
     # Configure options with PubMed plugin and skill support (let Claude use all tools)
     options_kwargs = {
         "cwd": str(current_dir),  # Use test directory where .claude/settings.local.json exists
-        "env": env_config,
+        "env": full_env,
         "setting_sources": ["project", "local"],  # Load skills (project) and PubMed plugin (local)
         "allowed_tools": [
             "Skill",  # For edge_curation skill
@@ -368,7 +422,7 @@ async def main():
     all_results = []
     
     # Create output directory structure
-    results_base = PROJECT_ROOT / "results" / "claude_sdk" / "signor_skill_pubmed_search"
+    results_base = PROJECT_ROOT / "results" / "claude_sdk" / "signor_skill_pubmed_search" / model_name
     results_base.mkdir(parents=True, exist_ok=True)
     
     # Process each label
@@ -516,8 +570,8 @@ async def main():
             "batch_start": batch_start.isoformat(),
             "batch_end": batch_end.isoformat(),
             "total_duration_seconds": batch_duration,
-            "model": model_name if model_name else "Z.ai default (GLM)",
-            "api_endpoint": env_config["ANTHROPIC_BASE_URL"],
+            "model": model_name,
+            "api_endpoint": base_url if base_url else "Default Anthropic API",
             "features": ["PubMed plugin", "edge_curation skill", "web search", "extended thinking"]
         },
         "label_statistics": label_stats,
