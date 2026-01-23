@@ -1,34 +1,32 @@
 """
-Batch test Signor edges using Claude SDK with full capabilities.
+Batch test Signor edges using Claude API.
 
 Usage:
     # Test single edge per label
-    uv run python run_signor_qa_skill_pubmed_search.py --test-single
+    uv run python run_signor_qa_claude.py --test-single
     
     # Process first 10 edges per label
-    uv run python run_signor_qa_skill_pubmed_search.py --max-edges 10
+    uv run python run_signor_qa_claude.py --max-edges 10
 
-    # Select model (default: glm-4)
-    # Valid Claude models: claude-sonnet-4-20250514, claude-sonnet-4-5-20250929
-    uv run python run_signor_qa_skill_pubmed_search.py --model claude-sonnet-4-20250514
+    # Select model (default: claude-sonnet-4-20250514)
+    uv run python run_signor_qa_claude.py --model claude-sonnet-4-5-20250929
     
     # Process only true_positive edges
-    uv run python run_signor_qa_skill_pubmed_search.py --label true_positive
+    uv run python run_signor_qa_claude.py --label true_positive
     
     # Run specific edge(s) - useful for re-running failed cases
-    uv run python run_signor_qa_skill_pubmed_search.py --edge CRTC2_AKT1_up-regulates --label true_negative
-    uv run python run_signor_qa_skill_pubmed_search.py --edge GNAS_ADCY1_up-regulatesactivity --label true_positive
+    uv run python run_signor_qa_claude.py --edge CRTC2_AKT1_up-regulates --label true_negative
+    uv run python run_signor_qa_claude.py --edge GNAS_ADCY1_up_regulates_activity --label true_positive
     
     # Run full batch (all edges)
-    uv run python run_signor_qa_skill_pubmed_search.py
+    uv run python run_signor_qa_claude.py
 
 This script:
-1. Reads Signor data from CSV files (true_positive_edges.csv, true_negative_edges.csv)
-2. Constructs questions for each edge using construct_signor_question
-3. Runs questions through Claude SDK (GLM model) with access to PubMed plugin and edge_curation skill
-4. Saves results to label-based folders (true_positive, true_negative)
-
-Similar to batch_test_with_pubmed.py, but processes all Signor edges systematically.
+1. Uses Claude model via Anthropic API
+2. Reads Signor data from CSV files (true_positive_edges.csv, true_negative_edges.csv)
+3. Constructs questions for each edge using construct_signor_question
+4. Runs questions through Claude with access to PubMed plugin and edge_curation skill
+5. Saves results to label-based folders (true_positive, true_negative)
 """
 
 import asyncio
@@ -136,9 +134,8 @@ async def run_single_edge(options, source: str, target: str, effect: str, run_id
                         message_data["content"].append(block_info)
             
             elif isinstance(message, ResultMessage):
-                # ResultMessage contains the usage information from GLM API
+                # ResultMessage contains the usage information
                 if hasattr(message, 'usage') and message.usage:
-                    # GLM API returns usage in ResultMessage, not AssistantMessage
                     usage_data = {
                         "input_tokens": message.usage.get('input_tokens', 0) if isinstance(message.usage, dict) else getattr(message.usage, 'input_tokens', 0),
                         "output_tokens": message.usage.get('output_tokens', 0) if isinstance(message.usage, dict) else getattr(message.usage, 'output_tokens', 0),
@@ -237,12 +234,12 @@ async def run_single_edge(options, source: str, target: str, effect: str, run_id
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Batch test Signor edges with full Claude capabilities")
+    parser = argparse.ArgumentParser(description="Batch test Signor edges with Claude model")
     parser.add_argument("--test-single", action="store_true", help="Test only first edge from each label")
     parser.add_argument("--max-edges", type=int, help="Maximum edges to test per label")
     parser.add_argument("--label", choices=["true_positive", "true_negative"], help="Test only specific label")
     parser.add_argument("--edge", type=str, help="Run specific edge in format: SOURCE_TARGET_EFFECT (e.g., CRTC2_AKT1_up-regulates)")
-    parser.add_argument("--model", type=str, default="glm-4", help="Model to use (e.g. glm-4, claude-3-5-sonnet-20241022)")
+    parser.add_argument("--model", type=str, default="claude-sonnet-4-20250514", help="Claude model to use")
     args = parser.parse_args()
     
     # Validate arguments
@@ -286,40 +283,27 @@ async def main():
                     value = value[1:-1]
                 env_vars[key.strip()] = value
     
-    # Determine model and API configuration
+    # Claude model configuration
     model_name = args.model
-    is_glm = "glm" in model_name.lower()
+    print(f"Using Claude model: {model_name}")
     
-    if is_glm:
-        print(f"Using GLM model: {model_name}")
-        auth_token = env_vars.get("GLM_API_KEY")
-        base_url = env_vars.get("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
-    else:
-        print(f"Using Claude model: {model_name}")
-        auth_token = env_vars.get("CLAUDE_API_KEY")
-        base_url = None  # Use default Anthropic URL
+    auth_token = env_vars.get("CLAUDE_API_KEY")
         
     if not auth_token:
-        key_name = "GLM_API_KEY" if is_glm else "CLAUDE_API_KEY"
-        print(f"Error: {key_name} not found in .env")
+        print("Error: CLAUDE_API_KEY not found in .env")
         return
 
     import os
     # Merge with current environment to preserve PATH and other vars
     full_env = os.environ.copy()
 
-    # Environment configuration
+    # Environment configuration for Claude
     env_config = {
-        "API_TIMEOUT_MS": env_vars.get("API_TIMEOUT_MS", "3000000")
+        "API_TIMEOUT_MS": env_vars.get("API_TIMEOUT_MS", "3000000"),
+        "ANTHROPIC_API_KEY": auth_token
     }
     
-    if is_glm:
-        env_config["ANTHROPIC_API_KEY"] = auth_token
-        env_config["ANTHROPIC_BASE_URL"] = base_url
-    else:
-        env_config["ANTHROPIC_API_KEY"] = auth_token
-    
-    print(f"Using API endpoint: {base_url if base_url else 'Default Anthropic API'}")
+    print("Using API endpoint: Default Anthropic API")
     
     # Get project root directory (not test directory) for skill loading
     project_root = Path(__file__).resolve().parent.parent.parent
@@ -335,40 +319,39 @@ async def main():
     
     full_env.update(env_config)
     
-    if not is_glm:
-        print(f"Verifying access to model: {model_name}...")
+    # Verify access to Claude model
+    print(f"Verifying access to model: {model_name}...")
+    try:
+        import urllib.request
+        
+        headers = {
+            "x-api-key": auth_token,
+            "anthropic-version": "2023-06-01"
+        }
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/models",
+            headers=headers
+        )
         try:
-            import urllib.request
-            # json is already imported globally
-            
-            headers = {
-                "x-api-key": auth_token,
-                "anthropic-version": "2023-06-01"
-            }
-            req = urllib.request.Request(
-                "https://api.anthropic.com/v1/models",
-                headers=headers
-            )
-            try:
-                with urllib.request.urlopen(req) as response:
-                    data = json.loads(response.read().decode())
-                    available_models = [m['id'] for m in data.get('data', [])]
-                    
-                    if model_name not in available_models:
-                        print(f"\n❌ Error: Model '{model_name}' not found in your available Claude models.")
-                        print(f"   Available models (first 5): {', '.join(available_models[:5])}...")
-                        sonnet_models = [m for m in available_models if 'sonnet' in m]
-                        if sonnet_models:
-                            print(f"   Did you mean one of these? {', '.join(sonnet_models)}")
-                        return
-                    print(f"✓ Model '{model_name}' appears valid.")
-            except urllib.error.HTTPError as e:
-                print(f"⚠️  Warning: Could not list models (HTTP {e.code}). Proceeding anyway, but run might fail.")
-            except Exception as e:
-                print(f"⚠️  Warning: Could not list models ({e}). Proceeding anyway.")
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                available_models = [m['id'] for m in data.get('data', [])]
                 
-        except ImportError:
-            pass
+                if model_name not in available_models:
+                    print(f"\n❌ Error: Model '{model_name}' not found in your available Claude models.")
+                    print(f"   Available models (first 5): {', '.join(available_models[:5])}...")
+                    sonnet_models = [m for m in available_models if 'sonnet' in m]
+                    if sonnet_models:
+                        print(f"   Did you mean one of these? {', '.join(sonnet_models)}")
+                    return
+                print(f"✓ Model '{model_name}' appears valid.")
+        except urllib.error.HTTPError as e:
+            print(f"⚠️  Warning: Could not list models (HTTP {e.code}). Proceeding anyway, but run might fail.")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not list models ({e}). Proceeding anyway.")
+            
+    except ImportError:
+        pass
 
     # Configure options with PubMed plugin and skill support (let Claude use all tools)
     options_kwargs = {
@@ -508,6 +491,7 @@ async def main():
             print(f"\n[{idx+1}/{num_edges}] {source} -> {target} ({effect})")
             
             result = await run_single_edge(options, source, target, effect, run_id, label)
+            result["model"] = model_name
             all_results.append(result)
             
             # Save individual result immediately
@@ -571,7 +555,7 @@ async def main():
             "batch_end": batch_end.isoformat(),
             "total_duration_seconds": batch_duration,
             "model": model_name,
-            "api_endpoint": base_url if base_url else "Default Anthropic API",
+            "api_endpoint": "Default Anthropic API",
             "features": ["PubMed plugin", "edge_curation skill", "web search", "extended thinking"]
         },
         "label_statistics": label_stats,
