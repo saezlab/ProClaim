@@ -1,44 +1,50 @@
 """
 EvidenceState — central data structure for the verification loop.
 
-Backbone: plain container, no locking, char-based token approximation.
+Pydantic-based with JSON persistence and audit logging.
+
 Extension points:
   - Thread safety (add RLock on mutations)
-  - Conflict tracking (add_conflict, Conflict dataclass)
-  - Coverage/synthesis tracking
   - Budget-aware get_context(budget_tokens)
   - tiktoken-based token_count()
-  - Audit log
 """
 
-import copy
-from typing import Dict, List, Optional
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
 
-from pkevolve.verification.data_models import Fact, PaperRecord
+from pydantic import BaseModel, ConfigDict, Field
+
+from pkevolve.verification.data_models import (
+    Conflict,
+    Fact,
+    PaperRecord,
+    SufficiencyResult,
+)
 
 
-class EvidenceState:
+class EvidenceState(BaseModel):
     """
     Container for all evidence gathered during a verification loop.
 
-    Backbone: sequential access only — no locking.
-    The interface is designed so locking can be added later without
-    changing callers.
+    Pydantic v2 model with JSON persistence. Supports mutation via
+    add_paper/add_fact methods and serialization via save/load.
     """
 
-    def __init__(self, claim: str, subclaims: Optional[List[str]] = None):
-        """
-        Initialize with a claim and optional subclaims.
+    model_config = ConfigDict(validate_assignment=True)
 
-        Args:
-            claim: The claim to be verified.
-            subclaims: Sub-claims to verify individually.
-                       Defaults to [claim] (no decomposition).
-        """
-        self.claim: str = claim
-        self.subclaims: List[str] = subclaims if subclaims is not None else [claim]
-        self.papers: Dict[str, PaperRecord] = {}
-        self.facts: List[Fact] = []
+    claim: str
+    subclaims: list[str] = Field(default_factory=list)
+    papers: dict[str, PaperRecord] = Field(default_factory=dict)
+    facts: list[Fact] = Field(default_factory=list)
+    conflicts: list[Conflict] = Field(default_factory=list)
+    coverage: dict[str, float] = Field(default_factory=dict)
+    synthesis: dict[str, str] = Field(default_factory=dict)
+    extracted_pmids: list[str] = Field(default_factory=list)
+    sufficiency_history: list[SufficiencyResult] = Field(default_factory=list)
+    iteration: int = 0
+    token_estimate: int = 0
 
     # -- Mutation methods --------------------------------------------------
 
@@ -50,11 +56,15 @@ class EvidenceState:
         """Append a fact to the evidence."""
         self.facts.append(fact)
 
+    def add_conflict(self, conflict: Conflict) -> None:
+        """Record a conflict between two facts."""
+        self.conflicts.append(conflict)
+
     # -- Query methods -----------------------------------------------------
 
     def clone(self) -> "EvidenceState":
         """Deep copy — produces an independent copy of the entire state."""
-        return copy.deepcopy(self)
+        return self.model_copy(deep=True)
 
     def token_count(self) -> int:
         """
@@ -71,7 +81,6 @@ class EvidenceState:
                 total_chars += len(paper.abstract)
         for fact in self.facts:
             total_chars += len(fact.text)
-        # Rough approximation: 1 token ≈ 4 characters
         return total_chars // 4
 
     def get_context(self) -> str:
@@ -81,7 +90,7 @@ class EvidenceState:
         Backbone: returns everything — no budget filtering.
         Extension: add budget_tokens parameter, prioritize L2 > L1 > L0.
         """
-        sections: List[str] = []
+        sections: list[str] = []
 
         # Paper summaries (L1) or abstracts (L0)
         if self.papers:
@@ -100,8 +109,67 @@ class EvidenceState:
 
         return "\n\n".join(sections)
 
+    # -- Persistence -------------------------------------------------------
+
+    def save(self, path: Path) -> None:
+        """Write state as JSON to disk."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.model_dump_json(indent=2))
+
+    @classmethod
+    def load(cls, path: Path) -> "EvidenceState":
+        """Load state from a JSON file on disk."""
+        return cls.model_validate_json(path.read_text())
+
+    @classmethod
+    def init_new(
+        cls,
+        claim: str,
+        subclaims: Optional[list[str]] = None,
+        workspace: Optional[Path] = None,
+    ) -> "EvidenceState":
+        """
+        Create a new evidence state and optionally persist to workspace.
+
+        Args:
+            claim: The claim to be verified.
+            subclaims: Sub-claims to verify individually.
+                       Defaults to [claim] (no decomposition).
+            workspace: If provided, saves state to workspace/evidence_state.json.
+        """
+        subs = subclaims if subclaims is not None else [claim]
+        state = cls(claim=claim, subclaims=subs)
+        if workspace is not None:
+            workspace.mkdir(parents=True, exist_ok=True)
+            state.save(workspace / "evidence_state.json")
+        return state
+
     def __repr__(self) -> str:
         return (
             f"EvidenceState(claim={self.claim!r}, "
             f"papers={len(self.papers)}, facts={len(self.facts)})"
         )
+
+
+class TraceLog:
+    """Append-only audit log for tool invocations."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def append(self, operation: str, details: dict) -> None:
+        """Append a timestamped entry to the trace log."""
+        entries = self.read()
+        entries.append({
+            "operation": operation,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **details,
+        })
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(entries, indent=2))
+
+    def read(self) -> list[dict]:
+        """Read all trace entries."""
+        if self.path.exists():
+            return json.loads(self.path.read_text())
+        return []

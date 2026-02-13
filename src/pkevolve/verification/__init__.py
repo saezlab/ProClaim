@@ -4,40 +4,51 @@ Metacognitive Evidence Verification system.
 Backbone implementation — minimal viable forms of each component
 with clean extension points for later refinement.
 
-Imports are lazy to avoid pulling in heavy dependencies (openai, fitz)
+Imports are lazy to avoid pulling in heavy dependencies (mcp, pydantic)
 when only core data structures are needed.
 """
 
 
 def __getattr__(name: str):
     """Lazy imports — only load a module when its symbol is accessed."""
-    if name in ("PaperRecord", "Fact"):
-        from pkevolve.verification.data_models import PaperRecord, Fact
-        return PaperRecord if name == "PaperRecord" else Fact
+    # Data models
+    if name in ("PaperRecord", "Fact", "Stance", "GapType", "Conflict",
+                "Gap", "SufficiencyResult", "VerificationVerdict"):
+        import pkevolve.verification.data_models as dm
+        return getattr(dm, name)
+    # Evidence state
     if name == "EvidenceState":
         from pkevolve.verification.evidence_state import EvidenceState
         return EvidenceState
-    if name == "VerificationTools":
-        from pkevolve.verification.tools import VerificationTools
-        return VerificationTools
+    if name == "TraceLog":
+        from pkevolve.verification.evidence_state import TraceLog
+        return TraceLog
+    # Classifier
     if name == "SufficiencyClassifier":
         from pkevolve.verification.classifier import SufficiencyClassifier
         return SufficiencyClassifier
+    # Compressor
     if name == "SufficiencyPreservingCompressor":
         from pkevolve.verification.compressor import SufficiencyPreservingCompressor
         return SufficiencyPreservingCompressor
-    if name == "MetacognitiveController":
-        from pkevolve.verification.controller import MetacognitiveController
-        return MetacognitiveController
     raise AttributeError(f"module 'pkevolve.verification' has no attribute {name!r}")
 
 
 __all__ = [
+    # Data models
     "PaperRecord",
     "Fact",
+    "Stance",
+    "GapType",
+    "Conflict",
+    "Gap",
+    "SufficiencyResult",
+    "VerificationVerdict",
+    # State
     "EvidenceState",
-    "VerificationTools",
+    "TraceLog",
+    # Classifier
     "SufficiencyClassifier",
+    # Compressor
     "SufficiencyPreservingCompressor",
-    "MetacognitiveController",
 ]

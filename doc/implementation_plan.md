@@ -1,400 +1,1076 @@
-# Revised Implementation Plan: Unified Metacognitive Evidence Verification
+# Framework Implementation Plan: Evidence Programming via Claude Agent SDK
 
-## What Changed and Why
+## Architecture Overview
 
-This plan merges the former RES and NPES documents into a single framework. The restructuring directly addresses the six priority recommendations from the NeurIPS review.
+The evidence programming framework maps directly onto the Claude Agent SDK's architecture. The SDK gives agents a computer — bash, file I/O, subagents, custom MCP tools — which is exactly the REPL environment evidence programming requires. The agent programs on evidence by invoking custom tools that manipulate an evidence state persisted to disk, with the sufficiency classifier running as a local Python process invoked via bash.
 
-| Review Priority | What Was Wrong | What Changes |
-|---|---|---|
-| **P1: Unify into one contribution** | Two loosely-coupled systems dilute novelty | Single framework with one Algorithm box; notebook/parallelism become implementation details |
-| **P2: Formalize sufficiency-preserving compression** | Strongest novel claim had no theoretical backing | New Section 3 with formal invariant, proof sketch, and dedicated ablation |
-| **P3: Update baselines and evaluation** | Missing 2025 competitors; SciFact too small | Add Sufficient Context, SAFE, FIRE, Stop-RAG; evaluate on SciFact-Open + SciClaimHunt |
-| **P4: Address "consistently wrong" failure** | Self-consistency ≠ correctness unaddressed | New Section 4 with failure mode taxonomy and adversarial experiments |
-| **P5: Generalization beyond scientific claims** | Application paper framing limits significance | Add one non-biomedical domain (FEVER or contract analysis) |
-| **P6: Ablation design** | No ablations specified | Six targeted ablations isolating each component |
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Orchestrator Agent                       │
+│  (Claude Agent SDK main loop)                            │
+│                                                          │
+│  System prompt: evidence programming instructions        │
+│  Tools: all custom MCP tools + Bash + Read + Write       │
+│  Structured output: VerificationVerdict schema            │
+│                                                          │
+│  ┌────────────┐  ┌────────────┐  ┌──────────────────┐   │
+│  │  Retrieval  │  │ Extraction │  │  Sufficiency     │   │
+│  │  Tools      │  │ Subagent   │  │  Classifier      │   │
+│  │  (MCP)      │  │ (Task)     │  │  (Bash/MCP)      │   │
+│  └──────┬─────┘  └──────┬─────┘  └────────┬─────────┘   │
+│         │               │                  │              │
+│         └───────────┬───┘──────────────────┘              │
+│                     ▼                                     │
+│           ┌─────────────────┐                             │
+│           │  Evidence State  │                             │
+│           │  (JSON on disk)  │                             │
+│           └─────────────────┘                             │
+└─────────────────────────────────────────────────────────┘
+```
+
+The SDK's "give your agent a computer" principle means:
+- Evidence state lives as JSON files the agent reads and writes
+- The sufficiency classifier is a Python script invoked via Bash
+- Paper retrieval is a custom MCP tool wrapping PubMed/Semantic Scholar APIs
+- Fact extraction and synthesis use subagents with isolated context
+- The orchestrator agent decides what to do based on sufficiency feedback
 
 ---
 
-## 1. Unified Framework: The Metacognitive Control Loop
-
-### 1.1 Contribution Hierarchy (for paper narrative)
-
-**Primary contribution:** A metacognitive control loop where the system maintains explicit awareness of its own evidence state — what it knows, what it doesn't know, and whether it knows enough — and uses this awareness to autonomously drive claim verification to completion.
-
-**Key technical novelty:** Sufficiency-preserving compression — a compression scheme with the formal invariant that compression must not decrease the system's ability to make correct verification decisions, as measured by a trained classifier.
-
-**Supporting contributions (implementation, not novelty claims):**
-- External mutable evidence state with concurrent agent access
-- Gap-directed retrieval targeting identified evidence deficiencies
-- The verification trace as an auditable, reproducible report artifact
-
-### 1.2 Unified Algorithm
-
-This replaces both the RES recursive loop AND the NPES orchestrator with a single specification. The old `SufficiencyOrchestrator.run()` and `recursive_evidence_collection()` collapse into one algorithm.
+## 1. Project Structure
 
 ```
-Algorithm 1: Metacognitive Evidence Verification
-
-Input: claim c, retriever R, LLM M, sufficiency classifier φ, 
-       compression budget B, threshold τ, max iterations T
-Output: verdict v ∈ {SUPPORT, REFUTE, INSUFFICIENT}, confidence p, report
-
-1.  subclaims ← DECOMPOSE(c, M)
-2.  S ← INIT_STATE(c, subclaims)
-3.  S ← RETRIEVE(S, R, query=c, k=5)          // seed evidence
-4.  S ← PROCESS(S, M)                          // summarize + extract facts (parallel)
-
-5.  for t = 1 to T do
-6.      // ---- METACOGNITIVE ASSESSMENT ----
-7.      σ ← EXTRACT_SIGNALS(S, c, M)           // confidence signals
-8.      (p, label, gaps) ← φ(S, σ)             // sufficiency classifier (cheap, no LLM)
-9.
-10.     if p ≥ τ then
-11.         v ← MAP_VERDICT(label)
-12.         report ← GENERATE_REPORT(S)
-13.         return (v, p, report)
-14.
-15.     if gaps = ∅ and t > T/2 then
-16.         return (INSUFFICIENT, p, GENERATE_REPORT(S))
-17.
-18.     // ---- GAP-DIRECTED ACTION ----
-19.     for g ∈ TOP_K(gaps, 2) do                // top-2 gaps
-20.         q ← FORMULATE_QUERY(c, g, M)
-21.         S ← RETRIEVE(S, R, query=q, k=3)
-22.     S ← PROCESS(S, M)                        // parallel: summarize, extract, detect conflicts
-23.
-24.     // ---- SUFFICIENCY-PRESERVING COMPRESSION ----
-25.     if TOKEN_COUNT(S) > B then
-26.         S' ← COMPRESS(S, c, M)
-27.         (p', _, _) ← φ(S', EXTRACT_SIGNALS(S', c, M))
-28.         if p' ≥ p - ε then                   // compression invariant
-29.             S ← S'
-30.         else
-31.             S ← COMPRESS_CONSERVATIVE(S, c, M)   // less aggressive fallback
-32.
-33. return (INSUFFICIENT, p, GENERATE_REPORT(S))
+evidence-programming/
+├── pyproject.toml
+├── CLAUDE.md                          # Memory/instructions for the orchestrator
+├── .claude/
+│   ├── agents/
+│   │   ├── fact-extractor.md          # Subagent: extracts facts from papers
+│   │   ├── synthesizer.md            # Subagent: synthesizes evidence per subclaim
+│   │   ├── conflict-detector.md      # Subagent: finds contradictions
+│   │   └── gap-query-formulator.md   # Subagent: translates MLP gap types into search queries
+│   └── commands/
+│       └── verify.md                  # Slash command: /verify <claim>
+├── src/
+│   ├── evidence_programming/
+│   │   ├── __init__.py
+│   │   ├── orchestrator.py           # Main entry: runs the evidence programming loop
+│   │   ├── tools/
+│   │   │   ├── __init__.py
+│   │   │   ├── retrieval.py          # MCP tools: search_pubmed, search_semantic_scholar
+│   │   │   ├── evidence_state.py     # MCP tools: read/write/query evidence state
+│   │   │   ├── sufficiency.py        # MCP tool: check_sufficiency (wraps classifier)
+│   │   │   └── compression.py        # MCP tool: compress_evidence
+│   │   ├── classifier/
+│   │   │   ├── __init__.py
+│   │   │   ├── model.py              # SufficiencyClassifier (PyTorch MLP)
+│   │   │   ├── features.py           # 16-feature extraction from evidence state
+│   │   │   ├── train.py              # Training loop with self-consistency labels
+│   │   │   └── inference.py          # CLI entry: python -m classifier.inference state.json
+│   │   │   └── gap_labels.py          # Heuristic gap label generation for training
+│   │   ├── state/
+│   │   │   ├── __init__.py
+│   │   │   ├── schema.py             # Pydantic models: EvidenceState, Fact, Paper, etc.
+│   │   │   └── manager.py            # State persistence: load/save/snapshot
+│   │   ├── compression/
+│   │   │   ├── __init__.py
+│   │   │   └── compress.py            # Three-level compression with sufficiency invariant
+│   │   └── evaluation/
+│   │       ├── __init__.py
+│   │       ├── runner.py             # Batch evaluation across datasets
+│   │       ├── baselines.py          # Baseline implementations
+│   │       └── metrics.py            # F1, ECE, cost tracking
+│   └── scripts/
+│       ├── train_classifier.py       # Train sufficiency classifier
+│       ├── generate_training_data.py # Self-consistency sampling
+│       └── run_evaluation.py         # Full evaluation pipeline
+├── data/
+│   ├── scifact/                      # SciFact dataset
+│   ├── scifact_open/                 # SciFact-Open (500K abstracts)
+│   └── classifier/                   # Trained classifier checkpoints
+├── workspaces/                       # Per-claim working directories
+│   └── claim_<id>/
+│       ├── evidence_state.json       # Current evidence state
+│       ├── papers/                   # Retrieved paper texts
+│       └── trace.json                # Audit log
+└── tests/
+    ├── test_tools.py
+    ├── test_classifier.py
+    ├── test_state.py
+    └── test_integration.py
 ```
-
-**Key design choices visible in the algorithm:**
-- Line 8: Sufficiency check is a trained classifier, not an LLM call (cost: ~0)
-- Lines 19-22: Retrieval is *directed by identified gaps*, not broad re-querying
-- Lines 26-31: Compression has a formal guard — it only proceeds if the invariant holds
-- Line 22: PROCESS is parallelizable (the old NPES agents run here, but as an implementation detail)
-
-### 1.3 Where the Old Components Live
-
-| Old Component | New Location | Role |
-|---|---|---|
-| RES recursive loop | Algorithm 1, lines 5-32 | The main loop IS the metacognitive control |
-| RES sufficiency classifier | Algorithm 1, line 8 | φ — one component of the control loop |
-| RES hierarchical state | Section 2.1 (Evidence State) | Implementation of S |
-| RES compression | Section 3 (elevated to primary technical novelty) | Lines 24-31 |
-| NPES EvidenceState class | Section 2.1 | Direct reuse as the state container |
-| NPES parallel agents | Section 2.3 (PROCESS subroutine) | Implementation detail of line 22 |
-| NPES notebook output | Section 2.4 (GENERATE_REPORT) | Report generation, not a contribution |
-| NPES orchestrator | Absorbed into Algorithm 1 | No longer a separate system |
 
 ---
 
-## 2. Evidence State and Operations
+## 2. Evidence State as Files on Disk
 
-### 2.1 Evidence State Container
+The SDK's design principle is "the folder and file structure becomes a form of context engineering." Evidence state is persisted as JSON that the agent reads, writes, and queries through custom MCP tools. This is the "variable" the agent programs on.
 
-Retain the `EvidenceState` class from NPES essentially unchanged, but reframe it as a generic external state container rather than a "notebook." The key properties are:
-
-- Thread-safe atomic operations (add_paper, add_fact, update_coverage, etc.)
-- Hierarchical representation: Level 0 (raw papers, stored not loaded), Level 1 (summaries + facts), Level 2 (per-subclaim synthesis)
-- Consistent snapshots for the classifier via `get_snapshot()`
-- Audit log for report generation
-
-**Implementation change:** Remove all Jupyter notebook framing from the code. Replace with a plain Python class called `EvidenceState`. The "notebook" language appears only when discussing the output report, not the state container.
+### 2.1 Pydantic Schema
 
 ```python
-# Revised: evidence_state.py (was notebook_state.py)
-# Same class structure as NPES EvidenceState, with these changes:
+# src/evidence_programming/state/schema.py
 
-class EvidenceState:
-    """
-    External mutable evidence state with thread-safe atomic operations.
-    Supports hierarchical representation for bounded-context LLM interaction.
-    """
-    # ... (same atomic operations as before)
-    
-    # NEW: Method required for compression invariant checking
-    def clone(self) -> 'EvidenceState':
-        """Deep copy for compression invariant testing."""
-        with self._lock:
-            new_state = EvidenceState(self.claim, list(self.subclaims))
-            new_state.papers = dict(self.papers)
-            new_state.facts = list(self.facts)
-            new_state.conflicts = list(self.conflicts)
-            new_state.coverage = dict(self.coverage)
-            new_state.subclaim_evidence = {k: list(v) for k, v in self.subclaim_evidence.items()}
-            new_state.synthesis = dict(self.synthesis)
-            new_state.gap_analysis = self.gap_analysis
-            return new_state
-    
-    # NEW: Context generation with budget awareness
-    def get_context(self, budget_tokens: int) -> str:
-        """
-        Generate bounded context for LLM consumption.
-        Always includes Level 2 synthesis; selectively includes Level 1 
-        for uncovered subclaims if budget allows.
-        """
-        # (Absorb the HierarchicalEvidenceState.get_context() logic from RES)
-        ...
-    
-    # NEW: Token accounting
-    def token_count(self) -> int:
-        """Total tokens across Level 1 + Level 2 representations."""
-        ...
+from pydantic import BaseModel, Field
+from typing import Optional
+from enum import Enum
+
+class Stance(str, Enum):
+    SUPPORT = "SUPPORT"
+    REFUTE = "REFUTE"
+    NEUTRAL = "NEUTRAL"
+
+class Paper(BaseModel):
+    pmid: str
+    title: str
+    authors: list[str] = []
+    abstract: str
+    full_text: Optional[str] = None
+    summary: Optional[str] = None
+    source: str = "pubmed"  # pubmed | semantic_scholar
+
+class Fact(BaseModel):
+    id: str
+    text: str
+    stance: Stance
+    source_pmid: str
+    relevant_subclaims: list[str]
+    confidence: float = 0.0
+
+class Conflict(BaseModel):
+    id: str
+    fact_a_id: str
+    fact_b_id: str
+    description: str
+    severity: float  # 0-1
+
+class GapType(str, Enum):
+    MISSING_SUBCLAIM = "missing_subclaim_evidence"
+    CONTRADICTORY = "contradictory_evidence"
+    LOW_DIVERSITY = "low_source_diversity"
+    WEAK_STANCE = "weak_stance_evidence"
+    MISSING_MECHANISM = "missing_mechanism"
+    MISSING_QUANTITATIVE = "missing_quantitative"
+    MISSING_TEMPORAL = "missing_temporal"
+    MISSING_POPULATION = "missing_population"
+
+class Gap(BaseModel):
+    subclaim: str
+    gap_type: GapType
+    description: str
+    priority: float  # 0-1
+
+class SufficiencyResult(BaseModel):
+    label: str        # SUFFICIENT_SUPPORT | SUFFICIENT_REFUTE | INSUFFICIENT
+    confidence: float  # 0-1, calibrated
+    gaps: list[Gap]
+
+class EvidenceState(BaseModel):
+    claim: str
+    subclaims: list[str]
+    papers: dict[str, Paper] = {}
+    facts: list[Fact] = []
+    conflicts: list[Conflict] = []
+    coverage: dict[str, float] = {}        # subclaim -> coverage score
+    synthesis: dict[str, str] = {}         # subclaim -> synthesis text
+    extracted_pmids: list[str] = []        # PMIDs already processed for fact extraction
+    sufficiency_history: list[SufficiencyResult] = []
+    iteration: int = 0                     # 1-indexed: incremented AFTER each sufficiency check
+    token_estimate: int = 0
+
+class VerificationVerdict(BaseModel):
+    """Structured output schema for the orchestrator's final answer."""
+    verdict: str  # SUPPORT | REFUTE | INSUFFICIENT
+    confidence: float
+    reasoning: str
+    key_evidence: list[str]
+    gaps_remaining: list[str]
 ```
 
-### 2.2 Tool Definitions
-
-Retain the `NotebookTools` class from NPES, renamed to `VerificationTools`. Same methods:
-
-- `retrieve_papers(query, top_k)` → adds to state
-- `retrieve_for_gap(gap_description)` → LLM-formulated query, then retrieve
-- `summarize_paper(pmid)` → atomic update to paper.summary
-- `extract_facts(pmid)` → atomic adds to state.facts
-- `compute_coverage(subclaim)` → updates state.coverage
-- `detect_conflicts()` → adds to state.conflicts
-- `synthesize_subclaim(subclaim)` → updates state.synthesis
-- `analyze_gaps()` → updates state.gap_analysis
-
-No structural changes needed here. These are the "tools" the system invokes.
-
-### 2.3 PROCESS Subroutine (Parallel Execution)
-
-The old NPES agent pool becomes the implementation of the PROCESS step in Algorithm 1. This is where parallelism lives — but it's now framed as an efficiency optimization, not a contribution.
+### 2.2 State Manager
 
 ```python
-async def process_evidence(state: EvidenceState, tools: VerificationTools) -> None:
+# src/evidence_programming/state/manager.py
+
+import json
+from pathlib import Path
+from .schema import EvidenceState
+
+class StateManager:
+    """Handles persistence of evidence state to disk."""
+    
+    def __init__(self, workspace: Path):
+        self.workspace = workspace
+        self.state_path = workspace / "evidence_state.json"
+        self.trace_path = workspace / "trace.json"
+        self.papers_dir = workspace / "papers"
+        self.papers_dir.mkdir(parents=True, exist_ok=True)
+    
+    def load(self) -> EvidenceState:
+        if self.state_path.exists():
+            return EvidenceState.model_validate_json(self.state_path.read_text())
+        raise FileNotFoundError(f"No state at {self.state_path}")
+    
+    def save(self, state: EvidenceState) -> None:
+        self.state_path.write_text(state.model_dump_json(indent=2))
+    
+    def init(self, claim: str, subclaims: list[str]) -> EvidenceState:
+        state = EvidenceState(claim=claim, subclaims=subclaims)
+        self.save(state)
+        return state
+    
+    def save_paper_text(self, pmid: str, text: str) -> Path:
+        path = self.papers_dir / f"{pmid}.txt"
+        path.write_text(text)
+        return path
+    
+    def append_trace(self, operation: str, details: dict) -> None:
+        trace = []
+        if self.trace_path.exists():
+            trace = json.loads(self.trace_path.read_text())
+        trace.append({"operation": operation, **details})
+        self.trace_path.write_text(json.dumps(trace, indent=2))
+```
+
+---
+
+## 3. Custom MCP Tools (The Evidence Programming Instruction Set)
+
+Each tool is a Python function registered via `@tool` decorator and served as an in-process MCP server. The orchestrator agent invokes these to manipulate evidence state — this is how it "programs on evidence."
+
+### 3.1 Retrieval Tools
+
+```python
+# src/evidence_programming/tools/retrieval.py
+
+from claude_agent_sdk import tool
+from ..state.manager import StateManager
+from ..state.schema import Paper
+import httpx
+
+PUBMED_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+@tool(
+    "search_pubmed",
+    "Search PubMed for papers relevant to a query. Returns list of PMIDs added to evidence state.",
+    {"query": str, "max_results": int}
+)
+async def search_pubmed(args: dict) -> dict:
+    query = args["query"]
+    max_results = args.get("max_results", 5)
+    workspace = args.get("_workspace", ".")
+    
+    manager = StateManager(Path(workspace))
+    state = manager.load()
+    
+    async with httpx.AsyncClient() as client:
+        # Step 1: Search for PMIDs
+        search_resp = await client.get(f"{PUBMED_BASE}/esearch.fcgi", params={
+            "db": "pubmed", "term": query, "retmax": max_results,
+            "retmode": "json"
+        })
+        pmids = search_resp.json()["esearchresult"]["idlist"]
+        
+        # Step 2: Fetch abstracts
+        if pmids:
+            fetch_resp = await client.get(f"{PUBMED_BASE}/efetch.fcgi", params={
+                "db": "pubmed", "id": ",".join(pmids),
+                "rettype": "abstract", "retmode": "xml"
+            })
+            papers = _parse_pubmed_xml(fetch_resp.text)
+            
+            added = []
+            for paper in papers:
+                if paper.pmid not in state.papers:
+                    state.papers[paper.pmid] = paper
+                    manager.save_paper_text(paper.pmid, paper.abstract)
+                    added.append(paper.pmid)
+            
+            state.token_estimate += sum(len(p.abstract.split()) for p in papers)
+            manager.save(state)
+            manager.append_trace("search_pubmed", {
+                "query": query, "found": len(pmids), "added": len(added)
+            })
+            
+            return {"content": [{"type": "text", "text": 
+                f"Found {len(pmids)} papers, added {len(added)} new. "
+                f"PMIDs: {', '.join(added)}"
+            }]}
+    
+    return {"content": [{"type": "text", "text": "No results found."}]}
+
+
+@tool(
+    "search_semantic_scholar",
+    "Search Semantic Scholar for papers. Useful for broader coverage beyond PubMed.",
+    {"query": str, "max_results": int}
+)
+async def search_semantic_scholar(args: dict) -> dict:
+    # Similar structure, uses Semantic Scholar API
+    ...
+```
+
+### 3.2 Evidence State Tools
+
+```python
+# src/evidence_programming/tools/evidence_state.py
+
+from claude_agent_sdk import tool
+from pathlib import Path
+from ..state.manager import StateManager
+from ..state.schema import Fact, Conflict, Stance
+
+@tool(
+    "get_evidence_summary",
+    "Get a summary of the current evidence state: paper count, fact count, "
+    "coverage per subclaim, conflicts, and latest sufficiency result.",
+    {}
+)
+async def get_evidence_summary(args: dict) -> dict:
+    manager = StateManager(Path(args.get("_workspace", ".")))
+    state = manager.load()
+    
+    summary_lines = [
+        f"Claim: {state.claim}",
+        f"Iteration: {state.iteration}",
+        f"Papers: {len(state.papers)}",
+        f"Facts: {len(state.facts)} (support: {sum(1 for f in state.facts if f.stance == 'SUPPORT')}, "
+        f"refute: {sum(1 for f in state.facts if f.stance == 'REFUTE')})",
+        f"Conflicts: {len(state.conflicts)}",
+        f"Token estimate: ~{state.token_estimate}",
+        "",
+        "Coverage per subclaim:"
+    ]
+    for sc in state.subclaims:
+        cov = state.coverage.get(sc, 0.0)
+        synth = "✓" if sc in state.synthesis else "✗"
+        summary_lines.append(f"  [{cov:.1%}] [synth:{synth}] {sc}")
+    
+    if state.sufficiency_history:
+        latest = state.sufficiency_history[-1]
+        summary_lines.extend([
+            "",
+            f"Latest sufficiency: {latest.label} (confidence: {latest.confidence:.2f})",
+            f"Gaps: {len(latest.gaps)}"
+        ])
+        for gap in latest.gaps[:5]:
+            summary_lines.append(f"  - [{gap.gap_type}] {gap.description}")
+    
+    return {"content": [{"type": "text", "text": "\n".join(summary_lines)}]}
+
+
+@tool(
+    "add_facts",
+    "Add extracted facts to the evidence state. Each fact has text, stance "
+    "(SUPPORT/REFUTE/NEUTRAL), source PMID, and relevant subclaims.",
+    {"facts": list}
+)
+async def add_facts(args: dict) -> dict:
+    manager = StateManager(Path(args.get("_workspace", ".")))
+    state = manager.load()
+    
+    added = 0
+    for f in args["facts"]:
+        fact = Fact(
+            id=f"fact_{len(state.facts) + added}",
+            text=f["text"],
+            stance=Stance(f["stance"]),
+            source_pmid=f["source_pmid"],
+            relevant_subclaims=f.get("relevant_subclaims", []),
+            confidence=f.get("confidence", 0.5)
+        )
+        state.facts.append(fact)
+        added += 1
+    
+    # Recompute coverage (only SUPPORT/REFUTE count — NEUTRAL facts don't
+    # provide evidence for or against the subclaim)
+    for sc in state.subclaims:
+        relevant = [f for f in state.facts 
+                    if sc in f.relevant_subclaims and f.stance != Stance.NEUTRAL]
+        state.coverage[sc] = min(1.0, len(relevant) / 3.0)
+    
+    manager.save(state)
+    manager.append_trace("add_facts", {"count": added})
+    return {"content": [{"type": "text", "text": f"Added {added} facts. Coverage updated."}]}
+
+
+@tool(
+    "update_synthesis",
+    "Update the evidence synthesis for a specific subclaim.",
+    {"subclaim": str, "synthesis": str}
+)
+async def update_synthesis(args: dict) -> dict:
+    manager = StateManager(Path(args.get("_workspace", ".")))
+    state = manager.load()
+    state.synthesis[args["subclaim"]] = args["synthesis"]
+    manager.save(state)
+    return {"content": [{"type": "text", "text": f"Synthesis updated for: {args['subclaim']}"}]}
+
+
+@tool(
+    "add_conflict",
+    "Record a detected conflict between two facts.",
+    {"fact_a_id": str, "fact_b_id": str, "description": str, "severity": float}
+)
+async def add_conflict(args: dict) -> dict:
+    manager = StateManager(Path(args.get("_workspace", ".")))
+    state = manager.load()
+    conflict = Conflict(
+        id=f"conflict_{len(state.conflicts)}",
+        fact_a_id=args["fact_a_id"],
+        fact_b_id=args["fact_b_id"],
+        description=args["description"],
+        severity=args["severity"]
+    )
+    state.conflicts.append(conflict)
+    manager.save(state)
+    return {"content": [{"type": "text", "text": f"Conflict recorded: {conflict.id}"}]}
+
+
+@tool(
+    "get_paper_text",
+    "Retrieve the full abstract/text for a specific paper by PMID.",
+    {"pmid": str}
+)
+async def get_paper_text(args: dict) -> dict:
+    manager = StateManager(Path(args.get("_workspace", ".")))
+    state = manager.load()
+    paper = state.papers.get(args["pmid"])
+    if not paper:
+        return {"content": [{"type": "text", "text": f"Paper {args['pmid']} not found."}]}
+    
+    return {"content": [{"type": "text", "text":
+        f"PMID: {paper.pmid}\nTitle: {paper.title}\n"
+        f"Authors: {', '.join(paper.authors[:5])}\n\n{paper.abstract}"
+    }]}
+
+
+@tool(
+    "get_facts_for_subclaim",
+    "Retrieve all extracted facts relevant to a specific subclaim.",
+    {"subclaim": str}
+)
+async def get_facts_for_subclaim(args: dict) -> dict:
+    manager = StateManager(Path(args.get("_workspace", ".")))
+    state = manager.load()
+    relevant = [f for f in state.facts if args["subclaim"] in f.relevant_subclaims]
+    
+    if not relevant:
+        return {"content": [{"type": "text", "text": "No facts found for this subclaim."}]}
+    
+    lines = []
+    for f in relevant:
+        lines.append(f"[{f.stance}] {f.text} (from {f.source_pmid}, conf: {f.confidence:.2f})")
+    
+    return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+```
+
+### 3.3 Sufficiency Classifier Tool
+
+This is the feedback instrument — the equivalent of running `pytest` in code programming.
+
+```python
+# src/evidence_programming/tools/sufficiency.py
+
+from claude_agent_sdk import tool
+from pathlib import Path
+import subprocess
+import json
+from ..state.manager import StateManager
+
+@tool(
+    "check_sufficiency",
+    "Run the sufficiency classifier on the current evidence state. "
+    "Returns: sufficiency label, confidence score, and identified gaps. "
+    "This is cheap (no LLM call) — call it frequently to guide your next action. "
+    "Think of this as running your test suite.",
+    {}
+)
+async def check_sufficiency(args: dict) -> dict:
+    workspace = Path(args.get("_workspace", "."))
+    manager = StateManager(workspace)
+    state = manager.load()
+    
+    # Run classifier as subprocess (keeps it decoupled)
+    result = subprocess.run(
+        ["python", "-m", "evidence_programming.classifier.inference",
+         str(workspace / "evidence_state.json")],
+        capture_output=True, text=True, timeout=10
+    )
+    
+    if result.returncode != 0:
+        return {"content": [{"type": "text", "text":
+            f"Classifier error: {result.stderr}"}]}
+    
+    output = json.loads(result.stdout)
+    sufficiency = SufficiencyResult(**output)
+    
+    # Persist to state history
+    state.sufficiency_history.append(sufficiency)
+    state.iteration += 1  # 1-indexed: first check → iteration 1, max allowed → iteration 8
+    manager.save(state)
+    manager.append_trace("check_sufficiency", output)
+    
+    # Format feedback for the agent
+    lines = [
+        f"═══ SUFFICIENCY CHECK (iteration {state.iteration}) ═══",
+        f"Label: {sufficiency.label}",
+        f"Confidence: {sufficiency.confidence:.3f}",
+        f"Threshold: 0.80",
+        f"Status: {'✓ SUFFICIENT' if sufficiency.confidence >= 0.80 else '✗ INSUFFICIENT'}",
+    ]
+    if sufficiency.gaps:
+        lines.append(f"\nIdentified gaps ({len(sufficiency.gaps)}):")
+        for gap in sufficiency.gaps:
+            lines.append(f"  [{gap.priority:.1f}] {gap.gap_type}: {gap.description}")
+            lines.append(f"         Subclaim: {gap.subclaim}")
+    else:
+        lines.append("\nNo specific gaps identified.")
+    
+    return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+```
+
+### 3.4 Compression Tool
+
+```python
+# src/evidence_programming/tools/compression.py
+
+from claude_agent_sdk import tool
+from pathlib import Path
+import subprocess
+import json
+from ..state.manager import StateManager
+
+@tool(
+    "compress_evidence",
+    "Compress the evidence state to fit within token budget while preserving "
+    "sufficiency. Tries: (1) deduplication, (2) synthesis refresh, (3) aggressive "
+    "compression. Rejects any compression that changes the sufficiency score by "
+    "more than epsilon=0.05. Use when token_estimate exceeds budget.",
+    {"target_tokens": int}
+)
+async def compress_evidence(args: dict) -> dict:
+    workspace = Path(args.get("_workspace", "."))
+    target = args["target_tokens"]
+    
+    # Run compression as subprocess (invokes compression/compress.py module,
+    # which internally loads the classifier and checks the sufficiency invariant)
+    result = subprocess.run(
+        ["python", "-m", "evidence_programming.compression.compress",
+         str(workspace / "evidence_state.json"),
+         "--target-tokens", str(target),
+         "--epsilon", "0.05"],
+        capture_output=True, text=True, timeout=60
+    )
+    
+    if result.returncode != 0:
+        return {"content": [{"type": "text", "text":
+            f"Compression failed: {result.stderr}"}]}
+    
+    output = json.loads(result.stdout)
+    return {"content": [{"type": "text", "text":
+        f"Compression complete. Level used: {output['level']}. "
+        f"Tokens: {output['before']} → {output['after']}. "
+        f"Sufficiency preserved: {output['invariant_held']}"
+    }]}
+```
+
+---
+
+## 4. Subagents (Parallel Evidence Processing)
+
+The SDK's subagent architecture maps to evidence programming's need for parallel processing. Each subagent has isolated context, so it can process a full paper without polluting the orchestrator's context window.
+
+### 4.1 Programmatic Subagent Definitions
+
+```python
+# Used in orchestrator.py when constructing ClaudeAgentOptions
+
+from claude_agent_sdk import AgentDefinition
+
+EVIDENCE_SUBAGENTS = {
+    "fact-extractor": AgentDefinition(
+        description=(
+            "Extracts atomic, verifiable facts from a scientific paper. "
+            "Each fact gets a stance label (SUPPORT/REFUTE/NEUTRAL) relative "
+            "to the claim being verified, plus relevance mapping to subclaims. "
+            "Use this agent when new papers have been retrieved."
+        ),
+        prompt="""You are a scientific fact extraction specialist.
+
+Given a paper and a claim with subclaims, extract every atomic fact relevant to the claim.
+
+For each fact, provide:
+- text: the factual statement (one sentence, self-contained)
+- stance: SUPPORT if it supports the claim, REFUTE if it contradicts, NEUTRAL if relevant but neither
+- source_pmid: the paper's PMID
+- relevant_subclaims: which subclaims this fact speaks to
+- confidence: 0-1, how clearly the paper states this fact
+
+Be precise. Do not infer beyond what the paper states. 
+If a paper doesn't address a subclaim, don't manufacture facts about it.
+
+Output your facts as a JSON array.""",
+        tools=["Read", "Bash"]
+    ),
+    
+    "synthesizer": AgentDefinition(
+        description=(
+            "Synthesizes evidence for a specific subclaim from extracted facts. "
+            "Produces a concise evidence summary weighing support vs refutation. "
+            "Use when facts have been extracted and a subclaim needs synthesis."
+        ),
+        prompt="""You are an evidence synthesis specialist.
+
+Given a subclaim and the facts relevant to it, produce a synthesis that:
+1. States the weight of evidence (mostly supporting, mostly refuting, mixed, insufficient)
+2. Summarizes the key supporting facts with citations
+3. Summarizes any contradicting facts with citations
+4. Notes the quality and diversity of sources
+5. Identifies what additional evidence would be needed
+
+Keep the synthesis under 200 words. Be precise about what the evidence does and does not show.
+
+Output as plain text.""",
+        tools=["Read"]
+    ),
+    
+    "conflict-detector": AgentDefinition(
+        description=(
+            "Detects contradictions and inconsistencies among extracted facts. "
+            "Use after fact extraction to identify conflicts that need resolution."
+        ),
+        prompt="""You are a scientific conflict detection specialist.
+
+Given a list of extracted facts, identify pairs that contradict each other.
+For each conflict:
+- Identify the two conflicting facts by ID
+- Describe the nature of the contradiction
+- Rate severity 0-1 (0 = minor methodological difference, 1 = direct contradiction)
+- Suggest what additional evidence might resolve the conflict
+
+Output as JSON array of conflict objects.""",
+        tools=["Read"]
+    ),
+    
+    "gap-query-formulator": AgentDefinition(
+        description=(
+            "Formulates targeted retrieval queries from gap predictions. "
+            "The MLP sufficiency classifier identifies coarse gap types (free, no LLM); "
+            "this subagent translates those gap types into specific PubMed queries (1 LLM call). "
+            "Use after check_sufficiency reports gaps with confidence < threshold."
+        ),
+        prompt="""You are an evidence retrieval query specialist.
+
+You receive gap predictions from the sufficiency classifier. Each gap has:
+- A subclaim that needs more evidence
+- A gap type (one of 8 categories)
+- A priority score
+
+Your job is to formulate targeted PubMed search queries that will close these gaps.
+Do NOT re-analyze the evidence state for gaps — the classifier has already done that.
+
+Gap types and what they mean for query formulation:
+- missing_subclaim_evidence: search directly for the subclaim topic
+- contradictory_evidence: search for meta-analyses or reviews that resolve the conflict
+- low_source_diversity: search with different terminology or in adjacent fields
+- weak_stance_evidence: search for studies with stronger methodology (RCTs, large cohorts)
+- missing_mechanism: search for mechanistic or pathway studies
+- missing_quantitative: search for dose-response, effect size, or quantitative studies
+- missing_temporal: search for longitudinal or time-course studies
+- missing_population: search for studies in the specific population mentioned in the claim
+
+For each gap, provide:
+- The original gap type and subclaim
+- 1-2 targeted PubMed search queries (short, specific, 3-8 words)
+- Brief rationale for why this query should close the gap
+
+Output as JSON array.""",
+        tools=["Read"]
+    ),
+}
+```
+
+### 4.2 Filesystem-Based Subagent Definitions (Alternative)
+
+For simpler deployment, subagents can also be defined as markdown files:
+
+```markdown
+# .claude/agents/fact-extractor.md
+---
+name: fact-extractor
+description: Extracts atomic, verifiable facts from scientific papers with stance labels
+tools: Read, Bash
+---
+
+You are a scientific fact extraction specialist.
+[... same prompt as above ...]
+```
+
+---
+
+## 5. The Orchestrator (Evidence Programming Loop)
+
+The orchestrator is the main agent that runs the evidence programming loop. It uses the SDK's `query()` function with structured outputs to produce a final `VerificationVerdict`.
+
+### 5.1 Orchestrator Implementation
+
+```python
+# src/evidence_programming/orchestrator.py
+
+import asyncio
+import json
+from pathlib import Path
+from claude_agent_sdk import (
+    query, ClaudeAgentOptions, ClaudeSDKClient, AgentDefinition,
+    create_sdk_mcp_server, AssistantMessage, ResultMessage, TextBlock
+)
+
+from .tools.retrieval import search_pubmed, search_semantic_scholar
+from .tools.evidence_state import (
+    get_evidence_summary, add_facts, update_synthesis,
+    add_conflict, get_paper_text, get_facts_for_subclaim
+)
+from .tools.sufficiency import check_sufficiency
+from .tools.compression import compress_evidence
+from .state.schema import VerificationVerdict
+from .hooks import EVIDENCE_HOOKS
+
+# Collect all custom tools into an MCP server
+evidence_tools_server = create_sdk_mcp_server(
+    name="evidence-tools",
+    version="1.0.0",
+    tools=[
+        search_pubmed,
+        search_semantic_scholar,
+        get_evidence_summary,
+        add_facts,
+        update_synthesis,
+        add_conflict,
+        get_paper_text,
+        get_facts_for_subclaim,
+        check_sufficiency,
+        compress_evidence,
+    ]
+)
+
+SYSTEM_PROMPT = """You are an evidence programming agent for scientific claim verification.
+
+You program on evidence the way a coding agent programs on code. Your tools let you
+retrieve, extract, synthesize, and evaluate scientific evidence. The sufficiency
+classifier (check_sufficiency) is your test suite — call it frequently to know whether
+your evidence gathering is working.
+
+## Your workflow:
+
+1. DECOMPOSE the claim into verifiable subclaims
+2. RETRIEVE initial evidence with search_pubmed
+3. EXTRACT facts from papers (delegate to fact-extractor subagent)
+4. CHECK SUFFICIENCY — this is your primary feedback signal
+5. If INSUFFICIENT: read the gap types from the classifier, then delegate to
+   gap-query-formulator subagent to translate gaps into targeted retrieval queries
+6. SYNTHESIZE evidence per subclaim (delegate to synthesizer subagent)
+7. CHECK SUFFICIENCY again
+8. COMPRESS if token budget exceeded (compress_evidence tool)
+9. Repeat 5-8 until sufficient or max iterations reached
+
+## Key principles:
+
+- Call check_sufficiency after EVERY round of retrieval/extraction. It's free.
+- The gaps it reports tell you WHAT TYPE of evidence is missing (coarse MLP prediction).
+- Delegate to gap-query-formulator to get specific search queries for each gap type.
+- Use subagents for extraction and synthesis — they have isolated context.
+- When the classifier reports confidence ≥ 0.80, you have enough evidence.
+- If you hit max iterations without reaching sufficiency, verdict is INSUFFICIENT.
+- Always produce a structured verdict at the end.
+
+## Token budget: 50,000 tokens. Compress when token_estimate > 40,000.
+## Max iterations: 8 sufficiency checks.
+"""
+
+# Pydantic -> JSON Schema for structured output
+VERDICT_SCHEMA = VerificationVerdict.model_json_schema()
+
+
+async def verify_claim(
+    claim: str,
+    workspace: Path,
+    max_iterations: int = 8,
+    sufficiency_threshold: float = 0.80,
+    model: str = "claude-sonnet-4-5-20250929"
+) -> VerificationVerdict:
     """
-    Process all unprocessed evidence in state.
-    Runs summarization, fact extraction, coverage, conflict detection,
-    synthesis, and gap analysis concurrently where possible.
-    
-    This is the parallel execution step from Algorithm 1, line 22.
+    Run the evidence programming loop for a single claim.
+    Returns a structured VerificationVerdict.
     """
-    # Phase 1 (parallel): Summarize unsummarized papers
-    unsummarized = [pmid for pmid, p in state.papers.items() if p.summary is None]
-    await asyncio.gather(*[tools.summarize_paper(pmid) for pmid in unsummarized])
+    workspace.mkdir(parents=True, exist_ok=True)
     
-    # Phase 2 (parallel): Extract facts from summarized papers not yet processed
-    unextracted = [pmid for pmid, p in state.papers.items() 
-                   if p.summary and pmid not in state._extracted_pmids]
-    await asyncio.gather(*[tools.extract_facts(pmid) for pmid in unextracted])
+    options = ClaudeAgentOptions(
+        model=model,
+        system_prompt=SYSTEM_PROMPT,
+        cwd=str(workspace),
+        allowed_tools=[
+            "Read", "Write", "Bash", "Glob", "Task",
+            # All custom MCP tools
+            "mcp__evidence-tools__search_pubmed",
+            "mcp__evidence-tools__search_semantic_scholar",
+            "mcp__evidence-tools__get_evidence_summary",
+            "mcp__evidence-tools__add_facts",
+            "mcp__evidence-tools__update_synthesis",
+            "mcp__evidence-tools__add_conflict",
+            "mcp__evidence-tools__get_paper_text",
+            "mcp__evidence-tools__get_facts_for_subclaim",
+            "mcp__evidence-tools__check_sufficiency",
+            "mcp__evidence-tools__compress_evidence",
+        ],
+        mcp_servers={"evidence-tools": evidence_tools_server},
+        agents=EVIDENCE_SUBAGENTS,
+        hooks=EVIDENCE_HOOKS,
+        permission_mode="acceptEdits",
+        max_turns=50,  # generous; the agent self-limits via sufficiency
+        output_format={
+            "type": "json_schema",
+            "schema": VERDICT_SCHEMA
+        }
+    )
     
-    # Phase 3 (parallel): Update coverage + detect conflicts + synthesize + gap analysis
-    await asyncio.gather(
-        *[tools.compute_coverage(sc) for sc in state.subclaims],
-        tools.detect_conflicts(),
-        *[tools.synthesize_subclaim(sc) for sc in state.subclaims],
-        tools.analyze_gaps()
+    prompt = (
+        f"Verify the following scientific claim using evidence programming.\n\n"
+        f"Claim: {claim}\n\n"
+        f"The evidence state has been initialized at {workspace}/evidence_state.json.\n"
+        f"Begin by decomposing the claim into subclaims, then follow the "
+        f"evidence programming workflow. Call check_sufficiency after each "
+        f"round of evidence gathering. Stop when confidence ≥ {sufficiency_threshold} "
+        f"or after {max_iterations} iterations."
+    )
+    
+    verdict = None
+    async for message in query(prompt=prompt, options=options):
+        if isinstance(message, ResultMessage):
+            if hasattr(message, 'structured_output') and message.structured_output:
+                verdict = VerificationVerdict(**message.structured_output)
+            elif hasattr(message, 'result'):
+                # Fallback: parse from result text
+                try:
+                    verdict = VerificationVerdict.model_validate_json(message.result)
+                except Exception:
+                    verdict = VerificationVerdict(
+                        verdict="INSUFFICIENT",
+                        confidence=0.0,
+                        reasoning=str(message.result),
+                        key_evidence=[],
+                        gaps_remaining=["Failed to produce structured verdict"]
+                    )
+    
+    if verdict is None:
+        verdict = VerificationVerdict(
+            verdict="INSUFFICIENT",
+            confidence=0.0,
+            reasoning="Agent did not produce a verdict",
+            key_evidence=[],
+            gaps_remaining=["No verdict produced"]
+        )
+    
+    return verdict
+
+
+async def verify_claim_interactive(claim: str, workspace: Path) -> VerificationVerdict:
+    """
+    Interactive version using ClaudeSDKClient for multi-turn control.
+    Useful for debugging and development.
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+    
+    options = ClaudeAgentOptions(
+        system_prompt=SYSTEM_PROMPT,
+        cwd=str(workspace),
+        allowed_tools=[
+            "Read", "Write", "Bash", "Glob", "Task",
+            "mcp__evidence-tools__*",  # all evidence tools
+        ],
+        mcp_servers={"evidence-tools": evidence_tools_server},
+        agents=EVIDENCE_SUBAGENTS,
+        permission_mode="acceptEdits",
+    )
+    
+    async with ClaudeSDKClient(options=options) as client:
+        # Initial prompt
+        await client.query(
+            f"Initialize evidence state for claim: {claim}\n"
+            f"Decompose into subclaims and begin evidence programming."
+        )
+        
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        print(block.text)
+        
+        # The agent runs autonomously from here — the SDK handles
+        # tool calls, subagent invocations, and context management.
+        # We could add manual checkpoints here if needed.
+    
+    # Load final state and construct verdict
+    state = StateManager(workspace).load()
+    if state.sufficiency_history:
+        latest = state.sufficiency_history[-1]
+        return VerificationVerdict(
+            verdict=latest.label.replace("SUFFICIENT_", ""),
+            confidence=latest.confidence,
+            reasoning=json.dumps(state.synthesis),
+            key_evidence=[f.text for f in state.facts[:10]],
+            gaps_remaining=[g.description for g in latest.gaps]
+        )
+    
+    return VerificationVerdict(
+        verdict="INSUFFICIENT", confidence=0.0,
+        reasoning="No sufficiency checks completed",
+        key_evidence=[], gaps_remaining=[]
     )
 ```
 
-**What changed from NPES:** The seven named agent classes (RetrievalAgent, SummarizationAgent, etc.) are replaced by direct async function calls. The agent abstraction added complexity without research value. The `should_act()` / `act()` pattern is removed — the process function simply runs everything that needs running. This is simpler, clearer, and removes the need to justify "agents" as a contribution.
+### 5.2 Hooks for Monitoring and Cost Control
 
-### 2.4 Report Generation
+```python
+# src/evidence_programming/hooks.py
 
-The GENERATE_REPORT function from Algorithm 1 produces the final verification report. This is essentially the `_generate_notebook()` method from the old NPES orchestrator. Keep the output format (markdown with subclaim analysis, evidence summary, key evidence, conflicts, gaps, references, execution log).
+from claude_agent_sdk import HookMatcher
 
-**Framing change:** Call it a "verification report" or "evidence trace," not a "notebook." The report is a property of the system (auditability, reproducibility) rather than a contribution.
+async def log_tool_use(input_data, tool_use_id, context):
+    """PostToolUse hook: log every tool invocation for the audit trail."""
+    tool_name = input_data.get("tool_name", "unknown")
+    print(f"  [TRACE] Tool used: {tool_name}")
+    return {}
+
+async def enforce_iteration_limit(input_data, tool_use_id, context):
+    """PreToolUse hook on check_sufficiency: enforce max iterations."""
+    # Read current iteration from state
+    import json
+    from pathlib import Path
+    state_path = Path(".") / "evidence_state.json"
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+        if state.get("iteration", 0) >= 8:  # After 8 checks, deny further calls
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": 
+                        "Max iterations (8) reached. Produce final verdict now.",
+                }
+            }
+    return {}
+
+async def block_dangerous_bash(input_data, tool_use_id, context):
+    """PreToolUse hook: prevent destructive bash commands."""
+    if input_data.get("tool_name") != "Bash":
+        return {}
+    command = input_data.get("tool_input", {}).get("command", "")
+    dangerous = ["rm -rf", "sudo", "curl | bash", "wget"]
+    for pattern in dangerous:
+        if pattern in command:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": f"Blocked dangerous command: {pattern}",
+                }
+            }
+    return {}
+
+# Hook configuration for the orchestrator
+EVIDENCE_HOOKS = {
+    "PostToolUse": [
+        HookMatcher(hooks=[log_tool_use]),
+    ],
+    "PreToolUse": [
+        HookMatcher(
+            matcher="mcp__evidence-tools__check_sufficiency",
+            hooks=[enforce_iteration_limit]
+        ),
+        HookMatcher(matcher="Bash", hooks=[block_dangerous_bash]),
+    ],
+}
+```
 
 ---
 
-## 3. Sufficiency-Preserving Compression (Primary Technical Novelty)
+## 6. Sufficiency Classifier (Training & Inference)
 
-This section is entirely new. It elevates the compression mechanism from an implementation detail to the paper's key formal contribution.
-
-### 3.1 Formal Definition
-
-**Definition (Sufficiency-Preserving Compression).** Given evidence state S, claim c, and trained sufficiency classifier φ, a compression function COMPRESS is *ε-sufficiency-preserving* if:
-
-```
-P(φ(COMPRESS(S)) = φ(S)) ≥ 1 - ε
-```
-
-That is, compression changes the classifier's decision with probability at most ε.
-
-A stronger variant, which we target in practice:
-
-```
-|confidence(φ(COMPRESS(S))) - confidence(φ(S))| ≤ ε
-```
-
-### 3.2 Compression Procedure
-
-The compression has three levels of aggressiveness, tried in order:
-
-**Level 1 — Fact deduplication (lossless):**
-- Remove duplicate facts (same text, same source)
-- Merge facts with identical content from different sources into a single fact with multiple citations
-- This never reduces information content
-
-**Level 2 — Synthesis refresh (lossy, usually safe):**
-- For each subclaim, regenerate the Level 2 synthesis from current Level 1 facts
-- Discard individual Level 1 facts for subclaims where coverage ≥ 0.8
-- Retain Level 1 facts for uncovered subclaims (these are still needed for gap-filling)
-- Check invariant: run φ on compressed state, verify confidence drop ≤ ε
-
-**Level 3 — Aggressive synthesis (lossy, guarded):**
-- Merge all Level 1 content into Level 2 synthesis
-- Retain only paper metadata (PMID, title) at Level 0
-- Level 1 becomes empty
-- Check invariant: if violated, fall back to Level 2
+### 6.1 Feature Extraction
 
 ```python
-class SufficiencyPreservingCompressor:
+# src/evidence_programming/classifier/features.py
+
+import numpy as np
+from ..state.schema import EvidenceState
+
+def extract_features(state: EvidenceState) -> np.ndarray:
     """
-    Compresses evidence state while preserving the sufficiency classifier's
-    ability to make correct decisions.
+    Extract 16 features from evidence state for the MLP classifier.
+    No LLM calls — uses only pre-computed values from state.
     
-    Key invariant: |φ(S') - φ(S)| ≤ ε after compression.
+    CANONICAL FEATURE SET: This is the authoritative feature definition.
+    The paper plan's EvidenceStateSnapshot must derive from these same fields.
+    Features like verbalized_confidence, consistency_score, entropy, and
+    embedding similarities (max_similarity, mean_similarity) from the paper
+    plan's snapshot are NOT used — they would require LLM calls, breaking
+    the "~0 cost" property of the feedback instrument.
     """
+    n_subclaims = max(len(state.subclaims), 1)
+    coverages = [state.coverage.get(sc, 0.0) for sc in state.subclaims]
+    n_facts = len(state.facts)
+    n_papers = len(state.papers)
     
-    def __init__(self, llm, classifier, epsilon: float = 0.05):
-        self.llm = llm
-        self.classifier = classifier
-        self.epsilon = epsilon
+    support_facts = sum(1 for f in state.facts if f.stance == "SUPPORT")
+    refute_facts = sum(1 for f in state.facts if f.stance == "REFUTE")
+    unique_sources = len(set(f.source_pmid for f in state.facts)) if state.facts else 0
     
-    async def compress(self, state: EvidenceState, claim: str) -> EvidenceState:
-        """
-        Compress with invariant guarantee.
-        Tries levels 1 → 2 → 3 in order, checking invariant after each.
-        """
-        # Get baseline sufficiency
-        baseline_signals = await extract_signals(state, claim, self.llm)
-        baseline_score = self.classifier(state, baseline_signals)['confidence'].item()
+    features = [
+        # Coverage features (3)
+        min(coverages) if coverages else 0.0,
+        sum(coverages) / n_subclaims,
+        sum(1 for c in coverages if c >= 0.7) / n_subclaims,
         
-        # Level 1: Lossless deduplication
-        compressed = self._deduplicate(state.clone())
+        # Quantity features (2)
+        min(n_papers / 20, 1.0),
+        min(n_facts / 50, 1.0),
         
-        # Check if that was enough
-        if compressed.token_count() <= state.context_budget:
-            return compressed
+        # Conflict features (2)
+        len(state.conflicts),
+        max((c.severity for c in state.conflicts), default=0.0),
         
-        # Level 2: Synthesis refresh with selective fact retention
-        compressed = await self._synthesis_refresh(compressed, claim)
-        if self._check_invariant(compressed, claim, baseline_score):
-            if compressed.token_count() <= state.context_budget:
-                return compressed
+        # Synthesis coverage (1)
+        sum(1 for sc in state.subclaims if sc in state.synthesis) / n_subclaims,
         
-        # Level 3: Aggressive synthesis (guard with invariant)
-        aggressive = await self._aggressive_synthesis(compressed, claim)
-        if self._check_invariant(aggressive, claim, baseline_score):
-            return aggressive
+        # Confidence signals from history (3)
+        state.sufficiency_history[-1].confidence if state.sufficiency_history else 0.0,
+        len(state.sufficiency_history) / 8.0,  # iteration progress
+        len(state.sufficiency_history[-1].gaps) / 5.0 if state.sufficiency_history else 1.0,
         
-        # Fallback: return Level 2 result even if over budget
-        return compressed
+        # Evidence balance (3)
+        support_facts / max(n_facts, 1),
+        refute_facts / max(n_facts, 1),
+        unique_sources / max(n_papers, 1),
+        
+        # Fact confidence stats (2)
+        np.mean([f.confidence for f in state.facts]) if state.facts else 0.0,
+        np.std([f.confidence for f in state.facts]) if len(state.facts) > 1 else 0.0,
+    ]
     
-    def _check_invariant(self, state: EvidenceState, claim: str, 
-                         baseline_score: float) -> bool:
-        """Verify compression preserved sufficiency within ε."""
-        signals = extract_signals_sync(state, claim)  # cached signals, cheap
-        new_score = self.classifier(state, signals)['confidence'].item()
-        return abs(new_score - baseline_score) <= self.epsilon
-    
-    async def _synthesis_refresh(self, state: EvidenceState, claim: str) -> EvidenceState:
-        """Level 2: Regenerate synthesis, selectively discard facts."""
-        for subclaim in state.subclaims:
-            facts = state.get_facts_for_subclaim(subclaim)
-            
-            if not facts:
-                continue
-            
-            # Generate new synthesis
-            facts_text = "\n".join(f"- {f.text} [{f.stance}] (PMID:{f.source_pmid})"
-                                   for f in facts[:8])
-            
-            prompt = f"""Synthesize evidence for: "{subclaim}"
-Facts:
-{facts_text}
-Write a 2-3 sentence synthesis preserving all decision-relevant information
-(stance, key findings, source PMIDs):"""
-            
-            synthesis = await self.llm.generate_async(prompt, max_tokens=200)
-            state.update_synthesis(subclaim, synthesis)
-            
-            # Discard Level 1 facts for well-covered subclaims
-            if state.coverage.get(subclaim, 0) >= 0.8:
-                state.facts = [f for f in state.facts 
-                              if subclaim not in f.relevant_subclaims]
-        
-        return state
-    
-    async def _aggressive_synthesis(self, state: EvidenceState, claim: str) -> EvidenceState:
-        """Level 3: Merge everything into synthesis, keep only metadata."""
-        # Generate a single comprehensive synthesis per subclaim
-        for subclaim in state.subclaims:
-            all_evidence = []
-            # Gather from both existing synthesis and remaining facts
-            if state.synthesis.get(subclaim):
-                all_evidence.append(f"Previous synthesis: {state.synthesis[subclaim]}")
-            facts = state.get_facts_for_subclaim(subclaim)
-            for f in facts:
-                all_evidence.append(f"- {f.text} [{f.stance}] (PMID:{f.source_pmid})")
-            
-            if all_evidence:
-                prompt = f"""Create a comprehensive evidence summary for: "{subclaim}"
-All available evidence:
-{chr(10).join(all_evidence)}
-Summary (preserve all PMIDs, stances, and key quantitative findings):"""
-                
-                synthesis = await self.llm.generate_async(prompt, max_tokens=250)
-                state.update_synthesis(subclaim, synthesis)
-        
-        # Clear all Level 1 facts
-        state.facts = []
-        
-        return state
-    
-    def _deduplicate(self, state: EvidenceState) -> EvidenceState:
-        """Level 1: Remove duplicate facts."""
-        seen = set()
-        unique_facts = []
-        for fact in state.facts:
-            key = (fact.text.strip().lower(), fact.stance)
-            if key not in seen:
-                seen.add(key)
-                unique_facts.append(fact)
-        state.facts = unique_facts
-        return state
+    return np.array(features, dtype=np.float32)
 ```
 
-### 3.3 Experiments Required for This Section
-
-These experiments are critical — the review identified this as the strongest novel claim.
-
-| Experiment | What It Shows | Comparison |
-|---|---|---|
-| **Compression ablation** | Sufficiency-preserving vs. standard summarization | Our compression vs. RECOMP abstractive vs. simple truncation vs. RAPTOR-style clustering |
-| **Invariant violation rate** | How often does compression break decisions? | Measure across all claims: % where φ(S') ≠ φ(S) |
-| **ε sensitivity** | Effect of tolerance parameter | Sweep ε ∈ {0.01, 0.02, 0.05, 0.10} — accuracy vs. compression ratio |
-| **Compression ratio vs. accuracy** | Pareto frontier | Plot tokens-retained vs. verification accuracy for each method |
-| **Qualitative analysis** | What information does compression discard vs. retain? | Show examples where standard summarization loses decision-relevant detail but ours doesn't |
-
----
-
-## 4. Sufficiency Classifier (Supporting Component)
-
-### 4.1 Training
-
-Retain the self-consistency training approach from RES, with these changes:
-
-**Training data generation** — same as before:
-- For each claim, retrieve evidence at k ∈ {1, 3, 5, 10, 15, 20}
-- At each k, sample 10 LLM decisions at temperature 0.7
-- Label as SUFFICIENT_SUPPORT, SUFFICIENT_REFUTE, or INSUFFICIENT based on consistency + correctness
-
-**Classifier architecture** — same lightweight MLP from RES, but with expanded features:
+### 6.2 Model
 
 ```python
+# src/evidence_programming/classifier/model.py
+
+import torch
+import torch.nn as nn
+
 class SufficiencyClassifier(nn.Module):
-    def __init__(self, feature_dim=16, hidden_dim=64):
+    def __init__(self, feature_dim=16, hidden_dim=64, n_gap_types=8):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
@@ -403,303 +1079,522 @@ class SufficiencyClassifier(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
-        self.sufficiency_head = nn.Linear(hidden_dim, 3)   # SUFF_SUP, SUFF_REF, INSUFF
-        self.confidence_head = nn.Linear(hidden_dim, 1)    # calibrated confidence
-        self.gap_head = nn.Linear(hidden_dim, 8)           # gap type prediction
+        self.sufficiency_head = nn.Linear(hidden_dim, 3)  # SUP, REF, INSUFF
+        self.confidence_head = nn.Sequential(
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid()
+        )
+        self.gap_head = nn.Sequential(
+            nn.Linear(hidden_dim, n_gap_types),
+            nn.Sigmoid()
+        )
     
-    def extract_features(self, state: EvidenceState, signals: Dict) -> torch.Tensor:
-        """
-        Fixed-size feature vector from state + signals.
-        NO LLM calls — uses pre-computed values only.
-        """
-        features = [
-            # Coverage features (from evidence state)
-            min(state.coverage.values()) if state.coverage else 0,
-            sum(state.coverage.values()) / max(len(state.coverage), 1),
-            sum(1 for v in state.coverage.values() if v >= 0.7) / max(len(state.coverage), 1),
-            
-            # Quantity features (normalized)
-            min(len(state.papers) / 20, 1.0),
-            min(len(state.facts) / 50, 1.0),
-            
-            # Conflict features
-            len(state.conflicts),
-            max((c.severity for c in state.conflicts), default=0),
-            
-            # Confidence signals (from pre-extraction)
-            signals.get('verbalized', 50) / 100,
-            signals.get('consistency', 0),
-            signals.get('entropy', 1.0),
-            min(signals.get('num_gaps', 5) / 5, 1.0),
-            
-            # Evidence quality
-            sum(1 for f in state.facts if f.stance == 'SUPPORT') / max(len(state.facts), 1),
-            sum(1 for f in state.facts if f.stance == 'REFUTE') / max(len(state.facts), 1),
-            len(set(f.source_pmid for f in state.facts)) / max(len(state.papers), 1),
-            
-            # Embedding similarity (if available)
-            signals.get('max_similarity', 0),
-            signals.get('mean_similarity', 0),
-        ]
-        return torch.tensor(features, dtype=torch.float32)
+    def forward(self, x):
+        h = self.encoder(x)
+        return {
+            "sufficiency_logits": self.sufficiency_head(h),
+            "confidence": self.confidence_head(h),
+            "gap_probs": self.gap_head(h),
+        }
 ```
 
-### 4.2 Addressing the "Consistently Wrong" Failure Mode
-
-**NEW SECTION — directly addresses Review Priority 4.**
-
-The core risk: self-consistency can be high when the LLM is confidently wrong (e.g., strong priors override weak evidence, or misleading evidence is retrieved).
-
-**Failure mode taxonomy:**
-
-| Mode | Description | Detection Strategy |
-|---|---|---|
-| **Prior-dominated** | LLM's training knowledge overrides retrieved evidence | Check if decision is same with and without evidence |
-| **Misleading evidence** | Retrieved papers are topically relevant but don't address the claim | Check if supporting facts are actually about the claim's specific mechanism |
-| **Echo chamber** | Multiple papers from same research group all agree | Check source diversity (unique author groups) |
-| **Partial evidence** | Evidence supports a related but different claim | Check subclaim decomposition quality |
-
-**Experiments for this section:**
-
-1. **Prior override test:** For each claim, compare classifier decision with evidence vs. classifier decision with empty evidence state. If they agree, the evidence didn't matter — flag as potentially prior-dominated. Measure what fraction of "sufficient" decisions are actually prior-dominated.
-
-2. **Adversarial evidence injection:** Take claims where the system reaches the correct verdict, then inject 1-3 papers with opposing conclusions. Measure: (a) does the classifier's sufficiency score drop appropriately? (b) does the system request more evidence to resolve the conflict?
-
-3. **Source diversity analysis:** For claims labeled SUFFICIENT, measure the number of unique research groups contributing evidence. Correlate with correctness: do diverse-source decisions have higher accuracy than single-source decisions?
-
-4. **Calibration curve:** Plot predicted confidence vs. actual accuracy across all claims. A well-calibrated classifier should have predicted confidence ≈ actual accuracy. Report Expected Calibration Error (ECE).
+### 6.3 Training Data Generation (Self-Consistency)
 
 ```python
-def test_prior_override(claim, state, classifier, llm):
-    """Test whether the classifier is relying on LLM priors rather than evidence."""
-    # Decision with evidence
-    signals_with = extract_signals(state, claim, llm)
-    decision_with = classifier(state, signals_with)
+# src/scripts/generate_training_data.py
+
+"""
+Generate training data for the sufficiency classifier using self-consistency.
+
+For each claim in SciFact:
+1. Retrieve evidence at k ∈ {1, 3, 5, 10, 15, 20} papers
+2. At each k, sample 10 LLM verdicts at temperature 0.7
+3. Compute agreement rate
+4. Label based on agreement + gold label match
+"""
+
+import asyncio
+import json
+from pathlib import Path
+from anthropic import AsyncAnthropic
+
+client = AsyncAnthropic()
+
+async def sample_verdicts(claim: str, evidence: str, n_samples: int = 10) -> list[str]:
+    """Sample n verdicts from the LLM at temperature 0.7."""
+    verdicts = []
+    tasks = []
+    for _ in range(n_samples):
+        tasks.append(client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=50,
+            temperature=0.7,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Based on the following evidence, is this claim SUPPORTED, "
+                    f"REFUTED, or is there INSUFFICIENT evidence?\n\n"
+                    f"Claim: {claim}\n\nEvidence:\n{evidence}\n\n"
+                    f"Answer with exactly one word: SUPPORTED, REFUTED, or INSUFFICIENT"
+                )
+            }]
+        ))
     
-    # Decision with empty state
-    empty_state = EvidenceState(claim, state.subclaims)
-    signals_without = extract_signals(empty_state, claim, llm)
-    decision_without = classifier(empty_state, signals_without)
+    responses = await asyncio.gather(*tasks)
+    for resp in responses:
+        text = resp.content[0].text.strip().upper()
+        if "SUPPORT" in text:
+            verdicts.append("SUPPORT")
+        elif "REFUT" in text:
+            verdicts.append("REFUTE")
+        else:
+            verdicts.append("INSUFFICIENT")
     
-    # If decisions agree, evidence didn't matter
-    prior_dominated = (decision_with['sufficiency'].argmax() == 
-                       decision_without['sufficiency'].argmax())
+    return verdicts
+
+
+def compute_label(verdicts: list[str], gold_label: str) -> tuple[str, str]:
+    """Compute training label from self-consistency signal.
+    
+    Returns:
+        (training_label, diagnostic_label) where:
+        - training_label is one of: SUFFICIENT_SUPPORT, SUFFICIENT_REFUTE, INSUFFICIENT
+          (maps to the classifier's 3-class head)
+        - diagnostic_label adds CONFIDENT_WRONG for failure mode analysis
+          (tracked separately, not used in classifier training)
+    """
+    from collections import Counter
+    counts = Counter(verdicts)
+    majority = counts.most_common(1)[0]
+    agreement = majority[1] / len(verdicts)
+    majority_verdict = majority[0]
+    
+    if agreement >= 0.8 and majority_verdict == gold_label:
+        return f"SUFFICIENT_{gold_label}", f"SUFFICIENT_{gold_label}"
+    elif agreement >= 0.8 and majority_verdict != gold_label:
+        # CONFIDENT_WRONG: high agreement but wrong answer.
+        # For classifier training: map to INSUFFICIENT (conservative — don't
+        # let the classifier call this "sufficient" since the verdict is wrong).
+        # For failure mode analysis: track separately as CONFIDENT_WRONG.
+        return "INSUFFICIENT", "CONFIDENT_WRONG"
+    else:
+        return "INSUFFICIENT", "INSUFFICIENT"
+
+
+async def generate_training_data(
+    claims_path: Path,
+    corpus_path: Path,
+    output_path: Path,
+    k_values: list[int] = [1, 3, 5, 10, 15, 20]
+):
+    """Generate training dataset for the sufficiency classifier."""
+    # Load SciFact claims and corpus
+    claims = json.loads(claims_path.read_text())
+    # ... retrieval and sampling logic ...
+    # Each sample: (features, label) where features come from the evidence state
+    # at retrieval depth k, and label comes from self-consistency + gold
+    pass
+```
+
+### 6.3.1 Heuristic Gap Label Generation
+
+The sufficiency head is trained with self-consistency labels, but the gap head needs
+labels identifying *what type* of evidence is missing. These are derived heuristically
+from the evidence state — no LLM calls required during label generation.
+
+```python
+# src/evidence_programming/classifier/gap_labels.py
+
+"""
+Generate gap type training labels from evidence state features.
+
+The MLP gap head predicts which of 8 gap types are present. Training labels
+are derived heuristically from evidence state, not from LLM analysis.
+This keeps the entire classifier pipeline LLM-free.
+"""
+
+from ..state.schema import EvidenceState, GapType
+import numpy as np
+
+def generate_gap_labels(state: EvidenceState) -> dict[str, float]:
+    """
+    Produce a binary label (0 or 1) for each of the 8 gap types.
+    These become the multi-label targets for the gap_head during training.
+    
+    Heuristics are intentionally simple — the MLP learns to refine them.
+    """
+    n_subclaims = max(len(state.subclaims), 1)
+    labels = {}
+    
+    # 1. MISSING_SUBCLAIM: any subclaim with fewer than 2 relevant SUPPORT/REFUTE facts
+    undercovered = sum(
+        1 for sc in state.subclaims
+        if len([f for f in state.facts
+                if sc in f.relevant_subclaims and f.stance != "NEUTRAL"]) < 2
+    )
+    labels[GapType.MISSING_SUBCLAIM.value] = 1.0 if undercovered > 0 else 0.0
+    
+    # 2. CONTRADICTORY: unresolved conflicts with severity > 0.5
+    severe_conflicts = [c for c in state.conflicts if c.severity > 0.5]
+    labels[GapType.CONTRADICTORY.value] = 1.0 if len(severe_conflicts) > 0 else 0.0
+    
+    # 3. LOW_DIVERSITY: fewer unique source papers than subclaims
+    unique_sources = len(set(f.source_pmid for f in state.facts)) if state.facts else 0
+    labels[GapType.LOW_DIVERSITY.value] = 1.0 if unique_sources < n_subclaims else 0.0
+    
+    # 4. WEAK_STANCE: >50% of facts are NEUTRAL
+    if state.facts:
+        neutral_ratio = sum(1 for f in state.facts if f.stance == "NEUTRAL") / len(state.facts)
+        labels[GapType.WEAK_STANCE.value] = 1.0 if neutral_ratio > 0.5 else 0.0
+    else:
+        labels[GapType.WEAK_STANCE.value] = 1.0
+    
+    # 5-8. Semantic gap types: derived from keyword absence in extracted facts.
+    # These are coarser signals — the MLP learns the boundary.
+    fact_text = " ".join(f.text.lower() for f in state.facts)
+    
+    mechanism_keywords = {"mechanism", "pathway", "causes", "mediates", "via", "through"}
+    labels[GapType.MISSING_MECHANISM.value] = (
+        0.0 if any(kw in fact_text for kw in mechanism_keywords) else 1.0
+    )
+    
+    quant_keywords = {"mg", "dose", "%", "fold", "ci ", "p=", "p<", "ratio", "odds"}
+    labels[GapType.MISSING_QUANTITATIVE.value] = (
+        0.0 if any(kw in fact_text for kw in quant_keywords) else 1.0
+    )
+    
+    temporal_keywords = {"weeks", "months", "years", "longitudinal", "follow-up", "duration"}
+    labels[GapType.MISSING_TEMPORAL.value] = (
+        0.0 if any(kw in fact_text for kw in temporal_keywords) else 1.0
+    )
+    
+    population_keywords = {"patients", "subjects", "cohort", "participants", "population", "n="}
+    labels[GapType.MISSING_POPULATION.value] = (
+        0.0 if any(kw in fact_text for kw in population_keywords) else 1.0
+    )
+    
+    return labels
+```
+
+### 6.4 CLI Inference Entry Point
+
+```python
+# src/evidence_programming/classifier/inference.py
+
+"""
+CLI entry point for sufficiency classification.
+Called by the check_sufficiency MCP tool.
+
+Usage: python -m evidence_programming.classifier.inference evidence_state.json
+Outputs: JSON with label, confidence, gaps
+"""
+
+import sys
+import json
+import torch
+from pathlib import Path
+from ..state.schema import EvidenceState, Gap, GapType
+from .features import extract_features
+from .model import SufficiencyClassifier
+
+MODEL_PATH = Path(__file__).parent.parent.parent.parent / "data" / "classifier" / "best_model.pt"
+
+GAP_TYPES = list(GapType)
+
+def predict(state: EvidenceState) -> dict:
+    model = SufficiencyClassifier()
+    model.load_state_dict(torch.load(MODEL_PATH, weights_only=True))
+    model.eval()
+    
+    features = extract_features(state)
+    x = torch.tensor(features).unsqueeze(0)
+    
+    with torch.no_grad():
+        output = model(x)
+    
+    # Sufficiency label
+    labels = ["SUFFICIENT_SUPPORT", "SUFFICIENT_REFUTE", "INSUFFICIENT"]
+    label_idx = output["sufficiency_logits"].argmax(dim=1).item()
+    label = labels[label_idx]
+    
+    # Calibrated confidence
+    confidence = output["confidence"].item()
+    
+    # Gap predictions
+    gap_probs = output["gap_probs"].squeeze().numpy()
+    gaps = []
+    for i, prob in enumerate(gap_probs):
+        if prob > 0.3:  # threshold for reporting a gap
+            # Map gap to the lowest-coverage subclaim of that type
+            subclaim = min(
+                state.subclaims,
+                key=lambda sc: state.coverage.get(sc, 0.0)
+            )
+            gaps.append(Gap(
+                subclaim=subclaim,
+                gap_type=GAP_TYPES[i],
+                description=f"{GAP_TYPES[i].value} for subclaim: {subclaim}",
+                priority=float(prob)
+            ))
+    
+    gaps.sort(key=lambda g: g.priority, reverse=True)
     
     return {
-        'prior_dominated': prior_dominated,
-        'confidence_with': decision_with['confidence'].item(),
-        'confidence_without': decision_without['confidence'].item(),
-        'confidence_delta': (decision_with['confidence'] - decision_without['confidence']).item()
+        "label": label,
+        "confidence": round(confidence, 4),
+        "gaps": [g.model_dump() for g in gaps]
     }
+
+
+if __name__ == "__main__":
+    state_path = Path(sys.argv[1])
+    state = EvidenceState.model_validate_json(state_path.read_text())
+    result = predict(state)
+    print(json.dumps(result))
 ```
 
 ---
 
-## 5. Evaluation Plan
+## 7. Evaluation Runner
 
-### 5.1 Datasets
+```python
+# src/evidence_programming/evaluation/runner.py
 
-| Dataset | Size | Scope | Why Include |
-|---|---|---|---|
-| **SciFact** (Wadden et al., 2020) | ~1,400 claims, 5K abstracts | Biomedical, abstract-level | Standard benchmark; enables comparison with all prior work |
-| **SciFact-Open** (Wadden et al., 2022) | ~1,400 claims, 500K abstracts | Biomedical, open-domain | Tests retrieval at scale; stresses gap-directed retrieval and compression |
-| **SciClaimHunt** (Bose et al., 2025) | Larger, full-text claims | Multi-domain scientific | Tests full-text evidence, moves beyond abstract limitation |
-| **FEVER** (Thorne et al., 2018) | 185K claims, Wikipedia | General factual | Tests generalization beyond scientific domain (Review P5) |
+import asyncio
+import json
+from pathlib import Path
+from ..orchestrator import verify_claim
+from ..state.manager import StateManager
+from .metrics import compute_metrics
 
-**SciFact-Open is the primary evaluation dataset.** It has 500K abstracts, multiple evidence documents per claim, and variable evidence difficulty — exactly the conditions where our system's advantages (gap-directed retrieval, compression, iterative collection) should matter most.
-
-### 5.2 Baselines
-
-**Tier 1 — Must include (directly compete on the same claims):**
-
-| Baseline | Why Critical | Source |
-|---|---|---|
-| **"Sufficient Context"** (Joren et al., ICLR 2025) | Directly solves sufficiency classification; the paper that most threatens our novelty | Must show our lightweight trained classifier matches or beats their prompted Gemini |
-| **SAFE** (Wei et al., NeurIPS 2024) | SOTA for agentic fact verification; single-agent baseline | Must show multi-step metacognitive control outperforms SAFE's single-agent pipeline |
-| **Self-RAG** (Asai et al., ICLR 2024) | Strongest learned retrieval decision baseline | Must show our approach outperforms reflection tokens |
-| **MultiVerS** (Wadden et al., 2022) | SOTA on SciFact leaderboard (F1 ~0.73) | Must beat the fine-tuned specialist |
-
-**Tier 2 — Should include (cover the landscape):**
-
-| Baseline | Why Relevant |
-|---|---|
-| **Stop-RAG** (2025) | Q-learning for retrieval stopping — different stopping mechanism |
-| **FIRE** (Xie et al., NAACL 2025) | Iterative retrieval-and-verification with adaptive query generation |
-| **RAPTOR** (Sarthi et al., ICLR 2024) | Hierarchical compression baseline |
-| **Fixed-k RAG** (k=5, k=10, k=20) | Non-adaptive baselines showing the value of learned stopping |
-
-**Tier 3 — Nice to have:**
-
-| Baseline | Why |
-|---|---|
-| **RECOMP** (Xu et al., ICLR 2024) | Compression-specific baseline for the compression ablation |
-| **IRCoT** (Trivedi et al., 2023) | Interleaved retrieval + CoT, fixed iterations |
-
-### 5.3 Metrics
-
-| Metric | What It Measures |
-|---|---|
-| **Label F1** | Verification accuracy (SUPPORT/REFUTE/NEI) |
-| **Label+Rationale F1** | Accuracy with correct evidence sentences |
-| **Abstract-level retrieval F1** | Finding the right papers |
-| **Cost (tokens/claim)** | Computational efficiency |
-| **LLM calls/claim** | API cost proxy |
-| **Sufficiency rounds** | How many iterations before stopping |
-| **Compression ratio** | Tokens retained after compression |
-| **ECE** | Calibration of confidence scores |
-
-**Primary comparison:** Label F1 vs. tokens/claim (cost-accuracy Pareto frontier). This follows HippoRAG's NeurIPS 2024 precedent of showing efficiency alongside accuracy.
-
-### 5.4 Ablation Studies
-
-Six ablations, each removing one component to isolate its contribution:
-
-| Ablation | What's Removed | What It Tests |
-|---|---|---|
-| **A1: No sufficiency classifier** | Replace φ with fixed 5 iterations | Value of learned stopping |
-| **A2: No gap-directed retrieval** | Replace gap queries with re-queries of the original claim | Value of targeted evidence gathering |
-| **A3: No compression** | Let context grow unbounded (truncate if over limit) | Value of sufficiency-preserving compression |
-| **A4: No parallel processing** | Run all operations sequentially | Speed vs. quality tradeoff of parallelism |
-| **A5: No conflict detection** | Remove conflict detection agent | Value of explicit conflict awareness |
-| **A6: Standard compression** | Replace sufficiency-preserving compression with RECOMP-style abstractive compression | Value of the sufficiency invariant specifically |
-
-**A6 is the most important ablation.** It directly tests whether sufficiency-aware compression is better than standard compression — this is the paper's strongest novel claim.
+async def evaluate_dataset(
+    claims_path: Path,
+    output_dir: Path,
+    model: str = "claude-sonnet-4-5-20250929",
+    max_workers: int = 5
+):
+    """Run evidence programming on a dataset of claims."""
+    claims = json.loads(claims_path.read_text())
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    semaphore = asyncio.Semaphore(max_workers)
+    
+    async def process_claim(claim_data):
+        async with semaphore:
+            claim_id = claim_data["id"]
+            claim_text = claim_data["claim"]
+            workspace = output_dir / f"claim_{claim_id}"
+            
+            # Initialize state
+            manager = StateManager(workspace)
+            manager.init(claim_text, subclaims=[])  # orchestrator decomposes
+            
+            # Run evidence programming
+            verdict = await verify_claim(
+                claim=claim_text,
+                workspace=workspace,
+                model=model
+            )
+            
+            # Save result
+            result = {
+                "claim_id": claim_id,
+                "claim": claim_text,
+                "gold_label": claim_data.get("label"),
+                "predicted": verdict.model_dump(),
+            }
+            (workspace / "result.json").write_text(json.dumps(result, indent=2))
+            
+            return result
+    
+    tasks = [process_claim(c) for c in claims]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Filter out errors
+    valid_results = [r for r in results if isinstance(r, dict)]
+    errors = [r for r in results if isinstance(r, Exception)]
+    
+    # Compute metrics
+    metrics = compute_metrics(valid_results)
+    
+    summary = {
+        "total": len(claims),
+        "completed": len(valid_results),
+        "errors": len(errors),
+        "metrics": metrics
+    }
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    
+    return summary
+```
 
 ---
 
-## 6. Implementation Stages
+## 8. Implementation Stages (Revised for SDK)
 
-### Stage 1: Evidence State + Tools (Week 1-2)
+### Stage 1: Foundation (Week 1-2)
 
-**Goal:** Working evidence state container with all tool operations.
+**Goal:** Working state management + retrieval tools that the agent can call.
 
-**Tasks:**
-- [ ] Implement `EvidenceState` class (from NPES, renamed)
-- [ ] Implement `VerificationTools` class (from NPES, renamed)
-- [ ] Implement claim decomposition (LLM prompt → subclaims)
-- [ ] Set up PubMed retrieval (API integration)
-- [ ] Set up LLM integration (async, batched)
-- [ ] Unit tests for atomic operations and thread safety
+Tasks:
+- Set up project structure with `pyproject.toml` (dependencies: `claude-agent-sdk`, `httpx`, `pydantic`, `torch`)
+- Implement `state/schema.py` — all Pydantic models
+- Implement `state/manager.py` — JSON persistence
+- Implement `tools/retrieval.py` — PubMed search as MCP tool
+- Implement `tools/evidence_state.py` — state read/write MCP tools
+- Write `tests/test_state.py` and `tests/test_tools.py`
+- **Verification:** Agent can search PubMed and add papers to state via tool calls
 
-**Deliverable:** Can retrieve papers, extract facts, compute coverage for a claim. No control loop yet.
+```bash
+# Smoke test
+python -c "
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions, create_sdk_mcp_server
+from evidence_programming.tools.retrieval import search_pubmed
+from evidence_programming.tools.evidence_state import get_evidence_summary
 
-### Stage 2: Sufficiency Classifier Training (Week 3-4)
+server = create_sdk_mcp_server('ev', tools=[search_pubmed, get_evidence_summary])
+opts = ClaudeAgentOptions(
+    mcp_servers={'ev': server},
+    allowed_tools=['mcp__ev__*'],
+    permission_mode='acceptEdits',
+    max_turns=5,
+)
 
-**Goal:** Trained classifier that predicts sufficiency from evidence state features.
+async def main():
+    async for msg in query(
+        prompt='Search PubMed for metformin diabetes and show me the evidence summary',
+        options=opts
+    ):
+        print(msg)
 
-**Tasks:**
-- [ ] Generate training data on SciFact: for each claim × each k ∈ {1,3,5,10,15,20}, run 10 LLM samples, record consistency + correctness
-- [ ] Implement feature extraction (16 features from state + signals)
-- [ ] Train MLP classifier (multi-task: sufficiency + confidence + gaps)
-- [ ] Evaluate classifier accuracy on held-out claims
-- [ ] Calibration analysis (ECE, reliability diagram)
-- [ ] Prior override test (Section 4.2)
+asyncio.run(main())
+"
+```
 
-**Deliverable:** Trained classifier checkpoint. Classifier evaluation report showing accuracy, calibration, and failure mode analysis.
+### Stage 2: Sufficiency Classifier (Week 3-4)
 
-### Stage 3: Metacognitive Control Loop (Week 5-6)
+**Goal:** Trained classifier that can be called as a tool.
 
-**Goal:** Full Algorithm 1 running end-to-end.
+Tasks:
+- Implement `scripts/generate_training_data.py` — self-consistency sampling on SciFact
+- Run sampling: ~1,400 claims × 6 k-values × 10 samples = ~84K API calls (~$50-100 on Sonnet)
+- Implement `classifier/features.py`, `classifier/model.py`
+- Train MLP classifier with multi-task loss (sufficiency + confidence + gaps)
+- Implement `classifier/inference.py` — CLI entry point
+- Implement `tools/sufficiency.py` — MCP tool wrapping the CLI
+- Calibration analysis: plot predicted confidence vs actual accuracy
+- **Verification:** `check_sufficiency` tool returns meaningful feedback on real evidence states
 
-**Tasks:**
-- [ ] Implement the main loop (Algorithm 1)
-- [ ] Implement PROCESS subroutine (parallel execution)
-- [ ] Implement gap-directed retrieval (LLM query formulation → targeted search)
-- [ ] Implement report generation
-- [ ] End-to-end test on 50 SciFact claims
-- [ ] Tune hyperparameters: threshold τ, max iterations T, context budget B
+### Stage 3: Subagents + Evidence Programming Loop (Week 5-6)
 
-**Deliverable:** Working system that takes a claim and produces a verdict + confidence + report.
+**Goal:** Full orchestrator running the evidence programming loop with subagents.
 
-### Stage 4: Sufficiency-Preserving Compression (Week 7-8)
+Tasks:
+- Define subagents: `fact-extractor`, `synthesizer`, `conflict-detector`, `gap-query-formulator`
+- Implement `orchestrator.py` with system prompt and all tool registrations
+- Implement `hooks.py` — iteration limits, logging, safety guards
+- Tune system prompt: ensure agent calls `check_sufficiency` after each retrieval round
+- Tune `max_turns`, token budget, sufficiency threshold
+- Test on 10 SciFact claims end-to-end
+- **Verification:** Agent produces structured verdicts, respects iteration limits, uses gap feedback to direct retrieval
 
-**Goal:** Compression with formal invariant, plus ablation evidence.
+### Stage 4: Compression + Budget Management (Week 7-8)
 
-**Tasks:**
-- [ ] Implement three-level compression (dedup → synthesis refresh → aggressive)
-- [ ] Implement invariant checking (φ(S') vs φ(S))
-- [ ] Run compression ablation: our method vs. RECOMP-style vs. truncation vs. RAPTOR-style
-- [ ] Measure invariant violation rate across all SciFact claims
-- [ ] ε sensitivity sweep
-- [ ] Compression ratio vs. accuracy Pareto plot
+**Goal:** Agent can handle long evidence chains without exceeding context.
 
-**Deliverable:** Compression module with empirical invariant validation. Ablation results showing advantage over standard compression.
+Tasks:
+- Implement three-level compression in `tools/compression.py`
+- Implement sufficiency invariant check (run classifier before/after compression)
+- Test compression on claims that require 15+ papers
+- ε sensitivity sweep: {0.01, 0.02, 0.05, 0.10}
+- Compare against truncation and RECOMP baselines
+- **Verification:** Agent can verify claims requiring extensive evidence without context overflow
 
 ### Stage 5: Full Evaluation (Week 9-11)
 
-**Goal:** Complete experimental results on all datasets and baselines.
+**Goal:** Complete experimental results on all datasets.
 
-**Tasks:**
-- [ ] Run on SciFact (standard leaderboard comparison)
-- [ ] Run on SciFact-Open (500K abstracts, open-domain)
-- [ ] Run on SciClaimHunt (full-text claims)
-- [ ] Run on FEVER subset (generalization test)
-- [ ] Implement and run all Tier 1 baselines
-- [ ] Implement and run all Tier 2 baselines (as time allows)
-- [ ] Run all 6 ablations
-- [ ] Cost-accuracy Pareto analysis
-- [ ] Adversarial evidence injection experiments
-- [ ] Source diversity analysis
-- [ ] Qualitative examples (what does the system do well? where does it fail?)
+Tasks:
+- Implement `evaluation/runner.py` and `evaluation/metrics.py`
+- Run on SciFact (1,400 claims), SciFact-Open (1,400 claims, 500K corpus)
+- Run on SciClaimHunt and FEVER subsets
+- Implement baselines: Fixed-k RAG, Self-RAG-style, SAFE-style
+- Run all 6 ablations (A1-A6 from updated plan)
+- Generate cost-accuracy Pareto curves
+- Adversarial experiments (Section 4 of updated plan)
+- **Verification:** Complete results tables for the paper
 
-**Deliverable:** Complete results tables, Pareto plots, ablation tables, qualitative analysis.
+### Stage 6: Writing + Polish (Week 12-13)
 
-### Stage 6: Writing (Week 12-13)
+**Goal:** Paper draft.
 
-**Goal:** Complete paper draft.
-
-**Paper structure:**
-
-1. **Introduction** — Frame the problem as "agentic systems need metacognitive control to know when they have enough evidence." Motivate with the scientific verification use case. State the primary contribution (metacognitive control loop) and key technical novelty (sufficiency-preserving compression).
-
-2. **Related Work** — Organize by: (a) Adaptive retrieval and learned stopping (Self-RAG, Stop-RAG, Sufficient Context, RASC, SEARAG), (b) Multi-agent verification (SAFE, LoCal, MA-RAG), (c) Evidence compression (RAPTOR, RECOMP, xRAG). Clearly articulate what our framework adds that none of these have.
-
-3. **Method** — Algorithm 1 as the centerpiece. Subsections: evidence state, sufficiency classifier, gap-directed retrieval, sufficiency-preserving compression (with formal definition).
-
-4. **Experiments** — Main results, ablations, compression analysis, failure mode analysis, cost-accuracy Pareto.
-
-5. **Analysis** — Qualitative examples, when does the system fail, calibration analysis, generalization to FEVER.
-
-6. **Conclusion** — The metacognitive control paradigm for agentic evidence gathering.
+Tasks:
+- Write motivating example showing the agent programming on evidence
+- Draft all sections per updated plan structure
+- Generate figures: Pareto curves, sufficiency trajectories, calibration plots
+- Qualitative examples of gap-directed vs undirected retrieval
+- Internal review and revision
 
 ---
 
-## 7. Risk Register
+## 9. Dependencies and Environment
 
-| Risk | Severity | Mitigation |
-|---|---|---|
-| "Sufficient Context" comparison is unfavorable | High | Their method uses Gemini 1.5 Pro (expensive). Our advantage is cost: lightweight classifier vs. full LLM call. Frame as efficiency contribution if accuracy is similar. |
-| SciFact too small to show compression advantage | Medium | SciFact-Open (500K abstracts) is the primary dataset. If compression advantage doesn't show on small SciFact, it should show when retrieval returns many papers on SciFact-Open. |
-| Self-consistency fails on misleading evidence | Medium | Section 4 failure mode analysis. If failure rate is high, report it honestly and propose mitigations (source diversity weighting, prior override detection). |
-| Parallel processing doesn't improve quality, only speed | Low | Fine — frame parallelism as an implementation efficiency, not a quality contribution. The paper's claims don't depend on parallelism improving accuracy. |
-| Compression invariant is violated frequently | High | If ε=0.05 is violated >10% of the time, increase ε or improve the conservative fallback. Report violation rates transparently. |
-| FEVER generalization is weak | Medium | Scientific claims and Wikipedia claims are structurally different. If FEVER results are mediocre, present as "the framework is domain-specific but the control loop architecture is general" and call for future work on domain adaptation. |
+```toml
+# pyproject.toml
+[project]
+name = "evidence-programming"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "claude-agent-sdk>=0.1.20",
+    "anthropic>=0.40.0",
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    "torch>=2.0",
+    "numpy>=1.24",
+    "scikit-learn>=1.3",  # for calibration metrics
+    "lxml",               # for PubMed XML parsing
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+```
+
+Environment variables:
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export EVIDENCE_PROGRAMMING_DATA=./data
+export EVIDENCE_PROGRAMMING_MODEL=claude-sonnet-4-5-20250929
+```
 
 ---
 
-## 8. Differences from Original Plans
+## 10. Key Design Decisions and Rationale
 
-### Removed
-- "Notebook" as a claimed contribution (now just an implementation choice)
-- Seven named agent classes (replaced with direct async functions)
-- NPES as a separate system
-- RES as a separate system
-- Claims about parallelism being novel
+### Why MCP tools instead of raw Bash scripts?
 
-### Added
-- Formal compression invariant (Definition + experiments)
-- Failure mode taxonomy and adversarial experiments
-- Expanded baselines (Sufficient Context, SAFE, FIRE, Stop-RAG)
-- Expanded datasets (SciFact-Open, SciClaimHunt, FEVER)
-- Six structured ablations
-- Cost-accuracy Pareto analysis
-- Calibration analysis (ECE)
-- Prior override detection
-- Clear contribution hierarchy (primary → supporting)
+MCP tools give the agent typed interfaces with clear descriptions. The agent sees `search_pubmed(query, max_results)` rather than having to construct bash commands. This makes the programming analogy concrete — the agent has a well-defined instruction set.
 
-### Restructured
-- Algorithm 1 unifies both old systems into one specification
-- Sufficiency-preserving compression elevated to primary technical novelty
-- Metacognitive control loop framed as the architectural contribution
-- Parallel execution demoted to implementation detail
-- Report generation demoted to system property
+### Why subagents for extraction/synthesis?
+
+Paper processing produces large amounts of intermediate text (full abstracts, extracted fact lists). Running this in the main agent's context would quickly fill the context window. Subagents process in isolation and return only the structured results, keeping the orchestrator's context focused on the programming loop — the feedback/decide/act cycle.
+
+### Why persist state as JSON files?
+
+The SDK's built-in tools (Read, Write, Bash) can interact with files natively. The agent can `Read evidence_state.json` to inspect state directly, or use structured MCP tools for specific operations. This dual access means the agent has both programmatic tools and raw inspection capability — exactly like a coding agent has both API calls and the ability to read source files.
+
+### Why run the classifier via Bash subprocess?
+
+Decoupling. The classifier is a separate Python process with its own PyTorch model. The MCP tool invokes it, parses the JSON output, and returns structured feedback. This mirrors how a coding agent runs `python -m pytest` as a subprocess and interprets the output. The classifier doesn't share memory or state with the SDK process.
+
+### Why structured outputs for the final verdict?
+
+The SDK's structured output feature guarantees a valid `VerificationVerdict` JSON matching our Pydantic schema. This means the evaluation runner can parse verdicts reliably without worrying about free-text parsing. Every claim produces a typed result with verdict, confidence, reasoning, evidence, and remaining gaps.
+
+### Why hooks for iteration limits?
+
+The `PreToolUse` hook on `check_sufficiency` enforces the max iteration limit deterministically, independent of whether the agent's system prompt compliance is perfect. This is a safety rail — the agent can't accidentally run forever even if it ignores its instructions. The hook denies the tool call and forces the agent to produce a final verdict.

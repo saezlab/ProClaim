@@ -1,15 +1,37 @@
 """
 Core data models for the Evidence Verification system.
 
+Pydantic v2 models with backward-compatible field names.
 PaperRecord and Fact are the atomic data units stored in EvidenceState.
+Additional types: Stance, GapType, Conflict, Gap, SufficiencyResult, VerificationVerdict.
 """
 
-from dataclasses import dataclass, field
-from typing import Optional, List
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class PaperRecord:
+class Stance(str, Enum):
+    """Stance of a fact relative to the claim."""
+    SUPPORT = "SUPPORT"
+    REFUTE = "REFUTE"
+    NEUTRAL = "NEUTRAL"
+
+
+class GapType(str, Enum):
+    """Types of evidence gaps the classifier can identify."""
+    MISSING_SUBCLAIM = "missing_subclaim_evidence"
+    CONTRADICTORY = "contradictory_evidence"
+    LOW_DIVERSITY = "low_source_diversity"
+    WEAK_STANCE = "weak_stance_evidence"
+    MISSING_MECHANISM = "missing_mechanism"
+    MISSING_QUANTITATIVE = "missing_quantitative"
+    MISSING_TEMPORAL = "missing_temporal"
+    MISSING_POPULATION = "missing_population"
+
+
+class PaperRecord(BaseModel):
     """A single paper retrieved from PubMed or other sources."""
 
     pmid: str
@@ -17,6 +39,8 @@ class PaperRecord:
     abstract: str
     full_text: Optional[str] = None
     summary: Optional[str] = None  # L1 — set by summarize_paper tool
+    authors: list[str] = Field(default_factory=list)
+    source: str = "pubmed"  # pubmed | semantic_scholar
 
     def text_for_summarization(self) -> str:
         """Return the best available text for LLM summarization."""
@@ -25,11 +49,49 @@ class PaperRecord:
         return self.abstract
 
 
-@dataclass
-class Fact:
+class Fact(BaseModel):
     """A stance-labeled fact extracted from a paper."""
 
+    id: str = ""
     text: str
-    stance: str  # SUPPORT | REFUTE | NEUTRAL
+    stance: Stance
     source_pmid: str
-    relevant_subclaims: List[str] = field(default_factory=list)
+    relevant_subclaims: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
+class Conflict(BaseModel):
+    """A detected conflict between two facts."""
+
+    id: str
+    fact_a_id: str
+    fact_b_id: str
+    description: str
+    severity: float  # 0-1
+
+
+class Gap(BaseModel):
+    """An identified evidence gap for a subclaim."""
+
+    subclaim: str
+    gap_type: GapType
+    description: str
+    priority: float  # 0-1
+
+
+class SufficiencyResult(BaseModel):
+    """Result from the sufficiency classifier."""
+
+    label: str  # SUFFICIENT_SUPPORT | SUFFICIENT_REFUTE | INSUFFICIENT
+    confidence: float  # 0-1, calibrated
+    gaps: list[Gap]
+
+
+class VerificationVerdict(BaseModel):
+    """Structured output schema for the orchestrator's final answer."""
+
+    verdict: str  # SUPPORT | REFUTE | INSUFFICIENT
+    confidence: float
+    reasoning: str
+    key_evidence: list[str]
+    gaps_remaining: list[str]
