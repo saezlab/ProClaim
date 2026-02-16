@@ -95,3 +95,20 @@ class VerificationVerdict(BaseModel):
     reasoning: str
     key_evidence: list[str]
     gaps_remaining: list[str]
+
+
+class PaperFeatureVector(BaseModel):
+    """Per-paper metadata feature vector for the sufficiency classifier.
+
+    All fields are Optional because API calls may fail.
+    Derived features (log_impact_factor, normalized_citation_count) are
+    computed from raw values during extraction.
+    """
+
+    pmid: str
+
+    # --- Metadata features ---
+    publication_year: Optional[int] = None
+    log_impact_factor: Optional[float] = None          # log(1 + IF)
+    normalized_citation_count: Optional[float] = None  # citations / age
+    author_h_index_max: Optional[int] = None           # max h-index among authors
