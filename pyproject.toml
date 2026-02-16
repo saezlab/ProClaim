@@ -20,6 +20,7 @@ dependencies = [
     "pymupdf>=1.23.0",
     "pydantic>=2.0",
     "mcp>=1.0.0",
+    "spacy>=3.0",
 ]
 
 [build-system]

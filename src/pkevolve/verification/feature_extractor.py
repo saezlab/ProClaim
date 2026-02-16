@@ -24,9 +24,93 @@ from pkevolve.search.paper_utils import (
     get_pubmed_metadata,
     get_session,
 )
-from pkevolve.verification.data_models import PaperFeatureVector
+from pkevolve.verification.data_models import NLPFeatureVector, PaperFeatureVector
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# General NER — Entity Overlap Ratio
+# ---------------------------------------------------------------------------
+
+_spacy_nlp = None
+
+
+def _get_spacy_nlp():
+    """Load spaCy NLP model (singleton, loaded on first call)."""
+    global _spacy_nlp
+    if _spacy_nlp is None:
+        import spacy
+        try:
+            # Try loading scispaCy model
+            _spacy_nlp = spacy.load("en_core_sci_sm")
+        except OSError:
+            # Fallback or try to import it directly if not linked
+            try:
+                import en_core_sci_sm
+                _spacy_nlp = en_core_sci_sm.load()
+            except ImportError:
+                print("Warning: en_core_sci_sm not found. Falling back to en_core_web_sm.")
+                _spacy_nlp = spacy.load("en_core_web_sm")
+    return _spacy_nlp
+
+
+def extract_entities(text: str) -> set[str]:
+    """Extract named entities from text using scispaCy (or fallback).
+
+    Uses a biomedical NER model (en_core_sci_sm) to extract entities like
+    genes, diseases, chemicals, etc.
+
+    Returns a set of lowercased entity surface forms.
+    Empty string returns an empty set.
+    """
+    if not text or not text.strip():
+        return set()
+    nlp = _get_spacy_nlp()
+    doc = nlp(text)
+    
+    # scispaCy is trained to detect biomedical entities directly in doc.ents
+    return {ent.text.lower() for ent in doc.ents}
+
+
+def compute_entity_overlap(claim: str, evidence_text: str) -> NLPFeatureVector:
+    """Compute Entity Overlap Ratio between a claim and evidence text.
+
+    Uses Jaccard similarity: |A ∩ B| / |A ∪ B| where A and B are
+    the named entity sets from the claim and evidence respectively.
+
+    Args:
+        claim: The scientific claim text.
+        evidence_text: The evidence text (abstract, sentence, etc.).
+
+    Returns:
+        NLPFeatureVector with entity_overlap_ratio and extracted entities.
+        Ratio is None if either entity set is empty.
+    """
+    claim_ents = extract_entities(claim)
+    evidence_ents = extract_entities(evidence_text)
+
+    # Jaccard Ratio
+    ratio = None
+    union = claim_ents | evidence_ents
+    if union:
+        ratio = len(claim_ents & evidence_ents) / len(union)
+
+    # Claim Entity Coverage (Recall)
+    coverage = None
+    if claim_ents:
+        coverage = len(claim_ents & evidence_ents) / len(claim_ents)
+    elif not claim_ents: 
+        # If claim has no entities, coverage is arguably 1.0 (trivial) or None.
+        # Let's say None or 0.0? Usually None if not applicable.
+        pass
+
+    return NLPFeatureVector(
+        entity_overlap_ratio=ratio,
+        claim_entity_coverage=coverage,
+        claim_entities=sorted(claim_ents),
+        evidence_entities=sorted(evidence_ents),
+    )
 
 
 # ---------------------------------------------------------------------------
