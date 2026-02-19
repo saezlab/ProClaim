@@ -83,11 +83,12 @@ PRESETS: dict[str, dict] = {
         "api_key": "EMPTY",
         "model": "glm-5-fp8",
     },
-    # "glm": {
-    #     "base_url": "https://open.bigmodel.cn/api/paas/v4/",
-    #     "api_key_env": "GLM_API_KEY",
-    #     "model": "glm-4.6",
-    # },
+    "glm": {
+        "base_url": "https://api.z.ai/api/anthropic",
+        "api_key": "07694b2a281c4a41bbf005365c2c8196.NOfxhgPns5mksbTp",
+        "model": "glm-5",
+        "backend": "anthropic",
+    },
     # "anthropic": {
     #     "base_url": "https://api.anthropic.com/v1/",
     #     "api_key_env": "ANTHROPIC_API_KEY",
@@ -102,25 +103,46 @@ PRESETS: dict[str, dict] = {
 
 
 class LLMClient:
-    """Thin wrapper around openai.OpenAI for any compatible endpoint."""
+    """Thin wrapper supporting OpenAI-compatible and Anthropic endpoints."""
 
-    def __init__(self, base_url: str, api_key: str, model: str):
-        from openai import OpenAI
-
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
+    def __init__(self, base_url: str, api_key: str, model: str,
+                 backend: str = "openai"):
         self.model = model
+        self.backend = backend
+
+        if backend == "anthropic":
+            from anthropic import Anthropic
+
+            self.client = Anthropic(
+                api_key=api_key,
+                base_url=base_url,
+            )
+        else:
+            from openai import OpenAI
+
+            self.client = OpenAI(base_url=base_url, api_key=api_key)
 
     def chat(self, system: str, user: str, temperature: float = 0.3) -> str:
         """Single-turn chat completion. Returns the assistant message text."""
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=temperature,
-        )
-        return response.choices[0].message.content
+        if self.backend == "anthropic":
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+                temperature=temperature,
+            )
+            return response.content[0].text
+        else:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=temperature,
+            )
+            return response.choices[0].message.content
 
 
 # ---------------------------------------------------------------------------
@@ -475,8 +497,9 @@ def main():
 
     client = LLMClient(
         base_url=cfg["base_url"], api_key=cfg["api_key"], model=cfg["model"],
+        backend=cfg.get("backend", "openai"),
     )
-    print(f"Endpoint: {cfg['base_url']}  Model: {cfg['model']}")
+    print(f"Endpoint: {cfg['base_url']}  Model: {cfg['model']}  Backend: {cfg.get('backend', 'openai')}")
 
     # -- Workspace -----------------------------------------------------------
     workspace = Path(args.output_dir) if args.output_dir else Path(
