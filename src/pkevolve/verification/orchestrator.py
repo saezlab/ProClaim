@@ -4,6 +4,8 @@ Evidence Programming Orchestrator -- Claude Agent SDK integration.
 Agent-driven evidence programming REPL. The agent calls check_sufficiency
 (free) after each retrieval round and uses gap feedback to direct subsequent
 queries.
+
+Connects directly to GLM's native Anthropic-compatible endpoint at api.z.ai.
 """
 
 import asyncio
@@ -26,6 +28,10 @@ from pkevolve.verification.evidence_state import EvidenceState
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+# Default GLM endpoint configuration
+GLM_API_BASE = "https://api.z.ai/api/anthropic"
+GLM_DEFAULT_MODEL = "glm-4.6"
 
 SYSTEM_PROMPT = """\
 You are an evidence programming agent for scientific claim verification.
@@ -79,7 +85,7 @@ your evidence gathering is working.
 async def verify_claim(
     claim: str,
     workspace: Path,
-    model: str = "claude-sonnet-4-5-20250929",
+    model: str = GLM_DEFAULT_MODEL,
     max_iterations: int = 8,
     sufficiency_threshold: float = 0.80,
 ) -> VerificationVerdict:
@@ -102,12 +108,25 @@ async def verify_claim(
     # Build system prompt with workspace path
     system_prompt = SYSTEM_PROMPT.format(workspace=str(workspace))
 
-    # Configure Claude Agent SDK
-    env = {**os.environ}
-    if "ANTHROPIC_API_KEY" not in env:
-        api_key = os.getenv("ANTHROPIC_AUTH_TOKEN", "")
-        if api_key:
-            env["ANTHROPIC_API_KEY"] = api_key
+    # Build environment for the Claude Agent SDK
+    glm_api_key = os.getenv("GLM_API_KEY")
+    if not glm_api_key:
+        raise RuntimeError(
+            "GLM_API_KEY not set. Add it to .env at project root."
+        )
+
+    env = {
+        **os.environ,
+        "API_TIMEOUT_MS": os.getenv("API_TIMEOUT_MS", "3000000"),
+        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+        "ANTHROPIC_AUTH_TOKEN": glm_api_key,
+        "ANTHROPIC_BASE_URL": os.getenv("ANTHROPIC_BASE_URL", GLM_API_BASE),
+    }
+    # Remove ANTHROPIC_API_KEY if inherited from os.environ — its presence
+    # (even empty) can cause the CLI to attempt Anthropic auth and hang.
+    env.pop("ANTHROPIC_API_KEY", None)
 
     options = ClaudeAgentOptions(
         model=model,
@@ -206,7 +225,7 @@ async def verify_claim(
 async def verify_claim_batch(
     claims: list[dict],
     output_dir: Path,
-    model: str = "claude-sonnet-4-5-20250929",
+    model: str = GLM_DEFAULT_MODEL,
     max_workers: int = 3,
     max_iterations: int = 8,
     sufficiency_threshold: float = 0.80,
@@ -218,7 +237,7 @@ async def verify_claim_batch(
     Args:
         claims: List of dicts with at least 'id' and 'text' keys.
         output_dir: Base output directory.
-        model: Claude model identifier.
+        model: Model identifier (default: glm-4.6).
         max_workers: Maximum concurrent verifications.
         max_iterations: Max sufficiency checks per claim.
         sufficiency_threshold: Confidence threshold for sufficiency.
