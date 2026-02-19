@@ -22,6 +22,24 @@ The `scripts/` directory is organized into the following pipelines:
     *   `fetch_signor_paper_details.py`: Data fetching utilities.
 *   **`scripts/claude_sdk/`**: Specialized scripts utilizing the official Anthropic/Claude SDK for high-fidelity tasks involving skills and plugins.
 
+## Feature Extraction Data Flow
+
+```mermaid
+graph TD
+    A[claims.jsonl] -->|claim + evidence doc_id| B[corpus.jsonl]
+    B -->|title, abstract| C{PMID known?}
+    C -->|Yes| D[Direct Retrieval]
+    C -->|No| E[PubMed Title Search via Claude SDK]
+    D --> F[Search Output Dir]
+    E --> F
+    F -->|result.json| G[Extract PMID from Tool Calls]
+    F -->|full_text.txt| H[NLP Feature Extraction]
+    G --> I[Metadata Extraction]
+    G --> J[Combined Feature Dict]
+    H --> J
+    I --> J
+```
+
 ## Usage
 
 Run scripts using `uv run python`:

@@ -34,13 +34,13 @@ These features capture the linguistic alignment and logical entailment between t
 * **Semantic Similarity**
     * **Definition:** Cosine similarity between the embeddings (e.g., SBERT) of the Claim and the Evidence.
     * **Rationale:** Measures topical proximity and relevance in the vector space.
-* **Entity Overlap Ratio**
-    * **Definition:** Jaccard similarity of Named Entities (e.g., drugs, genes, diseases) detected in both texts.
-    * **Rationale:** Prevents "topical similarity but factual mismatch" errors (e.g., same mechanism described for "Mice" vs "Humans").
+* **Claim Entity Coverage (Done)**
+    * **Definition:** Recall of Named Entities in the Claim that also appear in the Evidence: $\frac{|\text{Claim Entities} \cap \text{Evidence Entities}|}{|\text{Claim Entities}|}$.
+    * **Rationale:** Since claims are much shorter than evidence texts (e.g., full abstracts), Jaccard similarity is diluted by the many entities in the evidence. Recall focuses on whether the evidence covers the specific entities mentioned in the claim, providing a more meaningful alignment signal.
 * **Keyword Specificity (IDF-Weighted)**
     * **Definition:** The sum of IDF weights for overlapping tokens.
     * **Rationale:** Ensures the match is driven by specific, information-rich terms rather than common stopwords.
-* **NLI (Natural Language Inference) Entailment Score (Key Feature)**
+* **NLI (Natural Language Inference) Entailment Score**
     * **Definition:** Probabilities predicted by a fine-tuned Natural Language Inference model (e.g., DeBERTa-v3-large).
     * **Output:** Vector: $[P(\text{Entailment}), P(\text{Contradiction}), P(\text{Neutral})]$.
     * **Rationale:** The most direct semantic signal indicating whether the text supports or refutes the claim.
