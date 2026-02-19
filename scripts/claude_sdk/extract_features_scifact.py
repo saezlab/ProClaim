@@ -93,6 +93,49 @@ def compute_recall_from_entities(claim_ents: list[str], text_ents: list[str]) ->
     overlap = claim_set.intersection(text_set)
     return len(overlap) / len(claim_set)
 
+
+class SemanticSimilarityComputer:
+    """Compute SBERT cosine similarity between claim and evidence.
+
+    For long evidence texts that exceed the model's token limit (~512 tokens),
+    the evidence is split into overlapping chunks. Each chunk is compared
+    against the claim and the maximum similarity is returned (max-pooling).
+    """
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2", chunk_size: int = 256, chunk_overlap: int = 64):
+        from sentence_transformers import SentenceTransformer
+        print(f"  Loading SBERT model: {model_name}...")
+        self.model = SentenceTransformer(model_name)
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+
+    def _chunk_text(self, text: str) -> list[str]:
+        """Split text into overlapping word-level chunks."""
+        words = text.split()
+        if len(words) <= self.chunk_size:
+            return [text]
+        chunks = []
+        step = self.chunk_size - self.chunk_overlap
+        for i in range(0, len(words), step):
+            chunk = " ".join(words[i:i + self.chunk_size])
+            chunks.append(chunk)
+            if i + self.chunk_size >= len(words):
+                break
+        return chunks
+
+    def compute(self, claim: str, evidence: str) -> float:
+        """Compute cosine similarity. Returns max similarity over evidence chunks."""
+        from sentence_transformers.util import cos_sim
+
+        chunks = self._chunk_text(evidence)
+        claim_emb = self.model.encode(claim, convert_to_tensor=True)
+        chunk_embs = self.model.encode(chunks, convert_to_tensor=True, batch_size=32)
+
+        # cos_sim returns a (1, N) tensor
+        similarities = cos_sim(claim_emb, chunk_embs)
+        return float(similarities.max().item())
+
+
 # -----------------------------------------------------------------------------
 # 1. PubMed Search & Retrieval (Async)
 # -----------------------------------------------------------------------------
@@ -324,7 +367,8 @@ async def main():
     feature_extractor = PaperFeatureExtractor()
     extracted_features_list = []
 
-    # Initialize MCP Client
+    # Initialize NLP components
+    sim_computer = SemanticSimilarityComputer()
     extractor = BiomedicalEntityExtractor()
     await extractor.__aenter__()
 
@@ -404,9 +448,14 @@ async def main():
                     
                     # Compute Coverage
                     coverage = compute_recall_from_entities(claim_entities, evidence_entities)
+
+                    # Compute Semantic Similarity (SBERT)
+                    similarity = sim_computer.compute(claim["claim"], text_for_nlp)
+                    print(f"    Semantic Similarity: {similarity:.4f}")
                     
                     nlp_vec = {
                         "claim_entity_coverage": coverage,
+                        "semantic_similarity": similarity,
                         "claim_entities": claim_entities,
                         "evidence_entities": evidence_entities
                     }

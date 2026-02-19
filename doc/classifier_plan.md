@@ -19,11 +19,11 @@ These features quantify the credibility and timeliness of the evidence source, a
     * **Formula:** $\frac{\text{Citation Count}}{\text{Current Year} - \text{Pub Year} + 1}$.
 * **Author H-index (Max) (Done)**
     * **Definition:** The highest H-index among the paper's authors.
-* **Document Type**
+* **Document Type (Paused)**
     * **Definition:** Categorical classification of the evidence level.
     * **Values:** `[Meta-analysis, RCT, Cohort Study, Case Report, Review, Opinion]`.
     * **Rationale:** Based on the Hierarchy of Evidence, a Meta-analysis or RCT carries significantly more weight than an Opinion piece or Case Report.
-* **Section Source**
+* **Section Source (Paused)**
     * **Definition:** The specific section of the paper from which the evidence sentence was extracted.
     * **Values:** `[Abstract, Introduction, Methods, Results, Discussion]`.
     * **Rationale:** Evidence from `Results` is direct experimental data, whereas `Introduction` may cite external work, and `Discussion` is interpretative.
@@ -31,19 +31,17 @@ These features quantify the credibility and timeliness of the evidence source, a
 ### 2. NLP Features (Semantics & Alignment)
 These features capture the linguistic alignment and logical entailment between the Claim and the Evidence text.
 
-* **Semantic Similarity**
+* **Semantic Similarity (Done)**
     * **Definition:** Cosine similarity between the embeddings (e.g., SBERT) of the Claim and the Evidence.
     * **Rationale:** Measures topical proximity and relevance in the vector space.
 * **Claim Entity Coverage (Done)**
     * **Definition:** Recall of Named Entities in the Claim that also appear in the Evidence: $\frac{|\text{Claim Entities} \cap \text{Evidence Entities}|}{|\text{Claim Entities}|}$.
     * **Rationale:** Since claims are much shorter than evidence texts (e.g., full abstracts), Jaccard similarity is diluted by the many entities in the evidence. Recall focuses on whether the evidence covers the specific entities mentioned in the claim, providing a more meaningful alignment signal.
-* **Keyword Specificity (IDF-Weighted)**
-    * **Definition:** The sum of IDF weights for overlapping tokens.
-    * **Rationale:** Ensures the match is driven by specific, information-rich terms rather than common stopwords.
-* **NLI (Natural Language Inference) Entailment Score**
+* **NLI (Natural Language Inference) Entailment Score (Paused)**
     * **Definition:** Probabilities predicted by a fine-tuned Natural Language Inference model (e.g., DeBERTa-v3-large).
     * **Output:** Vector: $[P(\text{Entailment}), P(\text{Contradiction}), P(\text{Neutral})]$.
     * **Rationale:** The most direct semantic signal indicating whether the text supports or refutes the claim.
+    * **Status:** Paused — functionally overlaps with LLM Verdict. Will re-evaluate after LLM features are implemented and classifier performance is assessed.
 
 ### 3. LLM-Native Features (Reasoning & Uncertainty)
 Leveraging the zero-shot reasoning capabilities and intrinsic uncertainty metrics of Large Language Models.

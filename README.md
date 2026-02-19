@@ -36,9 +36,21 @@ graph TD
     F -->|full_text.txt| H[NLP Feature Extraction]
     G --> I[Metadata Extraction]
     G --> J[Combined Feature Dict]
+    I --> J
     H --> J
     I --> J
 ```
+
+### Feature Engineering Details
+
+#### Semantic Similarity (SBERT)
+We use a **Sentence-BERT (SBERT)** model (default: `all-MiniLM-L6-v2`) to compute the cosine similarity between the Claim and the Evidence text.
+
+**Chunking Strategy for Long Documents:**
+Since SBERT models typically have a token limit (e.g., 512 tokens), full-text evidence is handled via **Max-Pooling over Chunks**:
+1. The evidence text is split into overlapping chunks (default: 256 tokens, 64 token overlap).
+2. Each chunk is encoded and compared to the claim.
+3. The **maximum** similarity score across all chunks is used as the final feature. This ensures that if *any* part of the paper strongly supports/refutes the claim, the signal is captured.
 
 ## Usage
 
