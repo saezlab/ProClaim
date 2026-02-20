@@ -41,6 +41,8 @@ class PaperRecord(BaseModel):
     summary: Optional[str] = None  # L1 — set by summarize_paper tool
     authors: list[str] = Field(default_factory=list)
     source: str = "pubmed"  # pubmed | semantic_scholar
+    metadata: Optional["PaperFeatureVector"] = None
+    nlp: Optional["NLPFeatureVector"] = None
 
     def text_for_summarization(self) -> str:
         """Return the best available text for LLM summarization."""
@@ -125,3 +127,8 @@ class NLPFeatureVector(BaseModel):
     semantic_similarity: Optional[float] = None    # SBERT cosine similarity (0.0 - 1.0)
     claim_entities: list[str] = Field(default_factory=list)
     evidence_entities: list[str] = Field(default_factory=list)
+    
+    nli_entailment: Optional[float] = None
+    nli_contradiction: Optional[float] = None
+    nli_neutral: Optional[float] = None
+    nli_best_chunk_text: Optional[str] = None

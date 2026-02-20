@@ -132,8 +132,89 @@ class SemanticSimilarityComputer:
         chunk_embs = self.model.encode(chunks, convert_to_tensor=True, batch_size=32)
 
         # cos_sim returns a (1, N) tensor
-        similarities = cos_sim(claim_emb, chunk_embs)
-        return float(similarities.max().item())
+        similarities = cos_sim(claim_emb, chunk_embs).squeeze(0) # shape: (num_chunks,)
+        return similarities
+
+
+class NLIEentailmentComputer:
+    """Compute NLI probabilities using a cross-encoder model.
+
+    For long evidence texts that exceed the model's token limit,
+    the evidence is split into overlapping chunks and max probabilities
+    are returned for entailment, contradiction, and neutral.
+    Also returns similarities-weighted NLI scores.
+    """
+
+    def __init__(self, model_name: str = "cross-encoder/nli-deberta-v3-large", chunk_size: int = 256, chunk_overlap: int = 64):
+        from sentence_transformers import CrossEncoder
+        import torch
+        print(f"  Loading NLI model: {model_name}...")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = CrossEncoder(model_name, device=device)
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+
+    def _chunk_text(self, text: str) -> list[str]:
+        """Split text into overlapping word-level chunks."""
+        words = text.split()
+        if len(words) <= self.chunk_size:
+            return [text]
+        chunks = []
+        step = self.chunk_size - self.chunk_overlap
+        for i in range(0, len(words), step):
+            chunk = " ".join(words[i:i + self.chunk_size])
+            chunks.append(chunk)
+            if i + self.chunk_size >= len(words):
+                break
+        return chunks
+
+    def compute(self, claim: str, evidence: str) -> dict[str, float]:
+        """Compute NLI scores. Returns max probabilities across chunks."""
+        import torch
+
+        chunks = self._chunk_text(evidence)
+        pairs = [[claim, chunk] for chunk in chunks]
+        
+        logits = self.model.predict(pairs)
+        
+        import numpy as np
+        if isinstance(logits, list):
+            logits = np.array(logits)
+        
+        scores_tensor = torch.tensor(logits)
+        if len(scores_tensor.shape) == 1:
+            scores_tensor = scores_tensor.unsqueeze(0)
+            
+        probs = torch.nn.functional.softmax(scores_tensor, dim=-1) # shape (num_chunks, 3)
+
+        id2label = getattr(self.model.config, 'id2label', {})
+        
+        # Default mapping for cross-encoder/nli-deberta-v3-*
+        ent_idx, con_idx, neu_idx = 1, 0, 2
+        for idx, label in id2label.items():
+            if not isinstance(label, str): continue
+            label = label.lower()
+            if "entail" in label:
+                ent_idx = int(idx)
+            elif "contradict" in label:
+                con_idx = int(idx)
+            elif "neutral" in label:
+                neu_idx = int(idx)
+            
+        # Original max probs across all chunks
+        max_probs = probs.max(dim=0).values.tolist()
+
+        return {
+            "nli_contradiction": float(max_probs[con_idx]),
+            "nli_entailment": float(max_probs[ent_idx]),
+            "nli_neutral": float(max_probs[neu_idx]),
+            "raw_probs": probs,
+            "ent_idx": ent_idx,
+            "con_idx": con_idx,
+            "neu_idx": neu_idx,
+            "chunks": chunks
+        }
+
 
 
 # -----------------------------------------------------------------------------
@@ -369,6 +450,7 @@ async def main():
 
     # Initialize NLP components
     sim_computer = SemanticSimilarityComputer()
+    nli_computer = NLIEentailmentComputer()
     extractor = BiomedicalEntityExtractor()
     await extractor.__aenter__()
 
@@ -439,6 +521,7 @@ async def main():
                  text_for_nlp = " ".join(doc["abstract"])
                  text_source = "abstract_corpus"
 
+            nlp_vec = None
             if text_for_nlp:
                 print(f"    Computing NLP Features (Source: {text_source})...")
                 try:
@@ -449,15 +532,57 @@ async def main():
                     # Compute Coverage
                     coverage = compute_recall_from_entities(claim_entities, evidence_entities)
 
-                    # Compute Semantic Similarity (SBERT)
-                    similarity = sim_computer.compute(claim["claim"], text_for_nlp)
-                    print(f"    Semantic Similarity: {similarity:.4f}")
+                    # Compute Semantic Similarity (SBERT) for each chunk
+                    chunk_similarities = sim_computer.compute(claim["claim"], text_for_nlp)
+                    similarity = float(chunk_similarities.max().item())
+                    print(f"    Semantic Similarity (max): {similarity:.4f}")
                     
+                    # Compute NLI Entailment
+                    nli_scores = nli_computer.compute(claim["claim"], text_for_nlp)
+                    print(f"    NLI Max Scores: Entail={nli_scores['nli_entailment']:.4f}, Contradict={nli_scores['nli_contradiction']:.4f}, Neutral={nli_scores['nli_neutral']:.4f}")
+                    
+                    # Calculate weighted maximums
+                    raw_probs = nli_scores["raw_probs"] # shape: (num_chunks, 3)
+                    
+                    # Optional: Handle length mismatch conceptually (though chunking logic is identical)
+                    min_len = min(len(chunk_similarities), len(raw_probs))
+                    chunk_similarities = chunk_similarities[:min_len].unsqueeze(1).cpu() # Move to CPU
+                    raw_probs = raw_probs[:min_len] 
+                    
+                    # Ensure raw_probs is a tensor
+                    import torch
+                    if not isinstance(raw_probs, torch.Tensor):
+                        raw_probs = torch.tensor(raw_probs, device='cpu')
+                    
+                    weighted_probs = raw_probs * chunk_similarities
+                    
+                    ent_idx, con_idx, neu_idx = nli_scores["ent_idx"], nli_scores["con_idx"], nli_scores["neu_idx"]
+                    
+                    # Find the chunk with the highest *opinionated* weighted score (Entailment or Contradiction)
+                    # We ignore highest weighted *neutral* score because we want the chunk that makes the strongest claim
+                    opinion_weighted_scores = torch.max(weighted_probs[:, ent_idx], weighted_probs[:, con_idx])
+                    best_chunk_idx = torch.argmax(opinion_weighted_scores).item()
+                    
+                    # Extract the *unweighted* probabilities and text of this single best chunk
+                    best_probs = raw_probs[best_chunk_idx].tolist()
+                    best_entailment = float(best_probs[ent_idx])
+                    best_contradiction = float(best_probs[con_idx])
+                    best_neutral = float(best_probs[neu_idx])
+                    
+                    chunks = nli_scores.get("chunks", [])
+                    best_chunk_text = chunks[best_chunk_idx] if best_chunk_idx < len(chunks) else None
+                    
+                    print(f"    NLI Best Chunk Scores: Entail={best_entailment:.4f}, Contradict={best_contradiction:.4f}, Neutral={best_neutral:.4f}")
+
                     nlp_vec = {
                         "claim_entity_coverage": coverage,
                         "semantic_similarity": similarity,
                         "claim_entities": claim_entities,
-                        "evidence_entities": evidence_entities
+                        "evidence_entities": evidence_entities,
+                        "nli_entailment": best_entailment,
+                        "nli_contradiction": best_contradiction,
+                        "nli_neutral": best_neutral,
+                        "nli_best_chunk_text": best_chunk_text
                     }
                 except Exception as e:
                     print(f"    ⚠️ NLP Extraction Failed: {e}")
