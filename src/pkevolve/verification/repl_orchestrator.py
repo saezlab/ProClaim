@@ -56,6 +56,7 @@ variables ready:
 
     state          – EvidenceState (mutable; lives in kernel memory)
     workspace      – Path to the workspace directory
+    llm            – Callable[[str], str]  (calls the LLM endpoint)
 
     # Evidence API (operate on `state` in-place)
     search_pubmed(query, state, max_results=5)
@@ -64,6 +65,7 @@ variables ready:
     get_full_text_article(pmid, state)
     get_paper_text(pmid, state)
     add_facts_from_dicts(facts_data, state)
+    extract_and_add_facts(llm, pmid, state) -> int       # PREFERRED for fact extraction
     update_synthesis(subclaim, text, state)
     add_conflict(fact_a_id, fact_b_id, description, severity, state)
     get_evidence_summary(state)
@@ -71,27 +73,31 @@ variables ready:
     compress_evidence(state, target_tokens=40000) -> EvidenceState
     emit_verdict(verdict, confidence, reasoning, key_evidence, gaps_remaining, state, workspace)
     formulate_pubmed_query(claim)
+    search_for_gap(gap_description, state, max_results=3)
 
-    # Subagents (require an `llm` callable)
+    # Subagents (require the `llm` callable)
     extract_facts(llm, paper_text, claim, subclaims, source_pmid) -> list[Fact]
     synthesize_subclaim(llm, facts, subclaim) -> str
     detect_conflicts(llm, facts) -> list[dict]
     formulate_gap_queries(llm, gaps) -> list[str]
 
+{schemas}
+
 ## Workflow
 
 1. Decompose the claim into subclaims:
        state.subclaims = ["subclaim A", "subclaim B", ...]
-2. Search: call search_pubmed_progressive(claim, state) for initial retrieval.
-3. Read papers: call get_full_text_article or get_paper_text for each PMID.
-4. Extract facts: build a list of dicts and call add_facts_from_dicts.
-5. Check sufficiency: result = check_sufficiency(state); print(result).
+2. Search: call search_pubmed_progressive(state.claim, state) for initial retrieval.
+3. Extract facts using extract_and_add_facts(llm, pmid, state) for EACH paper.
+   This reads the paper and uses the LLM to extract grounded facts.
+   Do NOT write fact dicts manually — use extract_and_add_facts.
+4. Check sufficiency: result = check_sufficiency(state); print(result).
    This is FREE (no LLM cost). Call it after EVERY retrieval round.
-6. If insufficient: read the gaps, call search_for_gap or find_related_articles.
-7. Synthesize: call update_synthesis for each subclaim.
-8. If token_estimate > 40000: state = compress_evidence(state).
-9. Repeat 3-8 until sufficient or MAX_ITERATIONS (8) reached.
-10. Call emit_verdict to produce your final structured output.
+5. If insufficient: read the gaps, call search_for_gap or find_related_articles.
+6. Synthesize: call update_synthesis for each subclaim.
+7. If state.token_estimate > 40000: state = compress_evidence(state).
+8. Repeat 3-7 until sufficient or MAX_ITERATIONS ({max_iterations}) reached.
+9. Call emit_verdict to produce your final structured output.
 
 ## Rules
 
@@ -99,8 +105,28 @@ variables ready:
 - Do NOT include explanatory text outside the code block.
 - All output is via print(). The kernel stdout is your feedback channel.
 - `state` is a live Python object -- mutate it freely.
+- State is auto-saved to disk after every mutation.
 - When you call emit_verdict, the loop terminates.
 - After {max_iterations} sufficiency checks, you MUST call emit_verdict.
+
+## CRITICAL: Grounded Evidence Only
+
+- NEVER fabricate facts from your own knowledge.  Every fact must come from
+  a paper retrieved via search_pubmed / search_pubmed_progressive.
+- Use extract_and_add_facts(llm, pmid, state) to add facts. This reads the
+  actual paper and extracts grounded statements.
+- If extract_and_add_facts returns 0 for a paper, try:
+      text = get_full_text_article(pmid, state)
+      if not text:
+          text = get_paper_text(pmid, state)
+      facts = extract_facts(llm, text, state.claim, state.subclaims, pmid)
+      add_facts_from_dicts([dict(text=f.text, stance=f.stance.value,
+          source_pmid=f.source_pmid, relevant_subclaims=f.relevant_subclaims,
+          confidence=f.confidence) for f in facts], state)
+- NEVER call add_facts_from_dicts with manually written text strings.
+- source_pmid must always be a PMID already present in state.papers.
+- If no papers contain relevant evidence, say so in the verdict — do NOT
+  invent supporting or refuting statements.
 """
 
 # ---------------------------------------------------------------------------
@@ -157,15 +183,25 @@ def verify_claim_repl(
 
     client = OpenAI(base_url=base_url, api_key=api_key)
 
-    # Start kernel and inject prelude
+    # Start kernel and inject prelude (with llm callable)
     runner = KernelRunner(session_id=f"repl:{workspace}")
     if not runner.start():
         raise RuntimeError("Could not start Jupyter kernel.")
 
-    runner.inject_prelude(claim=claim, workspace=str(workspace))
+    runner.inject_prelude(
+        claim=claim,
+        workspace=str(workspace),
+        llm_base_url=base_url,
+        llm_api_key=api_key,
+        llm_model=model,
+    )
 
-    # Build system prompt
-    system = SYSTEM_PROMPT.format(max_iterations=max_iterations)
+    # Build system prompt with auto-generated schema docs
+    from pkevolve.verification.evidence_api import schema_docs
+    system = SYSTEM_PROMPT.format(
+        max_iterations=max_iterations,
+        schemas=schema_docs(),
+    )
 
     messages: list[dict] = [
         {"role": "system", "content": system},

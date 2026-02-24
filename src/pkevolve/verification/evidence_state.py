@@ -53,19 +53,39 @@ class EvidenceState(BaseModel):
     # written to disk on save()/checkpoint_save().
     trace: list[dict] = Field(default_factory=list, exclude=True)
 
+    # Private: workspace path for auto-persistence.  Set by init_new()
+    # and load().  When set, every mutation auto-saves to disk so
+    # renderers and external tools always see current state.
+    _workspace: Optional[Path] = None
+
+    # -- Auto-persistence --------------------------------------------------
+
+    def _auto_save(self) -> None:
+        """Persist state to workspace if one is configured.
+
+        Called automatically after every mutation method.  Ensures that
+        disk state is always in sync with in-memory state, removing the
+        need for the LLM to call checkpoint_save() explicitly.
+        """
+        if self._workspace is not None:
+            self.save(self._workspace / "evidence_state.json")
+
     # -- Mutation methods --------------------------------------------------
 
     def add_paper(self, paper: PaperRecord) -> None:
         """Add a paper keyed by PMID. Overwrites if PMID already present."""
         self.papers[paper.pmid] = paper
+        self._auto_save()
 
     def add_fact(self, fact: Fact) -> None:
         """Append a fact to the evidence."""
         self.facts.append(fact)
+        self._auto_save()
 
     def add_conflict(self, conflict: Conflict) -> None:
         """Record a conflict between two facts."""
         self.conflicts.append(conflict)
+        self._auto_save()
 
     # -- Query methods -----------------------------------------------------
 
@@ -148,7 +168,12 @@ class EvidenceState(BaseModel):
     @classmethod
     def load(cls, path: Path) -> "EvidenceState":
         """Load state from a JSON file on disk."""
-        return cls.model_validate_json(path.read_text())
+        path = Path(path)
+        state = cls.model_validate_json(path.read_text())
+        # Infer workspace from path (expects workspace/evidence_state.json)
+        if path.name == "evidence_state.json":
+            state._workspace = path.parent
+        return state
 
     @classmethod
     def init_new(
@@ -169,7 +194,9 @@ class EvidenceState(BaseModel):
         subs = subclaims if subclaims is not None else [claim]
         state = cls(claim=claim, subclaims=subs)
         if workspace is not None:
+            workspace = Path(workspace)
             workspace.mkdir(parents=True, exist_ok=True)
+            state._workspace = workspace
             state.save(workspace / "evidence_state.json")
         return state
 

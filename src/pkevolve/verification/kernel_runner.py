@@ -184,14 +184,22 @@ class KernelRunner:
         claim: str,
         workspace: str,
         extra_code: Optional[str] = None,
+        *,
+        llm_base_url: Optional[str] = None,
+        llm_api_key: Optional[str] = None,
+        llm_model: Optional[str] = None,
     ) -> None:
         """Inject the standard REPL prelude into the kernel.
 
         Pre-loads imports, initializes EvidenceState as ``state``, and
         makes the evidence API available for direct use.
+
+        If *llm_base_url*, *llm_api_key*, and *llm_model* are given, a
+        default ``llm`` callable is wired up so that ``extract_and_add_facts``
+        and the subagent functions work out of the box.
         """
         prelude = f"""\
-import sys
+import sys, os
 from pathlib import Path
 
 # Ensure pkevolve is importable
@@ -217,6 +225,8 @@ from pkevolve.verification.evidence_api import (
     emit_verdict,
     formulate_pubmed_query,
     get_evidence_summary,
+    extract_and_add_facts,
+    search_for_gap,
 )
 from pkevolve.verification.subagents import (
     extract_facts,
@@ -247,6 +257,36 @@ state = EvidenceState.init_new(
 )
 print(f"State initialized: {{state}}")
 """
+        # Wire up the default llm callable if endpoint info is provided
+        if llm_base_url and llm_api_key and llm_model:
+            # Build as plain string concatenation to avoid triple-quote
+            # nesting issues inside the f-string prelude.
+            llm_code = (
+                "\n# Default LLM callable for subagents and extract_and_add_facts\n"
+                "import time as _time\n"
+                "from openai import OpenAI as _OpenAI\n"
+                f"_llm_client = _OpenAI(base_url={llm_base_url!r}, api_key={llm_api_key!r})\n"
+                "def llm(prompt: str, _retries: int = 3) -> str:\n"
+                "    for _attempt in range(_retries):\n"
+                "        try:\n"
+                "            resp = _llm_client.chat.completions.create(\n"
+                f"                model={llm_model!r},\n"
+                '                messages=[{"role": "user", "content": prompt}],\n'
+                "                temperature=0.1,\n"
+                "            )\n"
+                "            if resp.choices and resp.choices[0].message.content:\n"
+                "                return resp.choices[0].message.content\n"
+                "            print(f'llm(): empty choices on attempt {_attempt+1}/{_retries}')\n"
+                "        except Exception as _e:\n"
+                "            print(f'llm(): error on attempt {_attempt+1}/{_retries}: {_e}')\n"
+                "        if _attempt < _retries - 1:\n"
+                "            _time.sleep(2 ** _attempt)\n"
+                "    print('llm(): all retries exhausted, returning empty string')\n"
+                "    return ''\n"
+                f'print("llm() callable wired to {llm_model} at {llm_base_url}")\n'
+            )
+            prelude += llm_code
+
         if extra_code:
             prelude += "\n" + extra_code + "\n"
 

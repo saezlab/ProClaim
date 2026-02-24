@@ -94,6 +94,9 @@ Paper (PMID: {source_pmid}):
 Output ONLY a JSON array of fact objects. No other text."""
 
     response = llm(prompt)
+    if not response:
+        print(f"extract_facts: LLM returned empty response for PMID {source_pmid}")
+        return []
     return _parse_facts_response(response, source_pmid)
 
 

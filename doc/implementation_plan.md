@@ -104,7 +104,7 @@ class Paper(BaseModel):
     pmid: str
     title: str
     authors: list[str] = []
-    abstract: str
+    abstract: str = ""              # defaults to empty (allows synthetic records)
     full_text: Optional[str] = None
     summary: Optional[str] = None
     source: str = "pubmed"  # pubmed | semantic_scholar
@@ -305,14 +305,29 @@ def formulate_gap_queries(llm: LLMCallable, gaps: list[Gap]) -> list[str]: ...
 ### 4.2 Usage in REPL
 
 In Mode B, the LLM callable is wired up in the kernel prelude or by the
-REPL orchestrator.  The LLM generates code like:
+REPL orchestrator.  The callable includes retry logic with exponential
+backoff and guards against `None`/empty API responses:
 
 ```python
+import time, os
 from openai import OpenAI
 client = OpenAI(base_url="https://api.z.ai/api/openai", api_key=os.environ["GLM_API_KEY"])
-llm = lambda prompt: client.chat.completions.create(
-    model="glm-4.6", messages=[{"role":"user","content":prompt}]
-).choices[0].message.content
+
+def llm(prompt: str, _retries: int = 3) -> str:
+    for attempt in range(_retries):
+        try:
+            resp = client.chat.completions.create(
+                model="glm-4.6",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+            )
+            if resp.choices and resp.choices[0].message.content:
+                return resp.choices[0].message.content
+        except Exception as e:
+            print(f"llm(): error on attempt {attempt+1}: {e}")
+        if attempt < _retries - 1:
+            time.sleep(2 ** attempt)
+    return ""  # graceful degradation
 
 facts = extract_facts(llm, paper_text, state.claim, state.subclaims, pmid)
 add_facts_from_dicts([f.model_dump() for f in facts], state)
@@ -882,6 +897,48 @@ Files modified:
 - `demo_evidence_programming.py` — --mode sdk|repl, single notebook-tools MCP server
 
 **Verification:** `--mode sdk` runs with only notebook-tools MCP server.
+
+### Stage 3.5: Post-Integration Hardening (DONE)
+
+**Goal:** Fix all runtime errors discovered during end-to-end demo runs.
+
+Four rounds of diagnose → fix → re-run identified and resolved the
+following issues across 6 files:
+
+**Round 1 — Structural wiring (6 fixes)**
+- `evidence_state.py`: auto-save on mutation via `checkpoint_save()`
+- `evidence_api.py`: field alias normalization (`statement` → `text`)
+- `evidence_api.py`: fact deduplication in `add_facts_from_dicts()`
+- `evidence_api.py`: `schema_docs()` added — auto-generated from Pydantic models
+- `kernel_runner.py`: `llm()` callable injected in kernel prelude
+- `repl_orchestrator.py`: verdict quality gate + anti-fabrication prompt
+
+**Round 2 — Extraction quality (4 fixes)**
+- `evidence_api.py`: `extract_and_add_facts()` tries `get_full_text_article()` before abstract
+- `evidence_api.py`: `add_facts_from_dicts()` validates `source_pmid ∈ state.papers`
+- `evidence_api.py`: `schema_docs()` enriched with EvidenceState field listing,
+  type annotations, and "Common pitfalls" section
+- `repl_orchestrator.py` + `demo_evidence_programming.py`: "Grounded Evidence Only"
+  anti-fabrication rules added to both system prompts
+
+**Round 3 — PMC full-text retrieval (3 fixes)**
+- `evidence_api.py`: elink `LinkName` filter — only accept `pubmed_pmc`, not `pubmed_pmc_refs`
+- `evidence_api.py`: title cross-validation — discard PMC text with < 25% word overlap
+- `evidence_api.py`: `add_facts_from_dicts()` now rejects (not just warns) unknown PMIDs
+
+**Round 4 — LLM callable robustness (3 fixes)**
+- `kernel_runner.py` + `demo_evidence_programming.py`: `llm()` callable now retries
+  3× with exponential backoff and guards against `None`/empty `resp.choices`
+- `subagents.py`: `extract_facts()` returns `[]` if `llm()` returns empty string
+- `evidence_api.py`: `extract_and_add_facts()` appends to `state.extracted_pmids`
+
+**Round 5 — Schema visibility (2 fixes)**
+- `data_models.py`: `PaperRecord.abstract` default changed from required to `""`
+- `evidence_api.py`: `schema_docs()` now includes `PaperRecord` field listing with
+  required/default annotations; "Common pitfalls" warns `authors` must be `list[str]`
+
+**Verification:** All fixes validated with import tests, assertion checks, and
+live PubMed API calls.  Demo runs exit cleanly with valid `verdict.json`.
 
 ### Stage 4: Sufficiency Classifier (existing)
 

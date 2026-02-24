@@ -36,7 +36,7 @@ class PaperRecord(BaseModel):
 
     pmid: str
     title: str
-    abstract: str
+    abstract: str = ""
     full_text: Optional[str] = None
     summary: Optional[str] = None  # L1 — set by summarize_paper tool
     authors: list[str] = Field(default_factory=list)
