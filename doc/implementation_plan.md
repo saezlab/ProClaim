@@ -1,103 +1,83 @@
-# Framework Implementation Plan: Evidence Programming via Claude Agent SDK
+# Framework Implementation Plan: Evidence Programming via RLM REPL
 
 ## Architecture Overview
 
-The evidence programming framework maps directly onto the Claude Agent SDK's architecture. The SDK gives agents a computer — bash, file I/O, subagents, custom MCP tools — which is exactly the REPL environment evidence programming requires. The agent programs on evidence by invoking custom tools that manipulate an evidence state persisted to disk, with the sufficiency classifier running as a local Python process invoked via bash.
+The evidence programming framework implements the Recursive Language Model
+(RLM) paradigm: the LLM generates Python code that runs in a persistent
+Jupyter kernel. Evidence state lives as a Python variable in the kernel
+rather than being serialized to disk on every operation. The kernel is the
+"working memory"; the LLM's context window holds only the conversation and
+the latest kernel output.
+
+Two orchestration modes share a common pure-Python evidence library:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  Orchestrator Agent                       │
-│  (Claude Agent SDK main loop)                            │
-│                                                          │
-│  System prompt: evidence programming instructions        │
-│  Tools: all custom MCP tools + Bash + Read + Write       │
-│  Structured output: VerificationVerdict schema            │
-│                                                          │
-│  ┌────────────┐  ┌────────────┐  ┌──────────────────┐   │
-│  │  Retrieval  │  │ Extraction │  │  Sufficiency     │   │
-│  │  Tools      │  │ Subagent   │  │  Classifier      │   │
-│  │  (MCP)      │  │ (Task)     │  │  (Bash/MCP)      │   │
-│  └──────┬─────┘  └──────┬─────┘  └────────┬─────────┘   │
-│         │               │                  │              │
-│         └───────────┬───┘──────────────────┘              │
-│                     ▼                                     │
-│           ┌─────────────────┐                             │
-│           │  Evidence State  │                             │
-│           │  (JSON on disk)  │                             │
-│           └─────────────────┘                             │
-└─────────────────────────────────────────────────────────┘
+                 ┌──────────────────────────────────────────┐
+                 │         Pure Python Library               │
+                 │  evidence_api · subagents · classifier    │
+                 │  compressor · data_models · renderers     │
+                 └────────┬──────────────────┬──────────────┘
+                          │                  │
+             ┌────────────┴───┐    ┌─────────┴─────────────┐
+             │  Mode A (SDK)  │    │  Mode B (Standalone)   │
+             │                │    │                        │
+             │  Claude Agent  │    │  repl_orchestrator.py  │
+             │  SDK + nb_exe  │    │  OpenAI-compatible     │
+             │  cute as tool  │    │  client + code-fence   │
+             │                │    │  parsing               │
+             └──────┬─────┬──┘    └────┬────────────┬──────┘
+                    │     │            │            │
+              ┌─────┘  ┌──┘       ┌────┘       ┌────┘
+              ▼        ▼          ▼            ▼
+        ┌──────────┐ ┌─────────────────────────────────┐
+        │ Notebook  │ │       Jupyter Kernel             │
+        │ MCP tools │ │  (KernelRunner)                  │
+        │           │ │                                  │
+        │ nb_init   │ │  state = EvidenceState(...)      │
+        │ nb_execute│ │  search_pubmed(q, state)         │
+        │ nb_render │ │  check_sufficiency(state)        │
+        │ nb_save   │ │  emit_verdict(...)               │
+        └───────┬──┘ └──────────────────────────────────┘
+                │
+          ┌─────┘
+          ▼
+   ┌───────────────┐
+   │  .ipynb file   │
+   │  (audit trail) │
+   └───────────────┘
 ```
 
-The SDK's "give your agent a computer" principle means:
-- Evidence state lives as JSON files the agent reads and writes
-- The sufficiency classifier is a Python script invoked via Bash
-- Paper retrieval is a custom MCP tool wrapping PubMed/Semantic Scholar APIs
-- Fact extraction and synthesis use subagents with isolated context
-- The orchestrator agent decides what to do based on sufficiency feedback
+The RLM "give the LLM a REPL" principle means:
+- Evidence state lives as a Python variable in the kernel
+- The sufficiency classifier is called as a Python function
+- Paper retrieval functions are called directly from evidence_api
+- Subagent logic runs as Python functions with injected LLM callables
+- The LLM generates code; the kernel output is the feedback signal
 
 ---
 
-## 1. Project Structure
+## 1. Project Structure (Actual)
 
 ```
-evidence-programming/
-├── pyproject.toml
-├── CLAUDE.md                          # Memory/instructions for the orchestrator
-├── .claude/
-│   ├── agents/
-│   │   ├── fact-extractor.md          # Subagent: extracts facts from papers
-│   │   ├── synthesizer.md            # Subagent: synthesizes evidence per subclaim
-│   │   ├── conflict-detector.md      # Subagent: finds contradictions
-│   │   └── gap-query-formulator.md   # Subagent: translates MLP gap types into search queries
-│   └── commands/
-│       └── verify.md                  # Slash command: /verify <claim>
-├── src/
-│   ├── evidence_programming/
-│   │   ├── __init__.py
-│   │   ├── orchestrator.py           # Main entry: runs the evidence programming loop
-│   │   ├── tools/
-│   │   │   ├── __init__.py
-│   │   │   ├── retrieval.py          # MCP tools: search_pubmed, search_semantic_scholar
-│   │   │   ├── evidence_state.py     # MCP tools: read/write/query evidence state
-│   │   │   ├── sufficiency.py        # MCP tool: check_sufficiency (wraps classifier)
-│   │   │   └── compression.py        # MCP tool: compress_evidence
-│   │   ├── classifier/
-│   │   │   ├── __init__.py
-│   │   │   ├── model.py              # SufficiencyClassifier (PyTorch MLP)
-│   │   │   ├── features.py           # 16-feature extraction from evidence state
-│   │   │   ├── train.py              # Training loop with self-consistency labels
-│   │   │   └── inference.py          # CLI entry: python -m classifier.inference state.json
-│   │   │   └── gap_labels.py          # Heuristic gap label generation for training
-│   │   ├── state/
-│   │   │   ├── __init__.py
-│   │   │   ├── schema.py             # Pydantic models: EvidenceState, Fact, Paper, etc.
-│   │   │   └── manager.py            # State persistence: load/save/snapshot
-│   │   ├── compression/
-│   │   │   ├── __init__.py
-│   │   │   └── compress.py            # Three-level compression with sufficiency invariant
-│   │   └── evaluation/
-│   │       ├── __init__.py
-│   │       ├── runner.py             # Batch evaluation across datasets
-│   │       ├── baselines.py          # Baseline implementations
-│   │       └── metrics.py            # F1, ECE, cost tracking
-│   └── scripts/
-│       ├── train_classifier.py       # Train sufficiency classifier
-│       ├── generate_training_data.py # Self-consistency sampling
-│       └── run_evaluation.py         # Full evaluation pipeline
-├── data/
-│   ├── scifact/                      # SciFact dataset
-│   ├── scifact_open/                 # SciFact-Open (500K abstracts)
-│   └── classifier/                   # Trained classifier checkpoints
-├── workspaces/                       # Per-claim working directories
-│   └── claim_<id>/
-│       ├── evidence_state.json       # Current evidence state
-│       ├── papers/                   # Retrieved paper texts
-│       └── trace.json                # Audit log
-└── tests/
-    ├── test_tools.py
-    ├── test_classifier.py
-    ├── test_state.py
-    └── test_integration.py
+src/pkevolve/verification/
+├── __init__.py                  # Lazy imports facade
+├── data_models.py               # Pydantic models: Fact, PaperRecord, Stance, Gap, etc.
+├── evidence_state.py            # EvidenceState container, MAX_ITERATIONS, trace
+├── evidence_api.py              # Pure Python library: all evidence functions (NEW)
+├── subagents.py                 # Subagent logic as Python functions (NEW)
+├── kernel_runner.py             # Jupyter kernel lifecycle management (NEW)
+├── repl_orchestrator.py         # Mode B: standalone REPL loop (NEW)
+├── orchestrator.py              # Mode A: Claude Agent SDK orchestrator (existing)
+├── mcp_tools.py                 # Thin MCP wrappers over evidence_api (refactored)
+├── notebook_mcp.py              # Notebook MCP tools, uses KernelRunner (refactored)
+├── classifier.py                # Heuristic SufficiencyClassifier
+├── compressor.py                # L1 deduplication compressor
+├── renderers.py                 # HTML renderers for Jupyter
+└── adapters.py                  # Dataset adapters
+
+scripts/verification/
+├── demo_evidence_programming.py # CLI entry point (--mode sdk|repl)
+└── README.md
 ```
 
 ---
@@ -234,764 +214,203 @@ class StateManager:
 
 ---
 
-## 3. Custom MCP Tools (The Evidence Programming Instruction Set)
+## 3. Evidence API — Pure Python Library
 
-Each tool is a Python function registered via `@tool` decorator and served as an in-process MCP server. The orchestrator agent invokes these to manipulate evidence state — this is how it "programs on evidence."
+All evidence manipulation logic lives in `evidence_api.py` as ordinary
+Python functions.  These are called directly in REPL mode (Mode B) and
+via `nb_execute` code cells in SDK mode (Mode A).  The MCP tools in
+`mcp_tools.py` are now thin wrappers that load state from disk, call the
+corresponding `evidence_api` function, and save state back.
 
-### 3.1 Retrieval Tools
-
-```python
-# src/evidence_programming/tools/retrieval.py
-
-from claude_agent_sdk import tool
-from ..state.manager import StateManager
-from ..state.schema import Paper
-import httpx
-
-PUBMED_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-
-@tool(
-    "search_pubmed",
-    "Search PubMed for papers relevant to a query. Returns list of PMIDs added to evidence state.",
-    {"query": str, "max_results": int}
-)
-async def search_pubmed(args: dict) -> dict:
-    query = args["query"]
-    max_results = args.get("max_results", 5)
-    workspace = args.get("_workspace", ".")
-    
-    manager = StateManager(Path(workspace))
-    state = manager.load()
-    
-    async with httpx.AsyncClient() as client:
-        # Step 1: Search for PMIDs
-        search_resp = await client.get(f"{PUBMED_BASE}/esearch.fcgi", params={
-            "db": "pubmed", "term": query, "retmax": max_results,
-            "retmode": "json"
-        })
-        pmids = search_resp.json()["esearchresult"]["idlist"]
-        
-        # Step 2: Fetch abstracts
-        if pmids:
-            fetch_resp = await client.get(f"{PUBMED_BASE}/efetch.fcgi", params={
-                "db": "pubmed", "id": ",".join(pmids),
-                "rettype": "abstract", "retmode": "xml"
-            })
-            papers = _parse_pubmed_xml(fetch_resp.text)
-            
-            added = []
-            for paper in papers:
-                if paper.pmid not in state.papers:
-                    state.papers[paper.pmid] = paper
-                    manager.save_paper_text(paper.pmid, paper.abstract)
-                    added.append(paper.pmid)
-            
-            state.token_estimate += sum(len(p.abstract.split()) for p in papers)
-            manager.save(state)
-            manager.append_trace("search_pubmed", {
-                "query": query, "found": len(pmids), "added": len(added)
-            })
-            
-            return {"content": [{"type": "text", "text": 
-                f"Found {len(pmids)} papers, added {len(added)} new. "
-                f"PMIDs: {', '.join(added)}"
-            }]}
-    
-    return {"content": [{"type": "text", "text": "No results found."}]}
-
-
-@tool(
-    "search_semantic_scholar",
-    "Search Semantic Scholar for papers. Useful for broader coverage beyond PubMed.",
-    {"query": str, "max_results": int}
-)
-async def search_semantic_scholar(args: dict) -> dict:
-    # Similar structure, uses Semantic Scholar API
-    ...
-```
-
-### 3.2 Evidence State Tools
+### 3.1 Function Signatures
 
 ```python
-# src/evidence_programming/tools/evidence_state.py
+# src/pkevolve/verification/evidence_api.py
 
-from claude_agent_sdk import tool
-from pathlib import Path
-from ..state.manager import StateManager
-from ..state.schema import Fact, Conflict, Stance
-
-@tool(
-    "get_evidence_summary",
-    "Get a summary of the current evidence state: paper count, fact count, "
-    "coverage per subclaim, conflicts, and latest sufficiency result.",
-    {}
-)
-async def get_evidence_summary(args: dict) -> dict:
-    manager = StateManager(Path(args.get("_workspace", ".")))
-    state = manager.load()
-    
-    summary_lines = [
-        f"Claim: {state.claim}",
-        f"Iteration: {state.iteration}",
-        f"Papers: {len(state.papers)}",
-        f"Facts: {len(state.facts)} (support: {sum(1 for f in state.facts if f.stance == 'SUPPORT')}, "
-        f"refute: {sum(1 for f in state.facts if f.stance == 'REFUTE')})",
-        f"Conflicts: {len(state.conflicts)}",
-        f"Token estimate: ~{state.token_estimate}",
-        "",
-        "Coverage per subclaim:"
-    ]
-    for sc in state.subclaims:
-        cov = state.coverage.get(sc, 0.0)
-        synth = "✓" if sc in state.synthesis else "✗"
-        summary_lines.append(f"  [{cov:.1%}] [synth:{synth}] {sc}")
-    
-    if state.sufficiency_history:
-        latest = state.sufficiency_history[-1]
-        summary_lines.extend([
-            "",
-            f"Latest sufficiency: {latest.label} (confidence: {latest.confidence:.2f})",
-            f"Gaps: {len(latest.gaps)}"
-        ])
-        for gap in latest.gaps[:5]:
-            summary_lines.append(f"  - [{gap.gap_type}] {gap.description}")
-    
-    return {"content": [{"type": "text", "text": "\n".join(summary_lines)}]}
-
-
-@tool(
-    "add_facts",
-    "Add extracted facts to the evidence state. Each fact has text, stance "
-    "(SUPPORT/REFUTE/NEUTRAL), source PMID, and relevant subclaims.",
-    {"facts": list}
-)
-async def add_facts(args: dict) -> dict:
-    manager = StateManager(Path(args.get("_workspace", ".")))
-    state = manager.load()
-    
-    added = 0
-    for f in args["facts"]:
-        fact = Fact(
-            id=f"fact_{len(state.facts) + added}",
-            text=f["text"],
-            stance=Stance(f["stance"]),
-            source_pmid=f["source_pmid"],
-            relevant_subclaims=f.get("relevant_subclaims", []),
-            confidence=f.get("confidence", 0.5)
-        )
-        state.facts.append(fact)
-        added += 1
-    
-    # Recompute coverage (only SUPPORT/REFUTE count — NEUTRAL facts don't
-    # provide evidence for or against the subclaim)
-    for sc in state.subclaims:
-        relevant = [f for f in state.facts 
-                    if sc in f.relevant_subclaims and f.stance != Stance.NEUTRAL]
-        state.coverage[sc] = min(1.0, len(relevant) / 3.0)
-    
-    manager.save(state)
-    manager.append_trace("add_facts", {"count": added})
-    return {"content": [{"type": "text", "text": f"Added {added} facts. Coverage updated."}]}
-
-
-@tool(
-    "update_synthesis",
-    "Update the evidence synthesis for a specific subclaim.",
-    {"subclaim": str, "synthesis": str}
-)
-async def update_synthesis(args: dict) -> dict:
-    manager = StateManager(Path(args.get("_workspace", ".")))
-    state = manager.load()
-    state.synthesis[args["subclaim"]] = args["synthesis"]
-    manager.save(state)
-    return {"content": [{"type": "text", "text": f"Synthesis updated for: {args['subclaim']}"}]}
-
-
-@tool(
-    "add_conflict",
-    "Record a detected conflict between two facts.",
-    {"fact_a_id": str, "fact_b_id": str, "description": str, "severity": float}
-)
-async def add_conflict(args: dict) -> dict:
-    manager = StateManager(Path(args.get("_workspace", ".")))
-    state = manager.load()
-    conflict = Conflict(
-        id=f"conflict_{len(state.conflicts)}",
-        fact_a_id=args["fact_a_id"],
-        fact_b_id=args["fact_b_id"],
-        description=args["description"],
-        severity=args["severity"]
-    )
-    state.conflicts.append(conflict)
-    manager.save(state)
-    return {"content": [{"type": "text", "text": f"Conflict recorded: {conflict.id}"}]}
-
-
-@tool(
-    "get_paper_text",
-    "Retrieve the full abstract/text for a specific paper by PMID.",
-    {"pmid": str}
-)
-async def get_paper_text(args: dict) -> dict:
-    manager = StateManager(Path(args.get("_workspace", ".")))
-    state = manager.load()
-    paper = state.papers.get(args["pmid"])
-    if not paper:
-        return {"content": [{"type": "text", "text": f"Paper {args['pmid']} not found."}]}
-    
-    return {"content": [{"type": "text", "text":
-        f"PMID: {paper.pmid}\nTitle: {paper.title}\n"
-        f"Authors: {', '.join(paper.authors[:5])}\n\n{paper.abstract}"
-    }]}
-
-
-@tool(
-    "get_facts_for_subclaim",
-    "Retrieve all extracted facts relevant to a specific subclaim.",
-    {"subclaim": str}
-)
-async def get_facts_for_subclaim(args: dict) -> dict:
-    manager = StateManager(Path(args.get("_workspace", ".")))
-    state = manager.load()
-    relevant = [f for f in state.facts if args["subclaim"] in f.relevant_subclaims]
-    
-    if not relevant:
-        return {"content": [{"type": "text", "text": "No facts found for this subclaim."}]}
-    
-    lines = []
-    for f in relevant:
-        lines.append(f"[{f.stance}] {f.text} (from {f.source_pmid}, conf: {f.confidence:.2f})")
-    
-    return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+def formulate_pubmed_query(claim: str) -> str: ...
+def search_pubmed(query: str, state: EvidenceState, max_results: int = 5) -> list[str]: ...
+def search_pubmed_progressive(claim: str, state: EvidenceState, max_results_per_tier: int = 5) -> list[str]: ...
+def search_for_gap(gap_description: str, state: EvidenceState, max_results: int = 3) -> list[str]: ...
+def find_related_articles(pmid: str, state: EvidenceState, max_results: int = 5) -> list[str]: ...
+def get_full_text_article(pmid: str, state: EvidenceState) -> str: ...
+def get_paper_text(pmid: str, state: EvidenceState) -> str: ...
+def add_facts_from_dicts(facts_data: list[dict], state: EvidenceState) -> int: ...
+def update_synthesis(subclaim: str, synthesis_text: str, state: EvidenceState) -> None: ...
+def add_conflict(fact_a_id: str, fact_b_id: str, description: str, severity: float, state: EvidenceState) -> str: ...
+def get_evidence_summary(state: EvidenceState) -> str: ...
+def check_sufficiency(state: EvidenceState) -> SufficiencyResult: ...
+def compress_evidence(state: EvidenceState, target_tokens: int = 40000) -> EvidenceState: ...
+def emit_verdict(verdict: str, confidence: float, reasoning: str,
+                 key_evidence: list, gaps_remaining: list,
+                 state: EvidenceState, workspace: Path) -> VerificationVerdict: ...
 ```
 
-### 3.3 Sufficiency Classifier Tool
+### 3.2 Design Principles
 
-This is the feedback instrument — the equivalent of running `pytest` in code programming.
+- **State by reference**: All functions take `state: EvidenceState` and
+  mutate it in-place.  No disk I/O inside evidence_api — that responsibility
+  lives in the MCP wrappers (for tool mode) or checkpoint_save (for REPL).
+- **Print for feedback**: Functions use `print()` for output.  In REPL mode
+  the kernel captures stdout and feeds it back to the LLM.
+- **No MCP dependency**: evidence_api imports only data_models, classifier,
+  compressor, and standard library.  It is testable without MCP.
+- **Shared query logic**: `_generate_tiered_queries`, `_extract_symbol_subtokens`,
+  `_BIO_VERB_TO_NOUN`, `_STOP_WORDS` are defined in evidence_api (moved from
+  the former mcp_tools.py).
+
+### 3.3 MCP Wrappers (Backward Compatibility)
+
+`mcp_tools.py` retains the same 13 `@mcp.tool()` signatures but each body
+is now 3-5 lines:
 
 ```python
-# src/evidence_programming/tools/sufficiency.py
-
-from claude_agent_sdk import tool
-from pathlib import Path
-import subprocess
-import json
-from ..state.manager import StateManager
-
-@tool(
-    "check_sufficiency",
-    "Run the sufficiency classifier on the current evidence state. "
-    "Returns: sufficiency label, confidence score, and identified gaps. "
-    "This is cheap (no LLM call) — call it frequently to guide your next action. "
-    "Think of this as running your test suite.",
-    {}
-)
-async def check_sufficiency(args: dict) -> dict:
-    workspace = Path(args.get("_workspace", "."))
-    manager = StateManager(workspace)
-    state = manager.load()
-    
-    # Run classifier as subprocess (keeps it decoupled)
-    result = subprocess.run(
-        ["python", "-m", "evidence_programming.classifier.inference",
-         str(workspace / "evidence_state.json")],
-        capture_output=True, text=True, timeout=10
-    )
-    
-    if result.returncode != 0:
-        return {"content": [{"type": "text", "text":
-            f"Classifier error: {result.stderr}"}]}
-    
-    output = json.loads(result.stdout)
-    sufficiency = SufficiencyResult(**output)
-    
-    # Persist to state history
-    state.sufficiency_history.append(sufficiency)
-    state.iteration += 1  # 1-indexed: first check → iteration 1, max allowed → iteration 8
-    manager.save(state)
-    manager.append_trace("check_sufficiency", output)
-    
-    # Format feedback for the agent
-    lines = [
-        f"═══ SUFFICIENCY CHECK (iteration {state.iteration}) ═══",
-        f"Label: {sufficiency.label}",
-        f"Confidence: {sufficiency.confidence:.3f}",
-        f"Threshold: 0.80",
-        f"Status: {'✓ SUFFICIENT' if sufficiency.confidence >= 0.80 else '✗ INSUFFICIENT'}",
-    ]
-    if sufficiency.gaps:
-        lines.append(f"\nIdentified gaps ({len(sufficiency.gaps)}):")
-        for gap in sufficiency.gaps:
-            lines.append(f"  [{gap.priority:.1f}] {gap.gap_type}: {gap.description}")
-            lines.append(f"         Subclaim: {gap.subclaim}")
-    else:
-        lines.append("\nNo specific gaps identified.")
-    
-    return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+@mcp.tool()
+def search_pubmed(query: str, workspace: str, max_results: int = 5) -> str:
+    state = _load_state(workspace)
+    added_pmids = api.search_pubmed(query, state, max_results)
+    _save_state(workspace, state)
+    _trace(workspace, "search_pubmed", {"query": query, "added": len(added_pmids)})
+    return f"Added {len(added_pmids)} new papers. PMIDs: {', '.join(added_pmids) or 'none'}"
 ```
 
-### 3.4 Compression Tool
-
-```python
-# src/evidence_programming/tools/compression.py
-
-from claude_agent_sdk import tool
-from pathlib import Path
-import subprocess
-import json
-from ..state.manager import StateManager
-
-@tool(
-    "compress_evidence",
-    "Compress the evidence state to fit within token budget while preserving "
-    "sufficiency. Tries: (1) deduplication, (2) synthesis refresh, (3) aggressive "
-    "compression. Rejects any compression that changes the sufficiency score by "
-    "more than epsilon=0.05. Use when token_estimate exceeds budget.",
-    {"target_tokens": int}
-)
-async def compress_evidence(args: dict) -> dict:
-    workspace = Path(args.get("_workspace", "."))
-    target = args["target_tokens"]
-    
-    # Run compression as subprocess (invokes compression/compress.py module,
-    # which internally loads the classifier and checks the sufficiency invariant)
-    result = subprocess.run(
-        ["python", "-m", "evidence_programming.compression.compress",
-         str(workspace / "evidence_state.json"),
-         "--target-tokens", str(target),
-         "--epsilon", "0.05"],
-        capture_output=True, text=True, timeout=60
-    )
-    
-    if result.returncode != 0:
-        return {"content": [{"type": "text", "text":
-            f"Compression failed: {result.stderr}"}]}
-    
-    output = json.loads(result.stdout)
-    return {"content": [{"type": "text", "text":
-        f"Compression complete. Level used: {output['level']}. "
-        f"Tokens: {output['before']} → {output['after']}. "
-        f"Sufficiency preserved: {output['invariant_held']}"
-    }]}
-```
+This preserves compatibility with the original orchestrator.py (Mode A
+without REPL) while ensuring all logic is in one place.
 
 ---
 
-## 4. Subagents (Parallel Evidence Processing)
+## 4. Subagents as Python Functions
 
-The SDK's subagent architecture maps to evidence programming's need for parallel processing. Each subagent has isolated context, so it can process a full paper without polluting the orchestrator's context window.
+In the RLM paradigm, subagent logic is implemented as plain Python
+functions with dependency-injected LLM callables.  This replaces the
+Claude Agent SDK's `Task` subagents with testable, MCP-free code.
 
-### 4.1 Programmatic Subagent Definitions
+### 4.1 Type Signature
 
 ```python
-# Used in orchestrator.py when constructing ClaudeAgentOptions
+# src/pkevolve/verification/subagents.py
 
-from claude_agent_sdk import AgentDefinition
+LLMCallable = Callable[[str], str]  # prompt → response text
 
-EVIDENCE_SUBAGENTS = {
-    "fact-extractor": AgentDefinition(
-        description=(
-            "Extracts atomic, verifiable facts from a scientific paper. "
-            "Each fact gets a stance label (SUPPORT/REFUTE/NEUTRAL) relative "
-            "to the claim being verified, plus relevance mapping to subclaims. "
-            "Use this agent when new papers have been retrieved."
-        ),
-        prompt="""You are a scientific fact extraction specialist.
+def extract_facts(llm: LLMCallable, paper_text: str, claim: str,
+                  subclaims: list[str], source_pmid: str) -> list[Fact]: ...
 
-Given a paper and a claim with subclaims, extract every atomic fact relevant to the claim.
+def synthesize_subclaim(llm: LLMCallable, facts: list[Fact],
+                        subclaim: str) -> str: ...
 
-For each fact, provide:
-- text: the factual statement (one sentence, self-contained)
-- stance: SUPPORT if it supports the claim, REFUTE if it contradicts, NEUTRAL if relevant but neither
-- source_pmid: the paper's PMID
-- relevant_subclaims: which subclaims this fact speaks to
-- confidence: 0-1, how clearly the paper states this fact
+def detect_conflicts(llm: LLMCallable, facts: list[Fact]) -> list[dict]: ...
 
-Be precise. Do not infer beyond what the paper states. 
-If a paper doesn't address a subclaim, don't manufacture facts about it.
-
-Output your facts as a JSON array.""",
-        tools=["Read", "Bash"]
-    ),
-    
-    "synthesizer": AgentDefinition(
-        description=(
-            "Synthesizes evidence for a specific subclaim from extracted facts. "
-            "Produces a concise evidence summary weighing support vs refutation. "
-            "Use when facts have been extracted and a subclaim needs synthesis."
-        ),
-        prompt="""You are an evidence synthesis specialist.
-
-Given a subclaim and the facts relevant to it, produce a synthesis that:
-1. States the weight of evidence (mostly supporting, mostly refuting, mixed, insufficient)
-2. Summarizes the key supporting facts with citations
-3. Summarizes any contradicting facts with citations
-4. Notes the quality and diversity of sources
-5. Identifies what additional evidence would be needed
-
-Keep the synthesis under 200 words. Be precise about what the evidence does and does not show.
-
-Output as plain text.""",
-        tools=["Read"]
-    ),
-    
-    "conflict-detector": AgentDefinition(
-        description=(
-            "Detects contradictions and inconsistencies among extracted facts. "
-            "Use after fact extraction to identify conflicts that need resolution."
-        ),
-        prompt="""You are a scientific conflict detection specialist.
-
-Given a list of extracted facts, identify pairs that contradict each other.
-For each conflict:
-- Identify the two conflicting facts by ID
-- Describe the nature of the contradiction
-- Rate severity 0-1 (0 = minor methodological difference, 1 = direct contradiction)
-- Suggest what additional evidence might resolve the conflict
-
-Output as JSON array of conflict objects.""",
-        tools=["Read"]
-    ),
-    
-    "gap-query-formulator": AgentDefinition(
-        description=(
-            "Formulates targeted retrieval queries from gap predictions. "
-            "The MLP sufficiency classifier identifies coarse gap types (free, no LLM); "
-            "this subagent translates those gap types into specific PubMed queries (1 LLM call). "
-            "Use after check_sufficiency reports gaps with confidence < threshold."
-        ),
-        prompt="""You are an evidence retrieval query specialist.
-
-You receive gap predictions from the sufficiency classifier. Each gap has:
-- A subclaim that needs more evidence
-- A gap type (one of 8 categories)
-- A priority score
-
-Your job is to formulate targeted PubMed search queries that will close these gaps.
-Do NOT re-analyze the evidence state for gaps — the classifier has already done that.
-
-Gap types and what they mean for query formulation:
-- missing_subclaim_evidence: search directly for the subclaim topic
-- contradictory_evidence: search for meta-analyses or reviews that resolve the conflict
-- low_source_diversity: search with different terminology or in adjacent fields
-- weak_stance_evidence: search for studies with stronger methodology (RCTs, large cohorts)
-- missing_mechanism: search for mechanistic or pathway studies
-- missing_quantitative: search for dose-response, effect size, or quantitative studies
-- missing_temporal: search for longitudinal or time-course studies
-- missing_population: search for studies in the specific population mentioned in the claim
-
-For each gap, provide:
-- The original gap type and subclaim
-- 1-2 targeted PubMed search queries (short, specific, 3-8 words)
-- Brief rationale for why this query should close the gap
-
-Output as JSON array.""",
-        tools=["Read"]
-    ),
-}
+def formulate_gap_queries(llm: LLMCallable, gaps: list[Gap]) -> list[str]: ...
 ```
 
-### 4.2 Filesystem-Based Subagent Definitions (Alternative)
+### 4.2 Usage in REPL
 
-For simpler deployment, subagents can also be defined as markdown files:
+In Mode B, the LLM callable is wired up in the kernel prelude or by the
+REPL orchestrator.  The LLM generates code like:
 
-```markdown
-# .claude/agents/fact-extractor.md
----
-name: fact-extractor
-description: Extracts atomic, verifiable facts from scientific papers with stance labels
-tools: Read, Bash
----
+```python
+from openai import OpenAI
+client = OpenAI(base_url="https://api.z.ai/api/openai", api_key=os.environ["GLM_API_KEY"])
+llm = lambda prompt: client.chat.completions.create(
+    model="glm-4.6", messages=[{"role":"user","content":prompt}]
+).choices[0].message.content
 
-You are a scientific fact extraction specialist.
-[... same prompt as above ...]
+facts = extract_facts(llm, paper_text, state.claim, state.subclaims, pmid)
+add_facts_from_dicts([f.model_dump() for f in facts], state)
 ```
+
+### 4.3 Advantages over SDK Task Subagents
+
+- **Testable**: Each function can be unit tested with a mock `llm` callable
+- **Portable**: No dependency on Claude Agent SDK
+- **Transparent**: Prompts and parsing logic are visible Python code
+- **Composable**: Functions can be chained in a single code cell
 
 ---
 
-## 5. The Orchestrator (Evidence Programming Loop)
+## 5. Dual-Mode Orchestrator
 
-The orchestrator is the main agent that runs the evidence programming loop. It uses the SDK's `query()` function with structured outputs to produce a final `VerificationVerdict`.
+### 5.1 Mode A — Claude Agent SDK + nb_execute
 
-### 5.1 Orchestrator Implementation
-
-```python
-# src/evidence_programming/orchestrator.py
-
-import asyncio
-import json
-from pathlib import Path
-from claude_agent_sdk import (
-    query, ClaudeAgentOptions, ClaudeSDKClient, AgentDefinition,
-    create_sdk_mcp_server, AssistantMessage, ResultMessage, TextBlock
-)
-
-from .tools.retrieval import search_pubmed, search_semantic_scholar
-from .tools.evidence_state import (
-    get_evidence_summary, add_facts, update_synthesis,
-    add_conflict, get_paper_text, get_facts_for_subclaim
-)
-from .tools.sufficiency import check_sufficiency
-from .tools.compression import compress_evidence
-from .state.schema import VerificationVerdict
-from .hooks import EVIDENCE_HOOKS
-
-# Collect all custom tools into an MCP server
-evidence_tools_server = create_sdk_mcp_server(
-    name="evidence-tools",
-    version="1.0.0",
-    tools=[
-        search_pubmed,
-        search_semantic_scholar,
-        get_evidence_summary,
-        add_facts,
-        update_synthesis,
-        add_conflict,
-        get_paper_text,
-        get_facts_for_subclaim,
-        check_sufficiency,
-        compress_evidence,
-    ]
-)
-
-SYSTEM_PROMPT = """You are an evidence programming agent for scientific claim verification.
-
-You program on evidence the way a coding agent programs on code. Your tools let you
-retrieve, extract, synthesize, and evaluate scientific evidence. The sufficiency
-classifier (check_sufficiency) is your test suite — call it frequently to know whether
-your evidence gathering is working.
-
-## Your workflow:
-
-1. DECOMPOSE the claim into verifiable subclaims
-2. RETRIEVE initial evidence with search_pubmed
-3. EXTRACT facts from papers (delegate to fact-extractor subagent)
-4. CHECK SUFFICIENCY — this is your primary feedback signal
-5. If INSUFFICIENT: read the gap types from the classifier, then delegate to
-   gap-query-formulator subagent to translate gaps into targeted retrieval queries
-6. SYNTHESIZE evidence per subclaim (delegate to synthesizer subagent)
-7. CHECK SUFFICIENCY again
-8. COMPRESS if token budget exceeded (compress_evidence tool)
-9. Repeat 5-8 until sufficient or max iterations reached
-
-## Key principles:
-
-- Call check_sufficiency after EVERY round of retrieval/extraction. It's free.
-- The gaps it reports tell you WHAT TYPE of evidence is missing (coarse MLP prediction).
-- Delegate to gap-query-formulator to get specific search queries for each gap type.
-- Use subagents for extraction and synthesis — they have isolated context.
-- When the classifier reports confidence ≥ 0.80, you have enough evidence.
-- If you hit max iterations without reaching sufficiency, verdict is INSUFFICIENT.
-- Always produce a structured verdict at the end.
-
-## Token budget: 50,000 tokens. Compress when token_estimate > 40,000.
-## Max iterations: 8 sufficiency checks.
-"""
-
-# Pydantic -> JSON Schema for structured output
-VERDICT_SCHEMA = VerificationVerdict.model_json_schema()
-
-
-async def verify_claim(
-    claim: str,
-    workspace: Path,
-    max_iterations: int = 8,
-    sufficiency_threshold: float = 0.80,
-    model: str = "claude-sonnet-4-5-20250929"
-) -> VerificationVerdict:
-    """
-    Run the evidence programming loop for a single claim.
-    Returns a structured VerificationVerdict.
-    """
-    workspace.mkdir(parents=True, exist_ok=True)
-    
-    options = ClaudeAgentOptions(
-        model=model,
-        system_prompt=SYSTEM_PROMPT,
-        cwd=str(workspace),
-        allowed_tools=[
-            "Read", "Write", "Bash", "Glob", "Task",
-            # All custom MCP tools
-            "mcp__evidence-tools__search_pubmed",
-            "mcp__evidence-tools__search_semantic_scholar",
-            "mcp__evidence-tools__get_evidence_summary",
-            "mcp__evidence-tools__add_facts",
-            "mcp__evidence-tools__update_synthesis",
-            "mcp__evidence-tools__add_conflict",
-            "mcp__evidence-tools__get_paper_text",
-            "mcp__evidence-tools__get_facts_for_subclaim",
-            "mcp__evidence-tools__check_sufficiency",
-            "mcp__evidence-tools__compress_evidence",
-        ],
-        mcp_servers={"evidence-tools": evidence_tools_server},
-        agents=EVIDENCE_SUBAGENTS,
-        hooks=EVIDENCE_HOOKS,
-        permission_mode="acceptEdits",
-        max_turns=50,  # generous; the agent self-limits via sufficiency
-        output_format={
-            "type": "json_schema",
-            "schema": VERDICT_SCHEMA
-        }
-    )
-    
-    prompt = (
-        f"Verify the following scientific claim using evidence programming.\n\n"
-        f"Claim: {claim}\n\n"
-        f"The evidence state has been initialized at {workspace}/evidence_state.json.\n"
-        f"Begin by decomposing the claim into subclaims, then follow the "
-        f"evidence programming workflow. Call check_sufficiency after each "
-        f"round of evidence gathering. Stop when confidence ≥ {sufficiency_threshold} "
-        f"or after {max_iterations} iterations."
-    )
-    
-    verdict = None
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, ResultMessage):
-            if hasattr(message, 'structured_output') and message.structured_output:
-                verdict = VerificationVerdict(**message.structured_output)
-            elif hasattr(message, 'result'):
-                # Fallback: parse from result text
-                try:
-                    verdict = VerificationVerdict.model_validate_json(message.result)
-                except Exception:
-                    verdict = VerificationVerdict(
-                        verdict="INSUFFICIENT",
-                        confidence=0.0,
-                        reasoning=str(message.result),
-                        key_evidence=[],
-                        gaps_remaining=["Failed to produce structured verdict"]
-                    )
-    
-    if verdict is None:
-        verdict = VerificationVerdict(
-            verdict="INSUFFICIENT",
-            confidence=0.0,
-            reasoning="Agent did not produce a verdict",
-            key_evidence=[],
-            gaps_remaining=["No verdict produced"]
-        )
-    
-    return verdict
-
-
-async def verify_claim_interactive(claim: str, workspace: Path) -> VerificationVerdict:
-    """
-    Interactive version using ClaudeSDKClient for multi-turn control.
-    Useful for debugging and development.
-    """
-    workspace.mkdir(parents=True, exist_ok=True)
-    
-    options = ClaudeAgentOptions(
-        system_prompt=SYSTEM_PROMPT,
-        cwd=str(workspace),
-        allowed_tools=[
-            "Read", "Write", "Bash", "Glob", "Task",
-            "mcp__evidence-tools__*",  # all evidence tools
-        ],
-        mcp_servers={"evidence-tools": evidence_tools_server},
-        agents=EVIDENCE_SUBAGENTS,
-        permission_mode="acceptEdits",
-    )
-    
-    async with ClaudeSDKClient(options=options) as client:
-        # Initial prompt
-        await client.query(
-            f"Initialize evidence state for claim: {claim}\n"
-            f"Decompose into subclaims and begin evidence programming."
-        )
-        
-        async for msg in client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        print(block.text)
-        
-        # The agent runs autonomously from here — the SDK handles
-        # tool calls, subagent invocations, and context management.
-        # We could add manual checkpoints here if needed.
-    
-    # Load final state and construct verdict
-    state = StateManager(workspace).load()
-    if state.sufficiency_history:
-        latest = state.sufficiency_history[-1]
-        return VerificationVerdict(
-            verdict=latest.label.replace("SUFFICIENT_", ""),
-            confidence=latest.confidence,
-            reasoning=json.dumps(state.synthesis),
-            key_evidence=[f.text for f in state.facts[:10]],
-            gaps_remaining=[g.description for g in latest.gaps]
-        )
-    
-    return VerificationVerdict(
-        verdict="INSUFFICIENT", confidence=0.0,
-        reasoning="No sufficiency checks completed",
-        key_evidence=[], gaps_remaining=[]
-    )
-```
-
-### 5.2 Hooks for Monitoring and Cost Control
+The agent uses the Claude Agent SDK's `query()` loop with a single MCP
+server (notebook-tools). The `nb_execute` tool is the REPL gateway: the
+LLM generates Python code that calls evidence_api functions directly in
+a persistent Jupyter kernel.
 
 ```python
-# src/evidence_programming/hooks.py
+# scripts/verification/demo_evidence_programming.py  (simplified)
 
-from claude_agent_sdk import HookMatcher
-
-async def log_tool_use(input_data, tool_use_id, context):
-    """PostToolUse hook: log every tool invocation for the audit trail."""
-    tool_name = input_data.get("tool_name", "unknown")
-    print(f"  [TRACE] Tool used: {tool_name}")
-    return {}
-
-async def enforce_iteration_limit(input_data, tool_use_id, context):
-    """PreToolUse hook on check_sufficiency: enforce max iterations."""
-    # Read current iteration from state
-    import json
-    from pathlib import Path
-    state_path = Path(".") / "evidence_state.json"
-    if state_path.exists():
-        state = json.loads(state_path.read_text())
-        if state.get("iteration", 0) >= 8:  # After 8 checks, deny further calls
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": 
-                        "Max iterations (8) reached. Produce final verdict now.",
-                }
-            }
-    return {}
-
-async def block_dangerous_bash(input_data, tool_use_id, context):
-    """PreToolUse hook: prevent destructive bash commands."""
-    if input_data.get("tool_name") != "Bash":
-        return {}
-    command = input_data.get("tool_input", {}).get("command", "")
-    dangerous = ["rm -rf", "sudo", "curl | bash", "wget"]
-    for pattern in dangerous:
-        if pattern in command:
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": f"Blocked dangerous command: {pattern}",
-                }
-            }
-    return {}
-
-# Hook configuration for the orchestrator
-EVIDENCE_HOOKS = {
-    "PostToolUse": [
-        HookMatcher(hooks=[log_tool_use]),
+options = ClaudeAgentOptions(
+    model="glm-4.6",
+    system_prompt=SYSTEM_PROMPT,  # instructs LLM to use nb_execute
+    allowed_tools=[
+        "Task", "Read",
+        "mcp__notebook-tools__nb_init",
+        "mcp__notebook-tools__nb_execute",   # ← primary REPL tool
+        "mcp__notebook-tools__nb_markdown",
+        "mcp__notebook-tools__nb_render_*",
+        "mcp__notebook-tools__nb_save",
     ],
-    "PreToolUse": [
-        HookMatcher(
-            matcher="mcp__evidence-tools__check_sufficiency",
-            hooks=[enforce_iteration_limit]
-        ),
-        HookMatcher(matcher="Bash", hooks=[block_dangerous_bash]),
-    ],
-}
+    mcp_servers={
+        "notebook-tools": {
+            "command": sys.executable,
+            "args": ["-m", "pkevolve.verification.notebook_mcp"],
+        },
+    },
+)
+
+async for message in query(prompt=prompt, options=options):
+    ...  # stream messages
 ```
+
+**Key difference from the original design:** no evidence-tools MCP server.
+All 13 evidence tools are replaced by a single `nb_execute` call per step.
+The notebook is both the REPL and the audit trail.
+
+### 5.2 Mode B — Standalone REPL Orchestrator
+
+A pure Python loop that uses the OpenAI-compatible chat API. No Claude
+Agent SDK required.
+
+```python
+# src/pkevolve/verification/repl_orchestrator.py  (simplified)
+
+runner = KernelRunner("repl-session")
+runner.start()
+runner.inject_prelude(claim=claim, workspace=str(workspace))
+
+messages = [{"role": "system", "content": SYSTEM_PROMPT}, ...]
+
+for turn in range(MAX_TURNS):
+    response = client.chat.completions.create(model=model, messages=messages)
+    code = extract_code(response.choices[0].message.content)
+    outputs = runner.execute(code)
+    output_text = outputs_to_text(outputs)
+    messages.append({"role": "user", "content": f"Kernel output:\n{output_text}"})
+
+    if (workspace / "verdict.json").exists():
+        break
+```
+
+### 5.3 Kernel Runner (Shared Infrastructure)
+
+Both modes share `KernelRunner` for Jupyter kernel lifecycle:
+
+- `start()` — start a Python 3 kernel
+- `execute(code)` — run code, return structured outputs
+- `inject_prelude(claim, workspace)` — import evidence_api, init state
+- `shutdown()` — clean up
+
+The prelude injects all imports and initializes `state = EvidenceState.init_new(...)`.
+
+### 5.4 Guard Rails
+
+Guard rails are now enforced in the evidence API and state machine:
+
+- **Iteration limit**: `EvidenceState.MAX_ITERATIONS = 8`. Both
+  `check_sufficiency()` and the MCP wrapper enforce this.
+- **Token budget**: `compress_evidence()` is called when `state.token_count() > 40000`.
+- **Verdict requirement**: The loop terminates only when `verdict.json` exists.
+- **Trace log**: `state.append_trace()` records every operation for audit.
 
 ---
 
@@ -1430,171 +849,129 @@ async def evaluate_dataset(
 
 ---
 
-## 8. Implementation Stages (Revised for SDK)
+## 8. Implementation Stages (Revised for RLM REPL)
 
-### Stage 1: Foundation (Week 1-2)
+### Stage 1: Pure Python Library (DONE)
 
-**Goal:** Working state management + retrieval tools that the agent can call.
+**Goal:** All evidence logic callable without MCP.
 
-Tasks:
-- Set up project structure with `pyproject.toml` (dependencies: `claude-agent-sdk`, `httpx`, `pydantic`, `torch`)
-- Implement `state/schema.py` — all Pydantic models
-- Implement `state/manager.py` — JSON persistence
-- Implement `tools/retrieval.py` — PubMed search as MCP tool
-- Implement `tools/evidence_state.py` — state read/write MCP tools
-- Write `tests/test_state.py` and `tests/test_tools.py`
-- **Verification:** Agent can search PubMed and add papers to state via tool calls
+Files created/modified:
+- `evidence_api.py` — 13 evidence functions as plain Python
+- `subagents.py` — 4 subagent functions with injected LLM callable
+- `kernel_runner.py` — Jupyter kernel lifecycle management
+- `evidence_state.py` — added MAX_ITERATIONS, trace, checkpoint_save
+- `mcp_tools.py` — refactored to thin wrappers over evidence_api
+- `notebook_mcp.py` — refactored to use KernelRunner
 
-```bash
-# Smoke test
-python -c "
-import asyncio
-from claude_agent_sdk import query, ClaudeAgentOptions, create_sdk_mcp_server
-from evidence_programming.tools.retrieval import search_pubmed
-from evidence_programming.tools.evidence_state import get_evidence_summary
+**Verification:** `from pkevolve.verification.evidence_api import *` works.
 
-server = create_sdk_mcp_server('ev', tools=[search_pubmed, get_evidence_summary])
-opts = ClaudeAgentOptions(
-    mcp_servers={'ev': server},
-    allowed_tools=['mcp__ev__*'],
-    permission_mode='acceptEdits',
-    max_turns=5,
-)
+### Stage 2: Standalone REPL Orchestrator (DONE)
 
-async def main():
-    async for msg in query(
-        prompt='Search PubMed for metformin diabetes and show me the evidence summary',
-        options=opts
-    ):
-        print(msg)
+**Goal:** Mode B working end-to-end without Claude Agent SDK.
 
-asyncio.run(main())
-"
-```
+Files created:
+- `repl_orchestrator.py` — OpenAI client loop with code-fence parsing
 
-### Stage 2: Sufficiency Classifier (Week 3-4)
+**Verification:** `verify_claim_repl(claim, workspace)` produces verdict.json.
 
-**Goal:** Trained classifier that can be called as a tool.
+### Stage 3: SDK REPL Mode (DONE)
 
-Tasks:
-- Implement `scripts/generate_training_data.py` — self-consistency sampling on SciFact
-- Run sampling: ~1,400 claims × 6 k-values × 10 samples = ~84K API calls (~$50-100 on Sonnet)
-- Implement `classifier/features.py`, `classifier/model.py`
-- Train MLP classifier with multi-task loss (sufficiency + confidence + gaps)
-- Implement `classifier/inference.py` — CLI entry point
-- Implement `tools/sufficiency.py` — MCP tool wrapping the CLI
-- Calibration analysis: plot predicted confidence vs actual accuracy
-- **Verification:** `check_sufficiency` tool returns meaningful feedback on real evidence states
+**Goal:** Mode A using nb_execute as primary tool.
 
-### Stage 3: Subagents + Evidence Programming Loop (Week 5-6)
+Files modified:
+- `demo_evidence_programming.py` — --mode sdk|repl, single notebook-tools MCP server
 
-**Goal:** Full orchestrator running the evidence programming loop with subagents.
+**Verification:** `--mode sdk` runs with only notebook-tools MCP server.
+
+### Stage 4: Sufficiency Classifier (existing)
+
+**Goal:** Trained classifier returning SufficiencyResult.
+
+Already implemented in `classifier.py`.  Heuristic version is working.
+Future: train MLP on self-consistency labels.
+
+### Stage 5: Evaluation + Notebook Renderers
+
+**Goal:** Renderers that work from in-memory state (not disk).
 
 Tasks:
-- Define subagents: `fact-extractor`, `synthesizer`, `conflict-detector`, `gap-query-formulator`
-- Implement `orchestrator.py` with system prompt and all tool registrations
-- Implement `hooks.py` — iteration limits, logging, safety guards
-- Tune system prompt: ensure agent calls `check_sufficiency` after each retrieval round
-- Tune `max_turns`, token budget, sufficiency threshold
-- Test on 10 SciFact claims end-to-end
-- **Verification:** Agent produces structured verdicts, respects iteration limits, uses gap feedback to direct retrieval
+- Add `render_papers_from_state(state)` etc. variants to `renderers.py`
+- Batch evaluation runner using `verify_claims_batch()`
+- Cost/accuracy metrics
 
-### Stage 4: Compression + Budget Management (Week 7-8)
+### Stage 6: Writing + Polish
 
-**Goal:** Agent can handle long evidence chains without exceeding context.
+**Goal:** Paper draft with RLM framing.
 
 Tasks:
-- Implement three-level compression in `tools/compression.py`
-- Implement sufficiency invariant check (run classifier before/after compression)
-- Test compression on claims that require 15+ papers
-- ε sensitivity sweep: {0.01, 0.02, 0.05, 0.10}
-- Compare against truncation and RECOMP baselines
-- **Verification:** Agent can verify claims requiring extensive evidence without context overflow
-
-### Stage 5: Full Evaluation (Week 9-11)
-
-**Goal:** Complete experimental results on all datasets.
-
-Tasks:
-- Implement `evaluation/runner.py` and `evaluation/metrics.py`
-- Run on SciFact (1,400 claims), SciFact-Open (1,400 claims, 500K corpus)
-- Run on SciClaimHunt and FEVER subsets
-- Implement baselines: Fixed-k RAG, Self-RAG-style, SAFE-style
-- Run all 6 ablations (A1-A6 from updated plan)
-- Generate cost-accuracy Pareto curves
-- Adversarial experiments (Section 4 of updated plan)
-- **Verification:** Complete results tables for the paper
-
-### Stage 6: Writing + Polish (Week 12-13)
-
-**Goal:** Paper draft.
-
-Tasks:
-- Write motivating example showing the agent programming on evidence
-- Draft all sections per updated plan structure
-- Generate figures: Pareto curves, sufficiency trajectories, calibration plots
-- Qualitative examples of gap-directed vs undirected retrieval
-- Internal review and revision
+- Motivating example: side-by-side MCP vs REPL comparison
+- Ablation: tool-call overhead vs REPL efficiency
+- Token usage analysis
 
 ---
 
 ## 9. Dependencies and Environment
 
 ```toml
-# pyproject.toml
+# pyproject.toml (relevant subset)
 [project]
-name = "evidence-programming"
-version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "claude-agent-sdk>=0.1.20",
-    "anthropic>=0.40.0",
     "pydantic>=2.0",
-    "httpx>=0.27",
-    "torch>=2.0",
-    "numpy>=1.24",
-    "scikit-learn>=1.3",  # for calibration metrics
-    "lxml",               # for PubMed XML parsing
+    "openai>=1.0",        # Mode B REPL orchestrator
+    "jupyter-client>=8.0", # kernel management
+    "ipykernel",           # Python 3 kernel
+    "nbformat>=5.0",       # notebook I/O
+    "mcp",                 # MCP server (for backward-compat tool wrappers)
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
-]
+sdk = ["claude-agent-sdk>=0.1.20"]  # Mode A only
 ```
 
 Environment variables:
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export EVIDENCE_PROGRAMMING_DATA=./data
-export EVIDENCE_PROGRAMMING_MODEL=claude-sonnet-4-5-20250929
+export GLM_API_KEY=...              # Required for both modes
+export ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic  # Mode A
 ```
 
 ---
 
 ## 10. Key Design Decisions and Rationale
 
-### Why MCP tools instead of raw Bash scripts?
+### Why REPL instead of MCP tools?
 
-MCP tools give the agent typed interfaces with clear descriptions. The agent sees `search_pubmed(query, max_results)` rather than having to construct bash commands. This makes the programming analogy concrete — the agent has a well-defined instruction set.
+The RLM paradigm replaces 13 tool-call round-trips per iteration with a
+single code execution.  Each tool call in the MCP approach requires:
+serialization → IPC → deserialization → disk I/O → response serialization.
+In REPL mode, `search_pubmed(q, state)` is a direct function call in the
+kernel — zero serialization overhead, and the state stays in memory.
 
-### Why subagents for extraction/synthesis?
+### Why keep MCP wrappers?
 
-Paper processing produces large amounts of intermediate text (full abstracts, extracted fact lists). Running this in the main agent's context would quickly fill the context window. Subagents process in isolation and return only the structured results, keeping the orchestrator's context focused on the programming loop — the feedback/decide/act cycle.
+Backward compatibility.  The original orchestrator.py (Mode A without REPL)
+still works with the thin MCP wrappers.  The wrappers delegate to
+evidence_api, so logic is not duplicated.
 
-### Why persist state as JSON files?
+### Why Jupyter kernel instead of exec()?
 
-The SDK's built-in tools (Read, Write, Bash) can interact with files natively. The agent can `Read evidence_state.json` to inspect state directly, or use structured MCP tools for specific operations. This dual access means the agent has both programmatic tools and raw inspection capability — exactly like a coding agent has both API calls and the ability to read source files.
+1. **Process isolation**: kernel crashes don't kill the orchestrator.
+2. **Persistent state**: variables survive across code cells.
+3. **Rich output**: display_data messages support HTML (renderers).
+4. **Notebook artifact**: every code cell is recorded in the .ipynb file.
 
-### Why run the classifier via Bash subprocess?
+### Why subagents as Python functions with injected LLM callable?
 
-Decoupling. The classifier is a separate Python process with its own PyTorch model. The MCP tool invokes it, parses the JSON output, and returns structured feedback. This mirrors how a coding agent runs `python -m pytest` as a subprocess and interprets the output. The classifier doesn't share memory or state with the SDK process.
+- **Testable**: `extract_facts(mock_llm, ...)` can be unit tested.
+- **Portable**: No Claude Agent SDK dependency.
+- **Transparent**: Prompts are visible Python strings, parsing is explicit.
+- **Composable**: Can be chained in a single REPL cell.
 
-### Why structured outputs for the final verdict?
+### Why dual mode (SDK + standalone)?
 
-The SDK's structured output feature guarantees a valid `VerificationVerdict` JSON matching our Pydantic schema. This means the evaluation runner can parse verdicts reliably without worrying about free-text parsing. Every claim produces a typed result with verdict, confidence, reasoning, evidence, and remaining gaps.
-
-### Why hooks for iteration limits?
-
-The `PreToolUse` hook on `check_sufficiency` enforces the max iteration limit deterministically, independent of whether the agent's system prompt compliance is perfect. This is a safety rail — the agent can't accidentally run forever even if it ignores its instructions. The hook denies the tool call and forces the agent to produce a final verdict.
+Mode A (SDK) is useful when the Claude Agent SDK is available and provides
+built-in features like `Task` subagents, `Read` file access, and telemetry.
+Mode B (standalone) requires only `openai` and `jupyter-client`, making it
+runnable against any OpenAI-compatible endpoint without installing the SDK.
+Both modes share the same evidence_api, subagents, and kernel infrastructure.

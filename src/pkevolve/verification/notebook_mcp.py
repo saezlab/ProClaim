@@ -5,11 +5,14 @@ Provides tools for the orchestrator agent to write evidence programming
 results into a Jupyter notebook in real-time. Each tool call adds cells
 to the notebook and (optionally) executes code in a persistent kernel.
 
+Kernel lifecycle is delegated to KernelRunner (shared with
+repl_orchestrator.py). This module handles only the notebook file
+(nbformat) layer and MCP tool wrappers.
+
 Launch:  python -m pkevolve.verification.notebook_mcp
 Connect: Claude Agent SDK connects via stdio transport.
 """
 
-import atexit
 import logging
 from pathlib import Path
 
@@ -17,34 +20,18 @@ import nbformat
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
 
 from mcp.server.fastmcp import FastMCP
+from pkevolve.verification.kernel_runner import KernelRunner
 
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("notebook-tools")
 
 # ---------------------------------------------------------------------------
-# Global state: in-memory notebooks and optional kernel clients
+# Global state: in-memory notebooks and kernel runners
 # ---------------------------------------------------------------------------
 
 _notebooks: dict[str, nbformat.NotebookNode] = {}
-_kernels: dict[str, tuple] = {}  # path -> (KernelManager, KernelClient)
-_kernel_available: bool | None = None  # lazy-checked
-
-
-def _check_kernel_available() -> bool:
-    """Check once whether ipykernel + jupyter_client are importable."""
-    global _kernel_available
-    if _kernel_available is None:
-        try:
-            import jupyter_client  # noqa: F401
-            _kernel_available = True
-        except ImportError:
-            logger.warning(
-                "jupyter_client not available -- falling back to "
-                "nbformat-only mode (no live kernel execution)."
-            )
-            _kernel_available = False
-    return _kernel_available
+_runners: dict[str, KernelRunner] = {}  # notebook_path -> KernelRunner
 
 
 def _get_notebook(notebook_path: str) -> nbformat.NotebookNode:
@@ -66,46 +53,12 @@ def _get_notebook(notebook_path: str) -> nbformat.NotebookNode:
     return _notebooks[notebook_path]
 
 
-def _get_kernel(notebook_path: str):
-    """Get or start a persistent Jupyter kernel for code execution."""
-    global _kernel_available
-    if notebook_path in _kernels:
-        return _kernels[notebook_path]
-
-    if not _check_kernel_available():
-        return None, None
-
-    from jupyter_client import KernelManager
-
-    try:
-        km = KernelManager(kernel_name="python3")
-        km.start_kernel()
-        kc = km.client()
-        kc.start_channels()
-        kc.wait_for_ready(timeout=60)
-        _kernels[notebook_path] = (km, kc)
-        return km, kc
-    except Exception as exc:
-        logger.warning(
-            "Could not start Jupyter kernel: %s. "
-            "Falling back to nbformat-only mode.", exc,
-        )
-        _kernel_available = False
-        return None, None
-
-
-def _shutdown_kernels():
-    """Shutdown all managed kernels on exit."""
-    for path, (km, kc) in _kernels.items():
-        try:
-            kc.stop_channels()
-            km.shutdown_kernel(now=True)
-        except Exception:
-            pass
-    _kernels.clear()
-
-
-atexit.register(_shutdown_kernels)
+def _get_runner(notebook_path: str) -> KernelRunner:
+    """Get or create a KernelRunner for a notebook path."""
+    if notebook_path not in _runners:
+        runner = KernelRunner(session_id=f"nb:{notebook_path}")
+        _runners[notebook_path] = runner
+    return _runners[notebook_path]
 
 
 def _save_notebook(notebook_path: str) -> None:
@@ -116,60 +69,41 @@ def _save_notebook(notebook_path: str) -> None:
     nbformat.write(nb, str(path))
 
 
-def _execute_code(notebook_path: str, code: str) -> list[dict]:
-    """Execute code in the kernel and return output objects.
-
-    Returns a list of nbformat-compatible output dicts.
-    Falls back to empty outputs if no kernel is available.
-    """
-    _, kc = _get_kernel(notebook_path)
-    if kc is None:
-        return []
-
-    outputs: list[dict] = []
-    msg_id = kc.execute(code)
-
-    while True:
-        try:
-            msg = kc.get_iopub_msg(timeout=30)
-        except Exception:
-            break
-
-        if msg["parent_header"].get("msg_id") != msg_id:
-            continue
-
-        msg_type = msg["msg_type"]
-        content = msg["content"]
-
-        if msg_type == "stream":
-            outputs.append(nbformat.v4.new_output(
+def _runner_outputs_to_nb(outputs: list[dict]) -> list[dict]:
+    """Convert KernelRunner output dicts to nbformat output objects."""
+    nb_outputs = []
+    for out in outputs:
+        otype = out.get("type", "")
+        if otype == "stream":
+            nb_outputs.append(nbformat.v4.new_output(
                 output_type="stream",
-                name=content.get("name", "stdout"),
-                text=content.get("text", ""),
+                name=out.get("name", "stdout"),
+                text=out.get("text", ""),
             ))
-        elif msg_type in ("display_data", "execute_result"):
-            outputs.append(nbformat.v4.new_output(
-                output_type=msg_type,
-                data=content.get("data", {}),
-                metadata=content.get("metadata", {}),
+        elif otype in ("display_data", "execute_result"):
+            nb_outputs.append(nbformat.v4.new_output(
+                output_type=otype,
+                data=out.get("data", {}),
+                metadata=out.get("metadata", {}),
             ))
-        elif msg_type == "error":
-            outputs.append(nbformat.v4.new_output(
+        elif otype == "error":
+            nb_outputs.append(nbformat.v4.new_output(
                 output_type="error",
-                ename=content.get("ename", ""),
-                evalue=content.get("evalue", ""),
-                traceback=content.get("traceback", []),
+                ename=out.get("ename", ""),
+                evalue=out.get("evalue", ""),
+                traceback=out.get("traceback", []),
             ))
-        elif msg_type == "status" and content.get("execution_state") == "idle":
-            break
+    return nb_outputs
 
-    # Also drain the shell channel to get the reply
-    try:
-        kc.get_shell_msg(timeout=10)
-    except Exception:
-        pass
 
-    return outputs
+def _execute_code(notebook_path: str, code: str) -> list[dict]:
+    """Execute code in the kernel and return nbformat-compatible output dicts.
+
+    Delegates to KernelRunner. Falls back to empty outputs if no kernel.
+    """
+    runner = _get_runner(notebook_path)
+    raw_outputs = runner.execute(code)
+    return _runner_outputs_to_nb(raw_outputs)
 
 
 def _add_code_cell(notebook_path: str, code: str, execute: bool = True) -> str:

@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
-Notebook-enabled Evidence Verification — produces a Jupyter notebook artifact.
+Notebook-enabled Evidence Verification — RLM Mode A.
 
-Runs the Claude Agent SDK orchestrator with TWO MCP servers:
-  1. evidence-tools  — search, classify, extract (existing)
-  2. notebook-tools   — write results into a live Jupyter notebook (new)
+Runs the Claude Agent SDK orchestrator with ONE MCP server (notebook-tools).
+The agent uses nb_execute to run Python code that calls evidence_api functions
+directly in a persistent Jupyter kernel.  No evidence-tools MCP server needed.
 
-The agent documents its evidence programming workflow in the notebook as it
-works, producing a rich, reviewable .ipynb file.
+This is Mode A of the Recursive Language Model (RLM) architecture:
+  - Claude Agent SDK provides the outer agent loop
+  - nb_execute is the primary tool (REPL gateway)
+  - Evidence state lives as a Python variable in the kernel
+  - The notebook is the audit trail
 
 Connects directly to GLM's native Anthropic-compatible endpoint at api.z.ai.
 
 Usage:
-  uv run python scripts/verification/demo_evidence_programming.py \
+  uv run python scripts/verification/demo_evidence_programming.py \\
       --claim "Does MAPK1 directly activate H3-3A?"
 
-  # Custom model
-  uv run python scripts/verification/demo_evidence_programming.py \
-      --claim "Does p53 activate BAX?" \
-      --model glm-5
+  # Standalone REPL mode (Mode B, no Claude SDK)
+  uv run python scripts/verification/demo_evidence_programming.py \\
+      --claim "Does p53 activate BAX?" --mode repl
 """
 
 import sys
@@ -42,84 +44,113 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# System prompt: evidence programming + notebook documentation
+# System prompt: REPL-based evidence programming via nb_execute
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are an evidence programming agent for scientific claim verification.
+You are an evidence-programming agent that verifies scientific claims.
 
-You program on evidence the way a coding agent programs on code. Your tools let you
-retrieve, extract, synthesize, and evaluate scientific evidence. The sufficiency
-classifier (check_sufficiency) is your test suite -- call it frequently to know whether
-your evidence gathering is working.
+You work inside a Python REPL accessible via the nb_execute tool.  Every
+nb_execute call adds a code cell to the Jupyter notebook AND executes it
+in a persistent kernel.  The notebook is your audit trail.
 
-## Your workflow:
+## First step — set up the kernel
 
-1. Call nb_init to create the notebook, then DECOMPOSE the claim into subclaims.
-2. Use search_pubmed_progressive for initial evidence retrieval -- it automatically
-   broadens from strict gene-pair queries to bridge queries when direct co-mention
-   fails. Alternatively, use formulate_pubmed_query + search_pubmed for manual control.
-3. After searching: call nb_render_papers to document the retrieved papers.
-4. For each new paper, try get_full_text_article first for richer content; fall back
-   to get_paper_text if full text is unavailable. Then extract facts using the
-   add_facts tool (provide a JSON array of fact objects).
-5. After extracting: call nb_render_facts to show the color-coded fact table.
-6. CHECK SUFFICIENCY -- this is your primary feedback signal. It is free (no LLM cost).
-7. After checking: call nb_render_sufficiency to visualize coverage and gaps.
-8. If INSUFFICIENT: read the gap types from the classifier output, then formulate
-   targeted retrieval queries based on the gap types and call search_for_gap.
-9. If keyword searches return few or no results, use find_related_articles on a
-   relevant PMID to discover papers through citation links.
-10. Use nb_markdown between steps to explain your reasoning and decisions.
-11. SYNTHESIZE evidence per subclaim using update_synthesis.
-12. If there are conflicting facts, record them with add_conflict.
-13. CHECK SUFFICIENCY again after each round of retrieval/extraction.
-14. If token_estimate exceeds 40,000, call compress_evidence.
-15. Repeat steps 8-14 until sufficient or max iterations reached.
-16. Call emit_verdict to produce your final structured output.
-17. Call nb_render_verdict to display the verdict in the notebook.
+Call nb_init to create the notebook.  Then call nb_execute with the
+following setup code:
 
-## Key principles:
+```python
+import sys
+from pathlib import Path
 
-- Call check_sufficiency after EVERY round of retrieval/extraction. It is free.
-- The gaps it reports tell you WHAT TYPE of evidence is missing.
-- When the classifier reports confidence >= 0.80 and label != INSUFFICIENT, you have
-  enough evidence. Call emit_verdict immediately.
-- If you hit the iteration limit (8 checks), you must call emit_verdict with your best
-  assessment based on available evidence.
-- Always produce a structured verdict at the end via emit_verdict.
-- Prefer full text over abstracts for fact extraction when available.
-- ALWAYS document your work in the notebook using nb_* tools.
+_src = str(Path("{project_root}") / "src")
+if _src not in sys.path:
+    sys.path.insert(0, _src)
 
-## Important:
+from pkevolve.verification.evidence_api import (
+    search_pubmed, search_pubmed_progressive, find_related_articles,
+    get_full_text_article, get_paper_text, add_facts_from_dicts,
+    update_synthesis, add_conflict, get_evidence_summary,
+    check_sufficiency, compress_evidence, emit_verdict,
+    formulate_pubmed_query, search_for_gap,
+)
+from pkevolve.verification.evidence_state import EvidenceState
+from pkevolve.verification.data_models import Fact, Stance
 
-- The workspace path for all evidence tool calls is: {workspace}
-- The notebook path for all notebook tool calls is: {notebook_path}
-- Always pass the workspace parameter to every evidence MCP tool call.
-- Always pass the notebook_path parameter to every notebook MCP tool call.
-- Token budget: 50,000 tokens. Compress when token_estimate > 40,000.
-- Max iterations: 8 sufficiency checks.
+workspace = Path("{workspace}")
+workspace.mkdir(parents=True, exist_ok=True)
+state = EvidenceState.init_new(
+    claim="{claim}",
+    subclaims=["{claim}"],
+    workspace=workspace,
+)
+print("Setup complete. State initialized.")
+```
+
+## Available functions (after setup)
+
+All functions operate on `state` (a live Python object):
+
+    search_pubmed(query, state, max_results=5) -> list[str]
+    search_pubmed_progressive(claim, state) -> list[str]
+    find_related_articles(pmid, state, max_results=5) -> list[str]
+    get_full_text_article(pmid, state) -> str
+    get_paper_text(pmid, state) -> str
+    add_facts_from_dicts(facts_data, state) -> int
+    update_synthesis(subclaim, text, state)
+    add_conflict(fact_a_id, fact_b_id, description, severity, state) -> str
+    get_evidence_summary(state) -> str
+    check_sufficiency(state) -> SufficiencyResult
+    compress_evidence(state, target_tokens=40000) -> EvidenceState
+    emit_verdict(verdict, confidence, reasoning, key_evidence, gaps_remaining, state, workspace)
+    formulate_pubmed_query(claim) -> str
+    search_for_gap(gap_description, state, max_results=3) -> list[str]
+
+## Workflow
+
+1. Call nb_init, then nb_execute with the setup code above.
+2. Decompose the claim: state.subclaims = ["subclaim A", ...]
+3. Search: call search_pubmed_progressive(claim, state) via nb_execute.
+4. After searching: call nb_render_papers to show the papers table.
+5. Read papers and extract facts via nb_execute.
+6. After extracting: call nb_render_facts to show the facts table.
+7. Check sufficiency: result = check_sufficiency(state); print(result)
+8. After checking: call nb_render_sufficiency.
+9. If insufficient: read the gaps and do targeted retrieval.
+10. Use nb_markdown between steps to explain your reasoning.
+11. Repeat until sufficient or 8 iterations.
+12. Call emit_verdict via nb_execute.
+13. Call nb_render_verdict.
+
+## Rules
+
+- Use nb_execute for ALL evidence API calls — write Python code directly.
+- Use nb_markdown for narrative explanation.
+- Use nb_render_* for visualizations (these are separate tools).
+- `state` persists across nb_execute calls (same kernel).
+- All output from nb_execute is via print().
+- When emit_verdict is called, the verification is complete.
+
+## Important
+
+- Notebook path: {notebook_path}
+- Workspace path: {workspace}
+- Max iterations: {max_iterations} sufficiency checks.
 """
 
 
 # ---------------------------------------------------------------------------
 # API endpoint configuration
 # ---------------------------------------------------------------------------
-# Connects directly to GLM's native Anthropic-compatible endpoint.
-# ---------------------------------------------------------------------------
 
 GLM_API_BASE = "https://api.z.ai/api/anthropic"
+GLM_OPENAI_BASE = "https://api.z.ai/api/openai"
 GLM_API_KEY = os.getenv("GLM_API_KEY")
 GLM_DEFAULT_MODEL = "glm-4.6"
 
 
 def _build_env() -> dict:
-    """Build the env dict for the Claude Agent SDK.
-
-    Uses ANTHROPIC_AUTH_TOKEN with the GLM key and points
-    ANTHROPIC_BASE_URL to api.z.ai's native Anthropic endpoint.
-    ANTHROPIC_API_KEY is removed to prevent Anthropic auth flows.
-    """
+    """Build the env dict for the Claude Agent SDK."""
     api_key = GLM_API_KEY
     if not api_key:
         raise RuntimeError(
@@ -130,22 +161,18 @@ def _build_env() -> dict:
     env = {
         **os.environ,
         "API_TIMEOUT_MS": os.getenv("API_TIMEOUT_MS", "3000000"),
-        # Suppress CLI beta headers and telemetry (defense in depth)
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
         "ANTHROPIC_AUTH_TOKEN": api_key,
         "ANTHROPIC_BASE_URL": os.getenv("ANTHROPIC_BASE_URL", GLM_API_BASE),
     }
-    # Remove ANTHROPIC_API_KEY if inherited from os.environ — its presence
-    # (even empty) can cause the CLI to attempt Anthropic auth and hang.
     env.pop("ANTHROPIC_API_KEY", None)
-
     return env
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator
+# Mode A: Claude Agent SDK + nb_execute
 # ---------------------------------------------------------------------------
 
 async def verify_claim_notebook(
@@ -156,11 +183,7 @@ async def verify_claim_notebook(
     max_iterations: int = 8,
     sufficiency_threshold: float = 0.80,
 ) -> Path:
-    """
-    Run the evidence programming loop, writing results to a Jupyter notebook.
-
-    Returns the path to the generated notebook.
-    """
+    """Run evidence programming via Claude Agent SDK with nb_execute as primary tool."""
     from claude_agent_sdk import (
         AssistantMessage,
         ClaudeAgentOptions,
@@ -174,27 +197,25 @@ async def verify_claim_notebook(
     workspace.mkdir(parents=True, exist_ok=True)
     notebook_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build env (validates GLM API key)
     env = _build_env()
 
-    # Initialize evidence state
+    # Initialize evidence state on disk (checkpoint)
     EvidenceState.init_new(claim=claim, subclaims=[claim], workspace=workspace)
 
     # Build system prompt
     system_prompt = SYSTEM_PROMPT.format(
+        project_root=str(PROJECT_ROOT),
         workspace=str(workspace),
         notebook_path=str(notebook_path),
+        claim=claim,
+        max_iterations=max_iterations,
     )
 
-    # Stderr callback to surface CLI debug output
     def _on_stderr(line: str) -> None:
         logger.debug("CLI stderr: %s", line.rstrip())
 
-    # Resolve Python from the running environment so MCP servers
-    # don't fall back to /usr/bin/python (which lacks pkevolve).
     python_exe = sys.executable
 
-    # Environment
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system_prompt,
@@ -206,22 +227,7 @@ async def verify_claim_notebook(
         allowed_tools=[
             "Task",
             "Read",
-            # Evidence MCP tools
-            "mcp__evidence-tools__formulate_pubmed_query",
-            "mcp__evidence-tools__search_pubmed",
-            "mcp__evidence-tools__search_pubmed_progressive",
-            "mcp__evidence-tools__search_for_gap",
-            "mcp__evidence-tools__find_related_articles",
-            "mcp__evidence-tools__get_full_text_article",
-            "mcp__evidence-tools__get_evidence_summary",
-            "mcp__evidence-tools__add_facts",
-            "mcp__evidence-tools__get_paper_text",
-            "mcp__evidence-tools__update_synthesis",
-            "mcp__evidence-tools__add_conflict",
-            "mcp__evidence-tools__check_sufficiency",
-            "mcp__evidence-tools__compress_evidence",
-            "mcp__evidence-tools__emit_verdict",
-            # Notebook MCP tools
+            # Notebook MCP tools only — evidence API is called via nb_execute
             "mcp__notebook-tools__nb_init",
             "mcp__notebook-tools__nb_markdown",
             "mcp__notebook-tools__nb_execute",
@@ -237,11 +243,6 @@ async def verify_claim_notebook(
             "AskUserQuestion",
         ],
         mcp_servers={
-            "evidence-tools": {
-                "command": python_exe,
-                "args": ["-m", "pkevolve.verification.mcp_tools"],
-                "cwd": str(PROJECT_ROOT),
-            },
             "notebook-tools": {
                 "command": python_exe,
                 "args": ["-m", "pkevolve.verification.notebook_mcp"],
@@ -253,26 +254,21 @@ async def verify_claim_notebook(
     prompt = (
         f"Verify the following scientific claim using evidence programming.\n\n"
         f"Claim: {claim}\n\n"
-        f"The evidence state has been initialized at {workspace}/evidence_state.json.\n"
-        f"The notebook is at {notebook_path}.\n\n"
-        f"Start by calling nb_init to set up the notebook, then follow the "
-        f"evidence programming workflow. Document every step in the notebook. "
-        f"Call check_sufficiency after each round of evidence gathering. "
+        f"Start by calling nb_init to create the notebook at {notebook_path}, "
+        f"then run the setup code via nb_execute to import the evidence API. "
+        f"Follow the evidence programming workflow. "
+        f"Call check_sufficiency after each round. "
         f"Stop when confidence >= {sufficiency_threshold} or after "
         f"{max_iterations} iterations. "
-        f'Always pass workspace="{workspace}" to every evidence tool call. '
         f'Always pass notebook_path="{notebook_path}" to every notebook tool call.'
     )
 
-    # Run the agent
     logger.info(
-        "verify_claim_notebook: starting for claim=%r, workspace=%s, notebook=%s",
+        "Mode A: starting claim=%r, workspace=%s, notebook=%s",
         claim, workspace, notebook_path,
     )
 
-    # Use query() — the same function that works in run_signor_qa_glm.py.
-    # Set a generous stream-close timeout for long-running agent loops.
-    env["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] = "300000"  # 5 minutes
+    env["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] = "300000"
 
     async for message in query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
@@ -304,17 +300,51 @@ async def verify_claim_notebook(
 
 
 # ---------------------------------------------------------------------------
+# Mode B: Standalone REPL (no Claude SDK)
+# ---------------------------------------------------------------------------
+
+def verify_claim_repl_mode(
+    claim: str,
+    workspace: Path,
+    model: str = GLM_DEFAULT_MODEL,
+    max_iterations: int = 8,
+    sufficiency_threshold: float = 0.80,
+) -> Path:
+    """Run evidence programming via standalone REPL orchestrator (Mode B)."""
+    from pkevolve.verification.repl_orchestrator import verify_claim_repl
+
+    verdict = verify_claim_repl(
+        claim=claim,
+        workspace=workspace,
+        model=model,
+        base_url=GLM_OPENAI_BASE,
+        max_iterations=max_iterations,
+        sufficiency_threshold=sufficiency_threshold,
+    )
+
+    print(f"\nVerdict: {verdict.verdict} (confidence: {verdict.confidence:.2f})")
+    print(f"Reasoning: {verdict.reasoning}")
+
+    return workspace / "verdict.json"
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Evidence Verification with Jupyter Notebook output.",
+        description="Evidence Verification — RLM dual-mode orchestrator.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     parser.add_argument(
         "--claim", required=True, help="Scientific claim to verify.",
+    )
+    parser.add_argument(
+        "--mode", choices=["sdk", "repl"], default="sdk",
+        help="Orchestration mode: sdk (Mode A, Claude Agent SDK + nb_execute) "
+             "or repl (Mode B, standalone REPL, no SDK). Default: sdk.",
     )
     parser.add_argument(
         "--model", type=str, default=GLM_DEFAULT_MODEL,
@@ -334,7 +364,7 @@ def main():
     )
     parser.add_argument(
         "--notebook-path", type=str, default=None,
-        help="Path for the output notebook (default: <output-dir>/evidence_report.ipynb).",
+        help="Path for the output notebook (Mode A only).",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Enable debug logging.",
@@ -342,7 +372,7 @@ def main():
 
     args = parser.parse_args()
 
-    # Determine paths (needed before logging setup for log file location)
+    # Determine paths
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
@@ -355,9 +385,9 @@ def main():
     else:
         notebook_path = output_dir / "evidence_report.ipynb"
 
-    # Configure logging — write to file in the same directory as the notebook
+    # Configure logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
-    log_file = notebook_path.parent / f"{notebook_path.stem}.log"
+    log_file = output_dir / "run.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -372,24 +402,34 @@ def main():
     logger.info("Log file: %s", log_file)
 
     print(f"Claim: {args.claim}")
+    print(f"Mode: {args.mode} ({'Claude Agent SDK + nb_execute' if args.mode == 'sdk' else 'Standalone REPL'})")
     print(f"Model: {args.model}")
-    print(f"Backend: GLM direct ({GLM_API_BASE})")
     print(f"Workspace: {workspace}")
-    print(f"Notebook: {notebook_path}")
+    if args.mode == "sdk":
+        print(f"Notebook: {notebook_path}")
     print()
 
-    result_nb = asyncio.run(verify_claim_notebook(
-        claim=args.claim,
-        workspace=workspace,
-        notebook_path=notebook_path,
-        model=args.model,
-        max_iterations=args.max_iterations,
-        sufficiency_threshold=args.threshold,
-    ))
+    if args.mode == "sdk":
+        result = asyncio.run(verify_claim_notebook(
+            claim=args.claim,
+            workspace=workspace,
+            notebook_path=notebook_path,
+            model=args.model,
+            max_iterations=args.max_iterations,
+            sufficiency_threshold=args.threshold,
+        ))
+        print(f"\nNotebook saved: {result}")
+    else:
+        result = verify_claim_repl_mode(
+            claim=args.claim,
+            workspace=workspace,
+            model=args.model,
+            max_iterations=args.max_iterations,
+            sufficiency_threshold=args.threshold,
+        )
+        print(f"\nVerdict saved: {result}")
 
-    print(f"\nNotebook saved: {result_nb}")
     print(f"Workspace: {workspace}")
-    print("Open the notebook in JupyterLab to view the evidence report.")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,8 @@
 EvidenceState — central data structure for the verification loop.
 
 Pydantic-based with JSON persistence and audit logging.
-
+In REPL mode, the state lives as a Python variable in the kernel.
+In MCP mode, it is loaded/saved on each tool call.
 Extension points:
   - Thread safety (add RLock on mutations)
   - Budget-aware get_context(budget_tokens)
@@ -34,6 +35,9 @@ class EvidenceState(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)
 
+    # Class-level guard: maximum sufficiency checks allowed
+    MAX_ITERATIONS: int = 8
+
     claim: str
     subclaims: list[str] = Field(default_factory=list)
     papers: dict[str, PaperRecord] = Field(default_factory=dict)
@@ -45,6 +49,9 @@ class EvidenceState(BaseModel):
     sufficiency_history: list[SufficiencyResult] = Field(default_factory=list)
     iteration: int = 0
     token_estimate: int = 0
+    # In-memory trace log — accumulated during REPL sessions,
+    # written to disk on save()/checkpoint_save().
+    trace: list[dict] = Field(default_factory=list, exclude=True)
 
     # -- Mutation methods --------------------------------------------------
 
@@ -111,10 +118,32 @@ class EvidenceState(BaseModel):
 
     # -- Persistence -------------------------------------------------------
 
+    def append_trace(self, operation: str, details: dict) -> None:
+        """Append an entry to the in-memory trace log."""
+        self.trace.append({
+            "operation": operation,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **details,
+        })
+
     def save(self, path: Path) -> None:
         """Write state as JSON to disk."""
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.model_dump_json(indent=2))
+
+    def checkpoint_save(self, workspace) -> None:
+        """Save both evidence_state.json and trace.json to workspace.
+
+        Convenience method for REPL sessions where you want to persist
+        both state and the accumulated trace log at a checkpoint.
+        Accepts either a ``Path`` or ``str``.
+        """
+        workspace = Path(workspace)
+        workspace.mkdir(parents=True, exist_ok=True)
+        self.save(workspace / "evidence_state.json")
+        if self.trace:
+            trace_path = workspace / "trace.json"
+            trace_path.write_text(json.dumps(self.trace, indent=2))
 
     @classmethod
     def load(cls, path: Path) -> "EvidenceState":

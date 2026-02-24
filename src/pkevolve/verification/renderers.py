@@ -241,6 +241,172 @@ def render_sufficiency(workspace: str) -> None:
     display(HTML(html))
 
 
+def render_papers_from_state(state) -> None:
+    """Render papers from an in-memory EvidenceState object.
+
+    Accepts either an ``EvidenceState`` instance or a plain dict
+    (from ``state.model_dump()``).
+    """
+    if hasattr(state, "model_dump"):
+        d = state.model_dump()
+    else:
+        d = state
+    papers = d.get("papers", {})
+
+    if not papers:
+        display(HTML("<p><em>No papers retrieved yet.</em></p>"))
+        return
+
+    rows = []
+    for pmid, p in papers.items():
+        title = p.get("title", "")[:80]
+        abstract_preview = (p.get("abstract", "") or "")[:100]
+        has_ft = "Yes" if p.get("full_text") else "No"
+        rows.append(
+            f"<tr>"
+            f"<td><a href='https://pubmed.ncbi.nlm.nih.gov/{pmid}/' "
+            f"target='_blank'>{pmid}</a></td>"
+            f"<td>{title}</td>"
+            f"<td>{abstract_preview}...</td>"
+            f"<td>{has_ft}</td>"
+            f"</tr>"
+        )
+
+    html = (
+        "<h3>Retrieved Papers</h3>"
+        "<table style='border-collapse:collapse;width:100%'>"
+        "<tr style='background:#f1f5f9'>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>PMID</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Title</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Abstract</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Full Text</th>"
+        "</tr>"
+        + "".join(rows)
+        + "</table>"
+        + f"<p><em>Total: {len(papers)} papers</em></p>"
+    )
+    display(HTML(html))
+
+
+def render_facts_from_state(state) -> None:
+    """Render facts from an in-memory EvidenceState object."""
+    if hasattr(state, "model_dump"):
+        d = state.model_dump()
+    else:
+        d = state
+    facts = d.get("facts", [])
+
+    if not facts:
+        display(HTML("<p><em>No facts extracted yet.</em></p>"))
+        return
+
+    rows = []
+    for f in facts:
+        stance = f.get("stance", "NEUTRAL")
+        if isinstance(stance, str):
+            pass
+        else:
+            stance = str(stance)
+        color = _stance_color(stance)
+        icon = _stance_icon(stance)
+        text = f.get("text", "")[:120]
+        pmid = f.get("source_pmid", "")
+        conf = f.get("confidence", 0)
+        rows.append(
+            f"<tr>"
+            f"<td style='padding:4px 8px;border:1px solid #cbd5e1;"
+            f"color:{color};font-weight:bold'>{icon} {stance}</td>"
+            f"<td style='padding:4px 8px;border:1px solid #cbd5e1'>{text}</td>"
+            f"<td style='padding:4px 8px;border:1px solid #cbd5e1'>{pmid}</td>"
+            f"<td style='padding:4px 8px;border:1px solid #cbd5e1'>{conf:.2f}</td>"
+            f"</tr>"
+        )
+
+    n_sup = sum(1 for f in facts if str(f.get("stance", "")).upper() == "SUPPORT")
+    n_ref = sum(1 for f in facts if str(f.get("stance", "")).upper() == "REFUTE")
+    n_neu = sum(1 for f in facts if str(f.get("stance", "")).upper() == "NEUTRAL")
+
+    html = (
+        "<h3>Extracted Facts</h3>"
+        f"<p>Total: {len(facts)} &mdash; "
+        f"<span style='color:#22c55e'>&#9679; Support: {n_sup}</span> &nbsp; "
+        f"<span style='color:#ef4444'>&#9679; Refute: {n_ref}</span> &nbsp; "
+        f"<span style='color:#9ca3af'>&#9675; Neutral: {n_neu}</span></p>"
+        "<table style='border-collapse:collapse;width:100%'>"
+        "<tr style='background:#f1f5f9'>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Stance</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Fact</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>PMID</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Conf</th>"
+        "</tr>"
+        + "".join(rows)
+        + "</table>"
+    )
+    display(HTML(html))
+
+
+def render_sufficiency_from_state(state) -> None:
+    """Render sufficiency check from an in-memory EvidenceState object."""
+    if hasattr(state, "model_dump"):
+        d = state.model_dump()
+    else:
+        d = state
+    hist = d.get("sufficiency_history", [])
+    iteration = d.get("iteration", 0)
+
+    if not hist:
+        display(HTML("<p><em>No sufficiency checks performed yet.</em></p>"))
+        return
+
+    latest = hist[-1]
+    label = latest.get("label", "INSUFFICIENT")
+    conf = latest.get("confidence", 0)
+    gaps = latest.get("gaps", [])
+
+    if label != "INSUFFICIENT" and conf >= 0.80:
+        status_color = "#22c55e"
+        status_text = "SUFFICIENT"
+    else:
+        status_color = "#f59e0b"
+        status_text = "INSUFFICIENT"
+
+    conf_bar = _bar_html(conf, 1.0, status_color, 300)
+    cov_rows = ""
+
+    gap_html = ""
+    if gaps:
+        gap_items = ""
+        for g in gaps:
+            gt = g.get("gap_type", "unknown")
+            if isinstance(gt, dict):
+                gt = gt.get("value", str(gt))
+            desc = g.get("description", "")
+            pri = g.get("priority", 0)
+            gap_items += (
+                f"<li><span style='color:#f59e0b'>&#9888;</span> "
+                f"<strong>{gt}</strong>: {desc} "
+                f"<em>(priority: {pri:.1f})</em></li>"
+            )
+        gap_html = (
+            f"<h4>Gaps Identified ({len(gaps)})</h4><ul>{gap_items}</ul>"
+        )
+
+    html = (
+        f"<div style='border:2px solid {status_color};border-radius:8px;"
+        f"padding:16px;margin:8px 0'>"
+        f"<h3>Sufficiency Check (Iteration {iteration}/8)</h3>"
+        f"<p><strong>Label:</strong> {label} &nbsp; "
+        f"<strong>Status:</strong> "
+        f"<span style='color:{status_color};font-weight:bold'>"
+        f"{status_text}</span></p>"
+        f"<p><strong>Confidence:</strong> {conf_bar}</p>"
+        f"<table style='margin:8px 0'>{cov_rows}</table>"
+        f"{gap_html}"
+        f"</div>"
+    )
+    display(HTML(html))
+
+
 def render_verdict(workspace: str) -> None:
     """Render the final verdict as a styled card.
 
