@@ -23,6 +23,7 @@ dependencies = [
     "spacy>=3.0",
     "claude-agent-sdk",
     "sentence-transformers",
+    "seaborn>=0.13.2",
 ]
 
 [build-system]

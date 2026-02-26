@@ -19,5 +19,5 @@ The server runs automatically when `extract_features_scifact.py` is executed.
 
 ## Usage
 ```bash
-uv run python scripts/claude_sdk/extract_features_scifact.py --limit 3
+uv run python scripts/sufficiency_classifier/extract_features_scifact.py --limit 3
 ```

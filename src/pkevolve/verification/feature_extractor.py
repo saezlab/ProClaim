@@ -16,6 +16,9 @@ Usage:
 import logging
 import math
 import time
+import json
+import os
+from pathlib import Path
 from datetime import datetime, timezone
 
 from pkevolve.search.paper_utils import (
@@ -201,13 +204,39 @@ class PaperFeatureExtractor:
       - normalized_citation_count:   citations / (current_year - pub_year + 1)
     """
 
-    def __init__(self, rate_limit_delay: float = 0.35):
+    def __init__(self, rate_limit_delay: float = 0.35, cache_path: str = "data/metadata_cache.json"):
         """
         Args:
             rate_limit_delay: Seconds to wait between major API call groups
                 to avoid NCBI/OpenAlex rate limits (default: 0.35s).
+            cache_path: Path to the JSON cache file to store extracted metadata.
         """
         self._delay = rate_limit_delay
+        
+        # Setup Cache
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        self._cache_file = project_root / cache_path
+        self._cache = self._load_cache()
+
+    def _load_cache(self) -> dict:
+        if self._cache_file.exists():
+            try:
+                with open(self._cache_file, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load cache from {self._cache_file}: {e}")
+        return {}
+
+    def _save_cache(self):
+        try:
+            self._cache_file.parent.mkdir(parents=True, exist_ok=True)
+            # Write safely using a temporary file to avoid corruption on restart
+            temp_file = self._cache_file.with_suffix('.tmp')
+            with open(temp_file, "w") as f:
+                json.dump(self._cache, f, indent=2)
+            os.replace(temp_file, self._cache_file)
+        except Exception as e:
+            logger.warning(f"Failed to save cache to {self._cache_file}: {e}")
 
     def extract_metadata(self, pmid: str) -> PaperFeatureVector:
         """Extract metadata features for a single paper.
@@ -219,6 +248,12 @@ class PaperFeatureExtractor:
             PaperFeatureVector with populated metadata fields.
             Fields may be None if the corresponding API call failed.
         """
+        # --- 0. Check Cache ---
+        if pmid in self._cache:
+            cached_data = self._cache[pmid]
+            logger.debug("Loaded metadata for PMID %s from cache", pmid)
+            return PaperFeatureVector(**cached_data)
+
         logger.info("Extracting metadata features for PMID %s", pmid)
 
         # --- 1. Publication year from PubMed ---
@@ -267,13 +302,19 @@ class PaperFeatureExtractor:
             age = max(current_year - pub_year + 1, 1)
             norm_citations = raw_citations / age
 
-        return PaperFeatureVector(
+        result_vector = PaperFeatureVector(
             pmid=pmid,
             publication_year=pub_year,
             log_impact_factor=log_if,
             normalized_citation_count=norm_citations,
             author_h_index_max=author_h_max,
         )
+
+        # Save to cache
+        self._cache[pmid] = result_vector.model_dump()
+        self._save_cache()
+
+        return result_vector
 
     def extract_batch(
         self, pmids: list[str]

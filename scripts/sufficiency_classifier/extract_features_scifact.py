@@ -7,7 +7,7 @@ Script to extract features for SciFact-Open claims/evidence by combining:
 3. NLP Feature Extraction (Recall/Overlap via scispacy)
 
 Usage:
-    uv run scripts/claude_sdk/extract_features_scifact.py --limit 3
+    uv run scripts/sufficiency_classifier/extract_features_scifact.py --limit 3
 """
 
 import asyncio
