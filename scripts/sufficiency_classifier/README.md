@@ -205,11 +205,18 @@ uv run scripts/claude_sdk/test_mlp_classifier.py
 
 > ⚠️ **Logits output:** The model outputs raw logits (no Sigmoid). Use threshold `> 0.0` for binary prediction, or apply `torch.sigmoid()` on outputs to get probability scores.
 
-### Latest Metrics (Test Set)
+### Model Selection Results
 
-| Metric | Score |
-|--------|-------|
-| Accuracy | 0.927 |
-| Precision | 0.930 |
-| Recall | 0.930 |
-| F1 | 0.930 |
+The following table summarizes the performance of different model architectures and feature subsets.
+
+| Model | Feature Set | Number of Features | Accuracy | Precision | Recall | F1 Score |
+|-------|-------------|--------------------|----------|-----------|--------|----------|
+| Logistic Regression | All | 24 | 86.36% | 87.50% | 85.96% | 86.73% |
+| MLP Small | All | 24 | 90.91% | 89.83% | 92.98% | 91.38% |
+| MLP Large | All | 24 | 89.09% | 90.91% | 87.72% | 89.29% |
+| Logistic Regression | Important | 10 | 71.82% | 74.07% | 70.18% | 72.07% |
+| MLP Small | Important | 10 | 88.18% | 90.74% | 85.96% | 88.29% |
+| **MLP Large (Best)**| **Important** | **10** | **91.82%** | **92.86%** | **91.23%** | **92.04%** |
+| Logistic Regression | Minimal | 5 | 73.64% | 74.14% | 75.44% | 74.78% |
+| MLP Small | Minimal | 5 | 82.73% | 82.76% | 84.21% | 83.48% |
+| MLP Large | Minimal | 5 | 84.55% | 83.33% | 87.72% | 85.47% |

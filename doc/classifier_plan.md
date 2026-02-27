@@ -43,7 +43,7 @@ These features capture the linguistic alignment and logical entailment between t
     * **Output:** Vector: $[P(\text{Entailment}), P(\text{Contradiction}), P(\text{Neutral})]$.
     * **Rationale:** The most direct semantic signal indicating whether the text supports or refutes the claim.
 
-### 3. LLM-Native Features (Reasoning & Uncertainty)
+### 3. LLM-Native Features (Reasoning & Uncertainty) (Paused)
 Leveraging the zero-shot reasoning capabilities and intrinsic uncertainty metrics of Large Language Models. *(Currently all active LLM features are marked as Paused to ensure the classifier remains lightweight and independent of the LLM).*
 
 * **LLM Verdict (Paused)**
@@ -64,7 +64,7 @@ Leveraging the zero-shot reasoning capabilities and intrinsic uncertainty metric
 
 ## Section 2: Feature Aggregation Methods (Multi-Paper Level)
 
-Once we have collected Local Feature Vectors $\{v_1, v_2, ..., v_n\}$ for $N$ papers, we apply an Aggregation Layer to compress them into a single global vector ($V_{global}$) for the Classifier. 
+Once we have collected Local Feature Vectors $\{v_1, v_2, ..., v_n\}$ for $N$ papers, we compress them into a single global vector ($V_{global}$) for the Classifier. 
 
 ### Iterative Execution Flow
 This process is **iterative**. Every time the LLM Agent retrieves a new paper $P_{N+1}$:
@@ -232,7 +232,7 @@ Train a binary classifier that predicts a **Sufficiency Score (0~1)** for the cu
 
 ## Section 5: Mathematical Formulation
 
-Given a claim $C$ and a retrieved evidence pool $\mathcal{P} = \{P_1, \ldots, P_N\}$, we first extract per-paper feature vectors $\mathbf{v}_i = \phi(C, P_i) = [\mathbf{v}_i^{\text{meta}}, \mathbf{v}_i^{\text{nlp}}] \in \mathbb{R}^k$, comprising metadata features (log-transformed impact factor, normalized citations, h-index, publication year) and NLP features (max-pooled semantic similarity, entity coverage recall, NLI entailment/contradiction/neutral probabilities). These local vectors are then compressed into a single global representation $\mathbf{v}_{\text{global}} = g(\mathbf{v}_1, \ldots, \mathbf{v}_N) = [\mathbf{a}^{\text{meta}}, \mathbf{a}^{\text{nlp}}, \mathbf{a}^{\text{cross}}] \in \mathbb{R}^d$ via deterministic aggregation: metadata pooling (max, mean over quality/authority indicators), NLP consensus statistics (stance ratios, Shannon entropy as controversy index, pooled similarity), and cross-features $a_k^w = \sum_i w_i \cdot p_i^k$ that weight each paper's NLI stance by its quality score (IF, citation count, or temporal decay). A binary classifier $f_\theta: \mathbb{R}^d \to [0,1]$, implemented as a 2-layer MLP with batch normalization and dropout, is trained with class-weighted binary cross-entropy to predict a sufficiency score $\hat{y} = \sigma(f_\theta(\mathbf{v}_{\text{global}}))$. At inference time, the agent iteratively retrieves papers and re-evaluates $\hat{y}$; retrieval stops when $\hat{y} \geq \tau$ or $N$ exceeds a hard limit $K$.
+Given a claim $C$ and a retrieved evidence pool $\mathcal{P} = \{P_1, \ldots, P_N\}$, we first extract per-paper feature vectors $\mathbf{v}_i = \phi(C, P_i) = [\mathbf{v}_i^{\text{meta}}, \mathbf{v}_i^{\text{nlp}}] \in \mathbb{R}^k$, comprising metadata features (log-transformed impact factor, normalized citations, h-index, publication year) and NLP features (max-pooled semantic similarity, entity coverage recall, NLI entailment/contradiction/neutral probabilities). These local vectors are then compressed into a single global representation $\mathbf{v}_{\text{global}} = g(\mathbf{v}_1, \ldots, \mathbf{v}_N) = [\mathbf{a}^{\text{meta}}, \mathbf{a}^{\text{nlp}}, \mathbf{a}^{\text{cross}}] \in \mathbb{R}^d$ via deterministic aggregation: metadata pooling (max, mean over quality/authority indicators), NLP consensus statistics (stance ratios, Shannon entropy as controversy index, pooled similarity), and cross-features $a_k^w = \sum_i w_i \cdot p_i^k$ that weight each paper's NLI stance by its quality score (IF, citation count, or temporal decay). A binary classifier $f_\theta: \mathbb{R}^d \to [0,1]$, implemented as a 2-layer MLP with batch normalization and dropout, is trained with class-weighted binary cross-entropy to predict a sufficiency score $\hat{y} = \sigma(f_\theta(\mathbf{v}_{\text{global}}))$.
 
 ---
 
