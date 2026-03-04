@@ -2,6 +2,8 @@
 
 This file is read automatically by Claude Code at session start.
 See also: `.github/copilot-instructions.md` for general project conventions.
+See also: `doc/sdk_vs_repl_modes.md` for SDK vs REPL mode comparison,
+transparency analysis, and academic reproducibility guidance.
 
 ## Claude Agent SDK -- GLM API Configuration
 
@@ -105,10 +107,16 @@ Only needed when using `--use-litellm`:
 
 When connecting directly to GLM, use GLM model names:
 
-| Model name | Endpoint |
-|---|---|
-| `glm-4.6` (default) | `api.z.ai/api/anthropic` |
-| `glm-5` | `api.z.ai/api/anthropic` |
+| Model name | Anthropic endpoint | OpenAI-compatible endpoint |
+|---|---|---|
+| `glm-5` | `api.z.ai/api/anthropic` | `api.z.ai/api/paas/v4/` |
+| `glm-4.7` | `api.z.ai/api/anthropic` | `api.z.ai/api/paas/v4/` |
+| `glm-4.6` | `api.z.ai/api/anthropic` | `api.z.ai/api/paas/v4/` |
+| `glm-4.5-air` | `api.z.ai/api/anthropic` | `api.z.ai/api/paas/v4/` |
+
+**Important**: The OpenAI-compatible endpoint is `https://api.z.ai/api/paas/v4/`
+(the `openai` Python SDK appends `/chat/completions`). Do NOT use
+`/api/openai` — that path does not work.
 
 When using LiteLLM proxy, mapped CLI names also work:
 

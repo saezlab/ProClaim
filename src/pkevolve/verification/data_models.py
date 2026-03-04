@@ -40,6 +40,7 @@ class PaperRecord(BaseModel):
     full_text: Optional[str] = None
     summary: Optional[str] = None  # L1 — set by summarize_paper tool
     authors: list[str] = Field(default_factory=list)
+    doi: Optional[str] = None
     source: str = "pubmed"  # pubmed | semantic_scholar
 
     def text_for_summarization(self) -> str:

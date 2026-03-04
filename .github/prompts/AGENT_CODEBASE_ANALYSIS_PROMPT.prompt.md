@@ -29,7 +29,7 @@ Analyze the existing codebase comprehensively and create structured documentatio
    - Document public APIs and internal utilities
    - Note any design patterns in use (Factory, Observer, etc.)
 
-### Phase 2: Create Documentation Structure
+### Phase 2: Create Documentation Structure (if you have not been asked explicitly to do so, you can skip this phase)
 
 Create the following folder structure in `.github/`:
 

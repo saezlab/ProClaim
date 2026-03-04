@@ -89,7 +89,7 @@ Subclaims:
 {subclaims_str}
 
 Paper (PMID: {source_pmid}):
-{paper_text[:6000]}
+{paper_text[:16000]}
 
 Output ONLY a JSON array of fact objects. No other text."""
 

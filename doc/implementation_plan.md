@@ -311,7 +311,7 @@ backoff and guards against `None`/empty API responses:
 ```python
 import time, os
 from openai import OpenAI
-client = OpenAI(base_url="https://api.z.ai/api/openai", api_key=os.environ["GLM_API_KEY"])
+client = OpenAI(base_url="https://api.z.ai/api/paas/v4/", api_key=os.environ["GLM_API_KEY"])
 
 def llm(prompt: str, _retries: int = 3) -> str:
     for attempt in range(_retries):

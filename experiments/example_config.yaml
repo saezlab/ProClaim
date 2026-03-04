@@ -1,0 +1,44 @@
+# ──────────────────────────────────────────────────────────────────────
+# Example YAML config for evidence verification experiments.
+#
+# The YAML defines experiment parameters (model, thresholds, etc.).
+# The claim is always provided via CLI --claim, since it varies per run.
+#
+# Usage:
+#   uv run python scripts/verification/demo_evidence_programming.py \
+#       --config experiments/example_config.yaml \
+#       --claim "Does MAPK1 directly activate H3-3A?"
+#
+# CLI flags override values in this file, e.g.:
+#   --model gpt-4o --max-iterations 12
+#
+# Save a snapshot of the current run config for reproducibility:
+#   cfg.save_yaml("experiments/run_2026_03_04.yaml")
+# ──────────────────────────────────────────────────────────────────────
+
+# Orchestration mode: "sdk" (Claude Agent SDK + nb_execute) or "repl"
+mode: repl
+
+# Verification workflow parameters
+max_iterations: 8
+sufficiency_threshold: 0.80
+
+# LLM configuration
+llm:
+  model: glm-5
+  subagent_model: glm-4.6          # null → falls back to model
+  openai_base_url: "http://localhost:8000/v1/"
+  anthropic_base_url: "https://api.z.ai/api/anthropic"
+  temperature: 0.2
+
+# Output paths (relative paths resolve from cwd)
+# output_dir: results/verification/mapk1_experiment
+# notebook_path: results/verification/mapk1_experiment/evidence_report.ipynb
+
+# Logging
+verbose: True
+
+# API keys are NOT stored here — they come from .env or environment.
+# To override in YAML (not recommended for secrets):
+# api:
+#   unpaywall_email: your-email@example.com

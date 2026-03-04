@@ -289,6 +289,7 @@ def _search_and_add(
             title=paper.title or "",
             abstract=paper.abstract or "",
             authors=[a for a in getattr(paper, "authors", [])],
+            doi=getattr(paper, "doi", None) or None,
             source="pubmed",
         )
         state.add_paper(record)
@@ -446,6 +447,7 @@ def find_related_articles(
             record = PaperRecord(
                 pmid=art_pmid, title=title, abstract=abstract or "",
                 authors=authors, source="pubmed",
+                doi=(article.findtext(".//ELocationID[@EIdType='doi']", "") or None),
             )
             state.add_paper(record)
             added_pmids.append(art_pmid)
@@ -461,17 +463,14 @@ def find_related_articles(
 
 
 def get_full_text_article(pmid: str, state: EvidenceState) -> str:
-    """Attempt to retrieve full text via PubMed Central Open Access.
+    """Retrieve full text through a layered fallback chain.
 
-    Updates the paper's full_text field in the state. Returns the text
-    (full text or abstract fallback).
+    Tries PMC Open Access, INDRA literature, and Unpaywall+PDF in order.
+    Falls back to abstract if all layers fail.
+
+    Updates ``paper.full_text`` in state on success and returns the text.
     """
-    import requests
-    from xml.etree import ElementTree as ET
-
-    _EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-    _ELINK_URL = f"{_EUTILS_BASE}/elink.fcgi"
-    _EFETCH_URL = f"{_EUTILS_BASE}/efetch.fcgi"
+    from pkevolve.verification.full_text import fetch_full_text
 
     paper = state.papers.get(pmid)
     if not paper:
@@ -479,82 +478,22 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
         return ""
 
     if paper.full_text:
-        return paper.full_text[:8000]
+        return paper.full_text
 
-    # Convert PMID to PMCID
-    link_params = {
-        "dbfrom": "pubmed", "db": "pmc", "id": pmid, "retmode": "xml",
-    }
-    pmcid = None
-    try:
-        link_resp = requests.get(_ELINK_URL, params=link_params, timeout=30)
-        link_resp.raise_for_status()
-        link_root = ET.fromstring(link_resp.content)
-        # IMPORTANT: filter for LinkName == "pubmed_pmc" to get the PMC
-        # record of THIS paper, not "pubmed_pmc_refs" (citing papers).
-        for link_set_db in link_root.findall(".//LinkSetDb"):
-            link_name_el = link_set_db.find("LinkName")
-            if link_name_el is not None and link_name_el.text == "pubmed_pmc":
-                link_id_el = link_set_db.find("Link/Id")
-                if link_id_el is not None and link_id_el.text:
-                    pmcid = link_id_el.text
-                break
-    except requests.RequestException as e:
-        logger.warning("elink PMID->PMC failed for %s: %s", pmid, e)
+    full_text = fetch_full_text(
+        pmid,
+        doi=getattr(paper, "doi", None),
+        title=paper.title,
+    )
 
-    if not pmcid:
-        print(f"No PMC full text for PMID {pmid}. Using abstract.")
-        return paper.abstract
+    if full_text:
+        paper.full_text = full_text
+        state.token_estimate = state.token_count()
+        print(f"Full text retrieved for PMID {pmid}: {len(full_text)} chars")
+        return full_text
 
-    # Fetch full text XML from PMC
-    fetch_params = {
-        "db": "pmc", "id": pmcid, "rettype": "xml", "retmode": "xml",
-    }
-    try:
-        fetch_resp = requests.get(_EFETCH_URL, params=fetch_params, timeout=60)
-        fetch_resp.raise_for_status()
-        fetch_root = ET.fromstring(fetch_resp.content)
-    except requests.RequestException as e:
-        print(f"Error fetching PMC full text: {e}. Using abstract.")
-        return paper.abstract
-
-    body_parts: list[str] = []
-    for elem in fetch_root.iter():
-        if elem.tag in ("p", "title") and elem.text:
-            body_parts.append(elem.text.strip())
-
-    full_text = "\n\n".join(body_parts) if body_parts else ""
-
-    if not full_text:
-        print(f"PMC record found but body empty. Using abstract.")
-        return paper.abstract
-
-    # Cross-validate: check that the retrieved PMC text plausibly
-    # matches the paper we expected (title word overlap).
-    if paper.title:
-        _title_words = set(paper.title.lower().split())
-        # Remove very short / common words
-        _title_words = {w for w in _title_words if len(w) > 3}
-        _text_lower = full_text[:3000].lower()
-        _matches = sum(1 for w in _title_words if w in _text_lower)
-        _ratio = _matches / max(len(_title_words), 1)
-        if _ratio < 0.25:
-            print(
-                f"WARNING: PMC text for PMID {pmid} (PMC{pmcid}) failed "
-                f"title cross-validation ({_ratio:.0%} overlap). "
-                f"Discarding mismatched full text; using abstract."
-            )
-            logger.warning(
-                "PMC text mismatch for PMID %s (PMC%s): only %.0f%% "
-                "title-word overlap — discarding.",
-                pmid, pmcid, _ratio * 100,
-            )
-            return paper.abstract
-
-    paper.full_text = full_text
-    state.token_estimate = state.token_count()
-    print(f"Full text retrieved for PMID {pmid} (PMC{pmcid}): {len(full_text)} chars")
-    return full_text[:8000]
+    print(f"No full text available for PMID {pmid}. Using abstract.")
+    return paper.abstract
 
 
 def get_paper_text(pmid: str, state: EvidenceState) -> str:

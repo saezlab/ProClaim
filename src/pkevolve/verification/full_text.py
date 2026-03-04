@@ -1,0 +1,369 @@
+"""
+Layered full-text retrieval for scientific papers.
+
+Provides ``fetch_full_text(pmid, doi=None) -> str | None`` with three
+fallback tiers::
+
+    Layer 1 — PMC Open Access XML  (NCBI E-utilities)
+    Layer 2 — INDRA literature      (PMC + Elsevier + REACH readers)
+    Layer 3 — Unpaywall + PDF       (OA PDF → pymupdf text extraction)
+
+Each layer is tried in order.  If a layer succeeds (returns ≥200 chars of
+body text), the remaining layers are skipped.
+
+Usage::
+
+    from pkevolve.verification.full_text import fetch_full_text
+    text = fetch_full_text("35562995", doi="10.1234/example")
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import tempfile
+from typing import Optional
+from xml.etree import ElementTree as ET
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+# Minimum length to accept as "real" body text (not a stub/error page)
+_MIN_TEXT_LEN = 200
+
+# Maximum chars to return (avoid blowing up context windows)
+DEFAULT_MAX_CHARS = 50_000
+
+# E-utilities base
+_EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────
+
+def _clean_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _title_overlap(title: str, text: str, threshold: float = 0.25) -> bool:
+    """Check whether the first 3 000 chars of *text* contain enough
+    words from *title* to credibly belong to the same paper."""
+    if not title:
+        return True  # no title to validate against
+    title_words = {w for w in title.lower().split() if len(w) > 3}
+    if not title_words:
+        return True
+    text_lower = text[:3000].lower()
+    matches = sum(1 for w in title_words if w in text_lower)
+    return (matches / len(title_words)) >= threshold
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Layer 1:  PMC Open-Access XML  (NCBI E-utilities)
+# ──────────────────────────────────────────────────────────────────────
+
+def _fetch_pmc(pmid: str, title: str = "") -> Optional[str]:
+    """Convert PMID → PMCID via elink, then fetch + parse PMC XML."""
+    try:
+        # PMID → PMCID
+        link_resp = requests.get(
+            f"{_EUTILS_BASE}/elink.fcgi",
+            params={"dbfrom": "pubmed", "db": "pmc", "id": pmid, "retmode": "xml"},
+            timeout=30,
+        )
+        link_resp.raise_for_status()
+        link_root = ET.fromstring(link_resp.content)
+
+        pmcid = None
+        for link_set_db in link_root.findall(".//LinkSetDb"):
+            link_name_el = link_set_db.find("LinkName")
+            if link_name_el is not None and link_name_el.text == "pubmed_pmc":
+                link_id_el = link_set_db.find("Link/Id")
+                if link_id_el is not None and link_id_el.text:
+                    pmcid = link_id_el.text
+                break
+
+        if not pmcid:
+            logger.debug("No PMCID for PMID %s", pmid)
+            return None
+
+        # Fetch PMC XML
+        fetch_resp = requests.get(
+            f"{_EUTILS_BASE}/efetch.fcgi",
+            params={"db": "pmc", "id": pmcid, "rettype": "xml", "retmode": "xml"},
+            timeout=60,
+        )
+        fetch_resp.raise_for_status()
+        fetch_root = ET.fromstring(fetch_resp.content)
+
+        # Extract body <p> and <title> elements
+        parts: list[str] = []
+        for elem in fetch_root.iter():
+            if elem.tag in ("p", "title") and elem.text:
+                parts.append(elem.text.strip())
+
+        full_text = "\n\n".join(parts) if parts else ""
+        if len(full_text) < _MIN_TEXT_LEN:
+            logger.debug("PMC body empty/too short for PMID %s", pmid)
+            return None
+
+        # Cross-validate title overlap
+        if not _title_overlap(title, full_text):
+            logger.warning(
+                "PMC text for PMID %s (PMC%s) failed title cross-validation; discarding.",
+                pmid, pmcid,
+            )
+            return None
+
+        logger.info("Layer 1 (PMC): retrieved %d chars for PMID %s", len(full_text), pmid)
+        return full_text
+
+    except Exception as exc:
+        logger.debug("Layer 1 (PMC) failed for PMID %s: %s", pmid, exc)
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Layer 2:  INDRA literature  (pmc_client + elsevier_client)
+# ──────────────────────────────────────────────────────────────────────
+
+def _extract_text_from_xml(xml_text: str, content_type: str | None = None) -> str:
+    """Extract readable text from XML returned by INDRA's get_full_text.
+
+    Tries pmc_client.extract_text, pmc_client.extract_paragraphs,
+    and elsevier_client.extract_paragraphs as fallbacks.
+    """
+    ctype = (content_type or "").lower()
+
+    def _join_paragraphs(paragraphs: list[str] | None) -> str:
+        if not paragraphs:
+            return ""
+        cleaned = [_clean_ws(p) for p in paragraphs if p and _clean_ws(p)]
+        return "\n\n".join(cleaned)
+
+    # If Elsevier content, try Elsevier parser first
+    if "elsevier" in ctype:
+        try:
+            from indra.literature import elsevier_client
+            text = _join_paragraphs(elsevier_client.extract_paragraphs(xml_text))
+            if text:
+                return text
+        except Exception:
+            pass
+
+    # PMC parser
+    try:
+        from indra.literature import pmc_client
+        text = pmc_client.extract_text(xml_text)
+        text = (text or "").strip()
+        if text:
+            return text
+    except Exception:
+        pass
+
+    try:
+        from indra.literature import pmc_client
+        text = _join_paragraphs(pmc_client.extract_paragraphs(xml_text))
+        if text:
+            return text
+    except Exception:
+        pass
+
+    # Elsevier as fallback if not tried yet
+    if "elsevier" not in ctype:
+        try:
+            from indra.literature import elsevier_client
+            text = _join_paragraphs(elsevier_client.extract_paragraphs(xml_text))
+            if text:
+                return text
+        except Exception:
+            pass
+
+    # Last-resort: raw itertext from XML
+    if "elsevier" in ctype:
+        return ""
+    try:
+        root = ET.fromstring(xml_text)
+        return _clean_ws(" ".join(t for t in root.itertext() if t and t.strip()))
+    except Exception:
+        return ""
+
+
+def _fetch_indra(pmid: str, title: str = "") -> Optional[str]:
+    """Use INDRA's ``get_full_text`` for broader publisher coverage."""
+    try:
+        from indra.literature import get_full_text
+    except ImportError:
+        logger.debug("INDRA not installed — skipping Layer 2.")
+        return None
+
+    try:
+        content, content_type = get_full_text(pmid, "pmid", preferred_content_type="text/xml")
+        content_type = str(content_type or "unknown")
+        raw = (
+            content.decode("utf-8", errors="replace")
+            if isinstance(content, bytes)
+            else str(content or "")
+        )
+
+        if not raw.strip():
+            return None
+
+        # Only parse XML; if it's plain text already, return it
+        if content_type.lower().endswith("xml") and content_type.lower() != "abstract":
+            full_text = _extract_text_from_xml(raw, content_type=content_type)
+        elif "text" in content_type.lower():
+            full_text = raw.strip()
+        else:
+            full_text = raw.strip()
+
+        if not full_text or len(full_text) < _MIN_TEXT_LEN:
+            return None
+
+        if not _title_overlap(title, full_text):
+            logger.warning("INDRA text for PMID %s failed title cross-validation; discarding.", pmid)
+            return None
+
+        logger.info("Layer 2 (INDRA): retrieved %d chars for PMID %s", len(full_text), pmid)
+        return full_text
+
+    except Exception as exc:
+        logger.debug("Layer 2 (INDRA) failed for PMID %s: %s", pmid, exc)
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Layer 3:  Unpaywall + PDF  (pymupdf)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _get_unpaywall_email() -> str:
+    """Resolve Unpaywall email from config (env / .env / default)."""
+    try:
+        from pkevolve.verification.config import get_settings
+        return get_settings().api.unpaywall_email
+    except Exception:
+        return os.getenv("UNPAYWALL_EMAIL", "pkevolve@example.com")
+
+
+def _fetch_unpaywall_pdf(doi: str, title: str = "") -> Optional[str]:
+    """Find an open-access PDF via Unpaywall and extract text with pymupdf."""
+    if not doi:
+        return None
+
+    try:
+        resp = requests.get(
+            f"https://api.unpaywall.org/v2/{doi}",
+            params={"email": _get_unpaywall_email()},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            logger.debug("Unpaywall returned %d for DOI %s", resp.status_code, doi)
+            return None
+
+        data = resp.json()
+        # Find best OA location with a PDF URL
+        pdf_url = None
+        best_oa = data.get("best_oa_location") or {}
+        pdf_url = best_oa.get("url_for_pdf") or best_oa.get("url")
+
+        if not pdf_url:
+            for loc in data.get("oa_locations", []):
+                if loc.get("url_for_pdf"):
+                    pdf_url = loc["url_for_pdf"]
+                    break
+
+        if not pdf_url:
+            logger.debug("No OA PDF URL found via Unpaywall for DOI %s", doi)
+            return None
+
+        # Download the PDF
+        pdf_resp = requests.get(pdf_url, timeout=60, headers={
+            "User-Agent": "pkevolve/0.1 (mailto:pkevolve@example.com)",
+        })
+        if pdf_resp.status_code != 200:
+            logger.debug("PDF download failed (%d) for %s", pdf_resp.status_code, pdf_url)
+            return None
+
+        # Extract text with pymupdf
+        try:
+            import pymupdf  # noqa: F811 (fitz/pymupdf)
+        except ImportError:
+            import fitz as pymupdf  # type: ignore[no-redef]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
+            tmp.write(pdf_resp.content)
+            tmp.flush()
+            doc = pymupdf.open(tmp.name)
+            pages_text: list[str] = []
+            for page in doc:
+                pages_text.append(page.get_text())
+            doc.close()
+
+        full_text = "\n\n".join(pages_text)
+        full_text = _clean_ws(full_text) if len(full_text) < 500 else full_text
+
+        if len(full_text) < _MIN_TEXT_LEN:
+            logger.debug("PDF text too short (%d chars) for DOI %s", len(full_text), doi)
+            return None
+
+        if not _title_overlap(title, full_text):
+            logger.warning("PDF text for DOI %s failed title cross-validation; discarding.", doi)
+            return None
+
+        logger.info("Layer 3 (Unpaywall PDF): retrieved %d chars for DOI %s", len(full_text), doi)
+        return full_text
+
+    except Exception as exc:
+        logger.debug("Layer 3 (Unpaywall PDF) failed for DOI %s: %s", doi, exc)
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Public API
+# ──────────────────────────────────────────────────────────────────────
+
+def fetch_full_text(
+    pmid: str,
+    *,
+    doi: Optional[str] = None,
+    title: str = "",
+    max_chars: int = DEFAULT_MAX_CHARS,
+) -> Optional[str]:
+    """Retrieve full text for a paper through a layered fallback chain.
+
+    Tries in order:
+        1. PMC Open Access XML  (free, most reliable for OA papers)
+        2. INDRA literature     (broader publisher coverage incl. Elsevier)
+        3. Unpaywall + PDF      (last resort — PDF download & OCR-free extraction)
+
+    Returns the extracted text (truncated to *max_chars*), or ``None`` if
+    all layers fail.  Never returns the abstract — the caller should handle
+    abstract fallback.
+
+    Args:
+        pmid: PubMed identifier.
+        doi:  Digital Object Identifier (needed for Unpaywall, Layer 3).
+        title: Paper title for cross-validation against retrieved text.
+        max_chars: Maximum characters to return.
+    """
+    # Layer 1: PMC
+    text = _fetch_pmc(pmid, title=title)
+    if text and len(text) >= _MIN_TEXT_LEN:
+        return text[:max_chars]
+
+    # Layer 2: INDRA
+    text = _fetch_indra(pmid, title=title)
+    if text and len(text) >= _MIN_TEXT_LEN:
+        return text[:max_chars]
+
+    # Layer 3: Unpaywall + PDF
+    text = _fetch_unpaywall_pdf(doi or "", title=title)
+    if text and len(text) >= _MIN_TEXT_LEN:
+        return text[:max_chars]
+
+    logger.info("All full-text layers failed for PMID %s (DOI: %s)", pmid, doi)
+    return None

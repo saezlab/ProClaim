@@ -99,7 +99,7 @@ def llm(prompt: str, _retries: int = 3) -> str:
     for _attempt in range(_retries):
         try:
             resp = _llm_client.chat.completions.create(
-                model="{model}",
+                model="{subagent_model}",
                 messages=[{{"role": "user", "content": prompt}}],
                 temperature=0.1,
             )
@@ -193,35 +193,10 @@ State is auto-saved to disk after every mutation.
 
 
 # ---------------------------------------------------------------------------
-# API endpoint configuration
+# Configuration (via pydantic-settings)
 # ---------------------------------------------------------------------------
 
-GLM_API_BASE = "https://api.z.ai/api/anthropic"
-GLM_OPENAI_BASE = "https://api.z.ai/api/openai"
-GLM_API_KEY = os.getenv("GLM_API_KEY")
-GLM_DEFAULT_MODEL = "glm-5"
-
-
-def _build_env() -> dict:
-    """Build the env dict for the Claude Agent SDK."""
-    api_key = GLM_API_KEY
-    if not api_key:
-        raise RuntimeError(
-            "GLM_API_KEY not set. Add it to .env at project root.\n"
-            "  echo 'GLM_API_KEY=<your-key>' >> .env"
-        )
-
-    env = {
-        **os.environ,
-        "API_TIMEOUT_MS": os.getenv("API_TIMEOUT_MS", "3000000"),
-        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-        "ANTHROPIC_AUTH_TOKEN": api_key,
-        "ANTHROPIC_BASE_URL": os.getenv("ANTHROPIC_BASE_URL", GLM_API_BASE),
-    }
-    env.pop("ANTHROPIC_API_KEY", None)
-    return env
+from pkevolve.verification.config import VerificationSettings
 
 
 # ---------------------------------------------------------------------------
@@ -229,12 +204,7 @@ def _build_env() -> dict:
 # ---------------------------------------------------------------------------
 
 async def verify_claim_notebook(
-    claim: str,
-    workspace: Path,
-    notebook_path: Path,
-    model: str = GLM_DEFAULT_MODEL,
-    max_iterations: int = 8,
-    sufficiency_threshold: float = 0.80,
+    cfg: VerificationSettings,
 ) -> Path:
     """Run evidence programming via Claude Agent SDK with nb_execute as primary tool."""
     from claude_agent_sdk import (
@@ -247,10 +217,14 @@ async def verify_claim_notebook(
     from pkevolve.verification.data_models import VerificationVerdict
     from pkevolve.verification.evidence_state import EvidenceState
 
+    workspace = cfg.resolved_workspace
+    notebook_path = cfg.resolved_notebook_path
+    claim = cfg.claim
+
     workspace.mkdir(parents=True, exist_ok=True)
     notebook_path.parent.mkdir(parents=True, exist_ok=True)
 
-    env = _build_env()
+    env = cfg.build_sdk_env()
 
     # Initialize evidence state on disk (checkpoint)
     EvidenceState.init_new(claim=claim, subclaims=[claim], workspace=workspace)
@@ -262,9 +236,10 @@ async def verify_claim_notebook(
         workspace=str(workspace),
         notebook_path=str(notebook_path),
         claim=claim,
-        max_iterations=max_iterations,
-        model=model,
-        llm_base_url=GLM_OPENAI_BASE,
+        max_iterations=cfg.max_iterations,
+        model=cfg.model,
+        subagent_model=cfg.subagent_model,
+        llm_base_url=cfg.openai_base_url,
         schemas=schema_docs(),
     )
 
@@ -274,7 +249,7 @@ async def verify_claim_notebook(
     python_exe = sys.executable
 
     options = ClaudeAgentOptions(
-        model=model,
+        model=cfg.model,
         system_prompt=system_prompt,
         cwd=str(PROJECT_ROOT),
         env=env,
@@ -315,8 +290,8 @@ async def verify_claim_notebook(
         f"then run the setup code via nb_execute to import the evidence API. "
         f"Follow the evidence programming workflow. "
         f"Call check_sufficiency after each round. "
-        f"Stop when confidence >= {sufficiency_threshold} or after "
-        f"{max_iterations} iterations. "
+        f"Stop when confidence >= {cfg.sufficiency_threshold} or after "
+        f"{cfg.max_iterations} iterations. "
         f'Always pass notebook_path="{notebook_path}" to every notebook tool call.'
     )
 
@@ -324,8 +299,6 @@ async def verify_claim_notebook(
         "Mode A: starting claim=%r, workspace=%s, notebook=%s",
         claim, workspace, notebook_path,
     )
-
-    env["CLAUDE_CODE_STREAM_CLOSE_TIMEOUT"] = "300000"
 
     async for message in query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
@@ -360,29 +333,25 @@ async def verify_claim_notebook(
 # Mode B: Standalone REPL (no Claude SDK)
 # ---------------------------------------------------------------------------
 
-def verify_claim_repl_mode(
-    claim: str,
-    workspace: Path,
-    model: str = GLM_DEFAULT_MODEL,
-    max_iterations: int = 8,
-    sufficiency_threshold: float = 0.80,
-) -> Path:
+def verify_claim_repl_mode(cfg: VerificationSettings) -> Path:
     """Run evidence programming via standalone REPL orchestrator (Mode B)."""
     from pkevolve.verification.repl_orchestrator import verify_claim_repl
 
     verdict = verify_claim_repl(
-        claim=claim,
-        workspace=workspace,
-        model=model,
-        base_url=GLM_OPENAI_BASE,
-        max_iterations=max_iterations,
-        sufficiency_threshold=sufficiency_threshold,
+        claim=cfg.claim,
+        workspace=cfg.resolved_workspace,
+        model=cfg.model,
+        subagent_model=cfg.subagent_model,
+        base_url=cfg.openai_base_url,
+        api_key=cfg.api_key,
+        max_iterations=cfg.max_iterations,
+        sufficiency_threshold=cfg.sufficiency_threshold,
     )
 
     print(f"\nVerdict: {verdict.verdict} (confidence: {verdict.confidence:.2f})")
     print(f"Reasoning: {verdict.reasoning}")
 
-    return workspace / "verdict.json"
+    return cfg.resolved_workspace / "verdict.json"
 
 
 # ---------------------------------------------------------------------------
@@ -390,60 +359,15 @@ def verify_claim_repl_mode(
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Evidence Verification — RLM dual-mode orchestrator.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    parser.add_argument(
-        "--claim", required=True, help="Scientific claim to verify.",
-    )
-    parser.add_argument(
-        "--mode", choices=["sdk", "repl"], default="sdk",
-        help="Orchestration mode: sdk (Mode A, Claude Agent SDK + nb_execute) "
-             "or repl (Mode B, standalone REPL, no SDK). Default: sdk.",
-    )
-    parser.add_argument(
-        "--model", type=str, default=GLM_DEFAULT_MODEL,
-        help=f"Model identifier (default: {GLM_DEFAULT_MODEL}).",
-    )
-    parser.add_argument(
-        "--threshold", type=float, default=0.80,
-        help="Confidence threshold for early stopping (default: 0.80).",
-    )
-    parser.add_argument(
-        "--max-iterations", type=int, default=8,
-        help="Maximum verification iterations (default: 8).",
-    )
-    parser.add_argument(
-        "--output-dir", type=str, default=None,
-        help="Output workspace directory.",
-    )
-    parser.add_argument(
-        "--notebook-path", type=str, default=None,
-        help="Path for the output notebook (Mode A only).",
-    )
-    parser.add_argument(
-        "--verbose", "-v", action="store_true", help="Enable debug logging.",
-    )
+    cfg = VerificationSettings.from_cli()
 
-    args = parser.parse_args()
-
-    # Determine paths
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-    else:
-        output_dir = PROJECT_ROOT / "results" / "verification" / "notebook_demo"
-
-    workspace = output_dir / "workspace"
-
-    if args.notebook_path:
-        notebook_path = Path(args.notebook_path)
-    else:
-        notebook_path = output_dir / "evidence_report.ipynb"
+    # Resolve paths
+    output_dir = cfg.resolved_output_dir
+    workspace = cfg.resolved_workspace
+    notebook_path = cfg.resolved_notebook_path
 
     # Configure logging
-    log_level = logging.DEBUG if args.verbose else logging.INFO
+    log_level = logging.DEBUG if cfg.verbose else logging.INFO
     log_file = output_dir / "run.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -458,32 +382,24 @@ def main():
     )
     logger.info("Log file: %s", log_file)
 
-    print(f"Claim: {args.claim}")
-    print(f"Mode: {args.mode} ({'Claude Agent SDK + nb_execute' if args.mode == 'sdk' else 'Standalone REPL'})")
-    print(f"Model: {args.model}")
+    mode_label = (
+        "Claude Agent SDK + nb_execute" if cfg.mode == "sdk" else "Standalone REPL"
+    )
+    print(f"Claim: {cfg.claim}")
+    print(f"Mode: {cfg.mode} ({mode_label})")
+    print(f"Model: {cfg.model}")
+    if cfg.llm.subagent_model:
+        print(f"Subagent model: {cfg.subagent_model}")
     print(f"Workspace: {workspace}")
-    if args.mode == "sdk":
+    if cfg.mode == "sdk":
         print(f"Notebook: {notebook_path}")
     print()
 
-    if args.mode == "sdk":
-        result = asyncio.run(verify_claim_notebook(
-            claim=args.claim,
-            workspace=workspace,
-            notebook_path=notebook_path,
-            model=args.model,
-            max_iterations=args.max_iterations,
-            sufficiency_threshold=args.threshold,
-        ))
+    if cfg.mode == "sdk":
+        result = asyncio.run(verify_claim_notebook(cfg))
         print(f"\nNotebook saved: {result}")
     else:
-        result = verify_claim_repl_mode(
-            claim=args.claim,
-            workspace=workspace,
-            model=args.model,
-            max_iterations=args.max_iterations,
-            sufficiency_threshold=args.threshold,
-        )
+        result = verify_claim_repl_mode(cfg)
         print(f"\nVerdict saved: {result}")
 
     print(f"Workspace: {workspace}")

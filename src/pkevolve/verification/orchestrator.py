@@ -22,6 +22,7 @@ from claude_agent_sdk import (
     query,
 )
 
+from pkevolve.verification.config import VerificationSettings, get_settings
 from pkevolve.verification.data_models import VerificationVerdict
 from pkevolve.verification.evidence_state import EvidenceState
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
-# Default GLM endpoint configuration
+# Default GLM endpoint configuration (kept for backward compat)
 GLM_API_BASE = "https://api.z.ai/api/anthropic"
 GLM_DEFAULT_MODEL = "glm-4.6"
 
@@ -88,18 +89,25 @@ async def verify_claim(
     model: str = GLM_DEFAULT_MODEL,
     max_iterations: int = 8,
     sufficiency_threshold: float = 0.80,
+    *,
+    cfg: VerificationSettings | None = None,
 ) -> VerificationVerdict:
     """
     Run the evidence programming loop for a single claim.
 
-    1. Initializes workspace with evidence_state.json
-    2. Configures Claude Agent SDK with MCP tools + subagents
-    3. Sends the claim as a prompt
-    4. Streams messages until completion
-    5. Reads verdict from workspace/verdict.json
+    Accepts either explicit keyword arguments (backward compatible) or a
+    ``cfg`` VerificationSettings instance.  When ``cfg`` is provided, its
+    values take priority over the individual kwargs.
 
     Returns VerificationVerdict.
     """
+    if cfg is not None:
+        claim = cfg.claim or claim
+        workspace = cfg.resolved_workspace
+        model = cfg.model
+        max_iterations = cfg.max_iterations
+        sufficiency_threshold = cfg.sufficiency_threshold
+
     workspace.mkdir(parents=True, exist_ok=True)
 
     # Initialize evidence state
@@ -109,24 +117,8 @@ async def verify_claim(
     system_prompt = SYSTEM_PROMPT.format(workspace=str(workspace))
 
     # Build environment for the Claude Agent SDK
-    glm_api_key = os.getenv("GLM_API_KEY")
-    if not glm_api_key:
-        raise RuntimeError(
-            "GLM_API_KEY not set. Add it to .env at project root."
-        )
-
-    env = {
-        **os.environ,
-        "API_TIMEOUT_MS": os.getenv("API_TIMEOUT_MS", "3000000"),
-        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-        "ANTHROPIC_AUTH_TOKEN": glm_api_key,
-        "ANTHROPIC_BASE_URL": os.getenv("ANTHROPIC_BASE_URL", GLM_API_BASE),
-    }
-    # Remove ANTHROPIC_API_KEY if inherited from os.environ — its presence
-    # (even empty) can cause the CLI to attempt Anthropic auth and hang.
-    env.pop("ANTHROPIC_API_KEY", None)
+    _cfg = cfg or get_settings()
+    env = _cfg.build_sdk_env()
 
     options = ClaudeAgentOptions(
         model=model,

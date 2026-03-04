@@ -16,6 +16,11 @@ def __getattr__(name: str):
                 "Gap", "SufficiencyResult", "VerificationVerdict"):
         import pkevolve.verification.data_models as dm
         return getattr(dm, name)
+    # Configuration
+    if name in ("VerificationSettings", "APISettings", "LLMSettings",
+                "get_settings"):
+        import pkevolve.verification.config as cfg_mod
+        return getattr(cfg_mod, name)
     # Evidence state
     if name == "EvidenceState":
         from pkevolve.verification.evidence_state import EvidenceState
@@ -47,6 +52,11 @@ __all__ = [
     # State
     "EvidenceState",
     "TraceLog",
+    # Configuration
+    "VerificationSettings",
+    "APISettings",
+    "LLMSettings",
+    "get_settings",
     # Classifier
     "SufficiencyClassifier",
     # Compressor

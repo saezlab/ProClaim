@@ -16,7 +16,7 @@ Usage::
         claim="EGFR activates MAPK1 via phosphorylation",
         workspace=Path("workspace/egfr_mapk1"),
         model="glm-4.6",
-        base_url="https://api.z.ai/api/openai",
+        base_url="https://api.z.ai/api/paas/v4/",
     )
 """
 
@@ -29,6 +29,7 @@ from typing import Optional
 
 from openai import OpenAI
 
+from pkevolve.verification.config import VerificationSettings, get_settings
 from pkevolve.verification.data_models import VerificationVerdict
 from pkevolve.verification.evidence_state import EvidenceState
 from pkevolve.verification.kernel_runner import KernelRunner, outputs_to_text
@@ -36,10 +37,10 @@ from pkevolve.verification.kernel_runner import KernelRunner, outputs_to_text
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Defaults
+# Defaults (kept as module-level constants for backward compat)
 # ---------------------------------------------------------------------------
 
-DEFAULT_BASE_URL = "https://api.z.ai/api/openai"
+DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4/"
 DEFAULT_MODEL = "glm-4.6"
 MAX_TURNS = 30  # hard ceiling on LLM turns (not sufficiency iterations)
 MAX_OUTPUT_CHARS = 12_000  # truncate kernel output fed back to LLM
@@ -153,25 +154,38 @@ def verify_claim_repl(
     claim: str,
     workspace: Path,
     model: str = DEFAULT_MODEL,
+    subagent_model: str | None = None,
     base_url: str = DEFAULT_BASE_URL,
     api_key: Optional[str] = None,
     max_turns: int = MAX_TURNS,
     max_iterations: int = 8,
     sufficiency_threshold: float = 0.80,
     temperature: float = 0.2,
+    *,
+    cfg: Optional[VerificationSettings] = None,
 ) -> VerificationVerdict:
     """
     Run the evidence programming REPL loop for a single claim.
 
-    1. Starts a Jupyter kernel with the evidence prelude injected.
-    2. Sends the claim to the LLM.
-    3. Parses a Python code block from the LLM response.
-    4. Executes the code in the kernel.
-    5. Feeds kernel output back as a user message.
-    6. Repeats until emit_verdict is called or max_turns reached.
+    Accepts either explicit keyword arguments (backward compatible) or a
+    ``cfg`` VerificationSettings instance.  When ``cfg`` is provided, its
+    values take priority over the individual kwargs.
 
     Returns VerificationVerdict.
     """
+    # Merge cfg into locals when provided
+    if cfg is not None:
+        claim = cfg.claim or claim
+        workspace = cfg.resolved_workspace
+        model = cfg.model
+        subagent_model = cfg.subagent_model
+        base_url = cfg.openai_base_url
+        api_key = cfg.api_key
+        max_turns = cfg.max_turns
+        max_iterations = cfg.max_iterations
+        sufficiency_threshold = cfg.sufficiency_threshold
+        temperature = cfg.temperature
+
     workspace.mkdir(parents=True, exist_ok=True)
 
     # Initialize evidence state on disk (for checkpointing)
@@ -179,7 +193,7 @@ def verify_claim_repl(
 
     # Resolve API key
     if api_key is None:
-        api_key = os.getenv("GLM_API_KEY") or os.getenv("OPENAI_API_KEY", "EMPTY")
+        api_key = get_settings().api_key
 
     client = OpenAI(base_url=base_url, api_key=api_key)
 
@@ -193,7 +207,7 @@ def verify_claim_repl(
         workspace=str(workspace),
         llm_base_url=base_url,
         llm_api_key=api_key,
-        llm_model=model,
+        llm_model=subagent_model or model,
     )
 
     # Build system prompt with auto-generated schema docs
