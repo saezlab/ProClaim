@@ -298,9 +298,9 @@ def build_evidence_pools(
     noise_paper_counts: List[int] | None = None,
     target_neg_conflict: int | None = None,
     target_neg_noise: int | None = None,
-) -> List[Tuple[Dict, List[Dict], int, str]]:
+) -> List[Tuple[Dict, List[Dict], int, str, List[str], List[str]]]:
     """
-    Build (claim, papers, target_y, pool_type) tuples.
+    Build (claim, papers, target_y, pool_type, doc_ids, labels) tuples.
 
     Positive (y=1): Unanimous SUPPORT or CONTRADICT
     Negative conflict (y=0): Mixed SUPPORT + CONTRADICT (expanded via combinations)
@@ -312,6 +312,10 @@ def build_evidence_pools(
                            If None, defaults to [num_noise].
         target_neg_conflict: If set, subsample negative_conflict pools to this target.
         target_neg_noise: If set, subsample negative_noise pools to this target.
+
+    Returns:
+        List of tuples: (claim, papers, target_y, pool_type, doc_ids, labels)
+        where doc_ids is a list of document IDs and labels is a list of ground truth labels.
     """
     rng = random.Random(seed)
     pools = []
@@ -351,15 +355,19 @@ def build_evidence_pools(
                 if len(candidates) >= n_papers:
                     sampled = rng.sample(candidates, n_papers)
                     noise_docs = [corpus[did] for did in sampled]
-                    neg_noise_pools.append((claim, noise_docs, 0, "negative_noise"))
+                    # NEI papers have no ground truth labels
+                    noise_labels = ["NEI"] * len(sampled)
+                    neg_noise_pools.append((claim, noise_docs, 0, "negative_noise", sampled, noise_labels))
             continue
 
         rel_docs = []
         labels = []
+        doc_ids = []
         for doc_id_str, info in evidence.items():
             if doc_id_str in corpus:
                 rel_docs.append(corpus[doc_id_str])
                 labels.append(info.get("label", ""))
+                doc_ids.append(doc_id_str)
 
         if not rel_docs:
             continue
@@ -372,24 +380,93 @@ def build_evidence_pools(
             # Generate sub-pools of size 1..N
             for n in range(1, len(rel_docs) + 1):
                 sub_pool = rel_docs[:n]
-                pools.append((claim, sub_pool, 1, f"positive_{unique_labels[0].lower()}"))
+                sub_doc_ids = doc_ids[:n]
+                sub_labels = labels[:n]
+                pools.append((claim, sub_pool, 1, f"positive_{unique_labels[0].lower()}", sub_doc_ids, sub_labels))
 
         # --- Negative Conflict (y=0): Conflicting evidence (expanded via combinations) ---
         elif any(l in valid_labels for l in unique_labels) and len([l for l in unique_labels if l in valid_labels]) > 1:
-            # Generate all valid combinations of size 2..N that retain both SUPPORT and CONTRADICT
-            claim_combos = []
+            # Generate valid combinations of size 2..N that retain both SUPPORT and CONTRADICT.
+            # Use stratified sampling by (n_support, n_contradict) ratio bucket so that the
+            # final sample is balanced across ratios (e.g. 1S:1C, 2S:1C, 2S:2C, 3S:2C ...)
+            # rather than dominated by kS:1C cases.
+            import math
             n = len(rel_docs)
 
-            for r in range(2, n + 1):
-                for combo_indices in combinations(range(n), r):
-                    combo_labels = set(labels[i] for i in combo_indices)
-                    if "SUPPORT" in combo_labels and "CONTRADICT" in combo_labels:
-                        combo_docs = [rel_docs[i] for i in combo_indices]
-                        claim_combos.append((claim, combo_docs, 0, "negative_conflict"))
+            # --- Helper: build a combo entry ---
+            def _make_combo(combo_indices):
+                combo_docs = [rel_docs[idx] for idx in combo_indices]
+                combo_doc_ids = [doc_ids[idx] for idx in combo_indices]
+                combo_labels_list = [labels[idx] for idx in combo_indices]
+                ns = combo_labels_list.count("SUPPORT")
+                nc = combo_labels_list.count("CONTRADICT")
+                return (claim, combo_docs, 0, "negative_conflict", combo_doc_ids, combo_labels_list), (ns, nc)
 
-            # Cap per claim: if more combinations than allowed, randomly sample
-            if len(claim_combos) > max_combos_per_claim:
-                claim_combos = rng.sample(claim_combos, max_combos_per_claim)
+            # --- Collect combos bucketed by (n_support, n_contradict) ---
+            # For very large search spaces, cap each bucket independently via reservoir sampling
+            # to avoid memory explosion before we even reach the stratified-sampling step.
+            total_combos_estimate = 2 ** n
+            per_bucket_cap = max(1, max_combos_per_claim)  # generous per-bucket cap
+
+            buckets: dict = {}  # (ns, nc) -> list of combos
+            bucket_seen: dict = {}  # (ns, nc) -> count seen (for reservoir)
+
+            use_reservoir = total_combos_estimate > max_combos_per_claim * 100
+
+            if use_reservoir:
+                logging.info(f"Claim {claim['id']}: Using stratified reservoir sampling for {n} docs")
+                early_stop = False
+                total_seen = 0
+                for r in range(2, n + 1):
+                    if early_stop:
+                        break
+                    for combo_indices in combinations(range(n), r):
+                        combo_label_set = set(labels[idx] for idx in combo_indices)
+                        if "SUPPORT" not in combo_label_set or "CONTRADICT" not in combo_label_set:
+                            continue
+                        entry, key = _make_combo(combo_indices)
+                        total_seen += 1
+                        bucket_seen[key] = bucket_seen.get(key, 0) + 1
+                        bucket = buckets.setdefault(key, [])
+                        if len(bucket) < per_bucket_cap:
+                            bucket.append(entry)
+                        else:
+                            # Reservoir replace
+                            j = rng.randint(0, bucket_seen[key] - 1)
+                            if j < per_bucket_cap:
+                                bucket[j] = entry
+                        if total_seen > max_combos_per_claim * 1000:
+                            logging.info(f"Claim {claim['id']}: Early stopping after {total_seen} combinations")
+                            early_stop = True
+                            break
+            else:
+                # Enumerate all valid combos, group by ratio bucket
+                for r in range(2, n + 1):
+                    for combo_indices in combinations(range(n), r):
+                        combo_label_set = set(labels[idx] for idx in combo_indices)
+                        if "SUPPORT" not in combo_label_set or "CONTRADICT" not in combo_label_set:
+                            continue
+                        entry, key = _make_combo(combo_indices)
+                        buckets.setdefault(key, []).append(entry)
+
+            # --- Stratified sampling: allocate equal slots across ratio buckets ---
+            # Each bucket gets at most ceil(max_combos / n_buckets) samples, then
+            # if total still exceeds the cap we do a final trim.
+            ratio_keys = sorted(buckets.keys())
+            n_buckets = len(ratio_keys)
+            if n_buckets == 0:
+                claim_combos = []
+            else:
+                per_bucket_quota = max(1, math.ceil(max_combos_per_claim / n_buckets))
+                claim_combos = []
+                for key in ratio_keys:
+                    bucket = buckets[key]
+                    if len(bucket) > per_bucket_quota:
+                        bucket = rng.sample(bucket, per_bucket_quota)
+                    claim_combos.extend(bucket)
+                # Final trim if total overshoots (can happen due to ceiling)
+                if len(claim_combos) > max_combos_per_claim:
+                    claim_combos = rng.sample(claim_combos, max_combos_per_claim)
 
             neg_conflict_pools.extend(claim_combos)
 
@@ -489,7 +566,7 @@ async def main():
         # 4. Extract & Aggregate
         final_dataset = []
 
-        for i, (claim, docs, y, p_type) in enumerate(pools):
+        for i, (claim, docs, y, p_type, doc_ids, doc_labels) in enumerate(pools):
             logging.info(
                 f"Pool {i+1}/{len(pools)} | Type: {p_type} | y={y} | "
                 f"Papers: {len(docs)}"
@@ -508,6 +585,11 @@ async def main():
                 1 for p in extracted_papers if p.get("has_full_text", False)
             ))
 
+            # Count ground truth labels
+            n_support = doc_labels.count("SUPPORT")
+            n_contradict = doc_labels.count("CONTRADICT")
+            n_nei = doc_labels.count("NEI")
+
             # Keep sample if it has any meaningful features
             if any(v != 0.0 for v in flat.values()):
                 final_dataset.append({
@@ -516,6 +598,11 @@ async def main():
                     "target_y": y,
                     "pool_type": p_type,
                     "num_papers": len(docs),
+                    "doc_ids": doc_ids,
+                    "scifact_labels": doc_labels,
+                    "n_support": n_support,
+                    "n_contradict": n_contradict,
+                    "n_nei": n_nei,
                     "features": flat,
                 })
 

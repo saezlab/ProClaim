@@ -260,9 +260,23 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--hidden_dim", type=int, default=64)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--features", type=str, default="all",
                         help="Feature preset ('all', 'important', 'minimal') or comma-separated feature names")
     args = parser.parse_args()
+
+    # Set random seeds for reproducibility
+    import random
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    logging.info(f"Random seed set to: {args.seed}")
 
     # Resolve feature list
     if args.features in FEATURE_PRESETS:
@@ -286,9 +300,9 @@ def main():
         return
 
     # Split: Train(70%), Val(15%), Test(15%)
-    X_train_val, X_test, y_train_val, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y)
+    X_train_val, X_test, y_train_val, y_test = train_test_split(X, y, test_size=0.15, random_state=args.seed, stratify=y)
     # remaining 85%, doing 15/85 ~ 0.176 to get 15% overall for val
-    X_train, X_val, y_train, y_val = train_test_split(X_train_val, y_train_val, test_size=0.1765, random_state=42, stratify=y_train_val)
+    X_train, X_val, y_train, y_val = train_test_split(X_train_val, y_train_val, test_size=0.1765, random_state=args.seed, stratify=y_train_val)
     
     logging.info(f"Split sizes -> Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
     logging.info(f"Positives -> Train: {sum(y_train)} | Val: {sum(y_val)} | Test: {sum(y_test)}")
