@@ -27,13 +27,14 @@ dependencies = [
     "jupyter_client>=8.6",
     "ipykernel>=6.0",
     "claude_agent_sdk",
+    "spacy",
 ]
 
 [project.optional-dependencies]
 fulltext = [
-    # INDRA (Layer 2): broader full-text coverage via pmc_client + elsevier_client.
-    # Install manually: pip install indra  (requires Java for some readers).
-    # The full_text.py module gracefully skips Layer 2 if indra is not installed.
+    # INDRA for full-text retrieval via pmc_client + elsevier_client.
+    # full_text.py gracefully skips Layer 2 if indra is not installed.
+    "indra",
 ]
 
 [build-system]
@@ -42,5 +43,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pkevolve"]
+
+[tool.uv]
+# pysb 1.16.0 (only version) fails to build — its ez_setup.py downloads from a
+# dead URL. We only use indra.literature, never pysb, so exclude it.
+override-dependencies = ["pysb; python_version < '0'"]
 
 

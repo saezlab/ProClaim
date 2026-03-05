@@ -11,13 +11,13 @@ In this phase, for each retrieved Evidence Paper $P_i$ and Claim $C$, we extract
 ### 1. Metadata Features (Source Reliability & Context)
 These features quantify the credibility and timeliness of the evidence source, acting as a Bayesian prior for the verification model.
 
-* **Publication Year**
-* **Journal Impact Factor (IF)**
+* **Publication Year (Done)**
+* **Journal Impact Factor (IF) (Done)**
     * **Definition:** The impact metric of the venue (journal/conference). Recommended preprocessing: $\log(1 + \text{IF})$.
-* **Normalized Citation Count**
+* **Normalized Citation Count (Done)**
     * **Definition:** The citation count of the paper, normalized by its age.
     * **Formula:** $\frac{\text{Citation Count}}{\text{Current Year} - \text{Pub Year} + 1}$.
-* **Author H-index (Max)**
+* **Author H-index (Max) (Done)**
     * **Definition:** The highest H-index among the paper's authors.
 * **Document Type**
     * **Definition:** Categorical classification of the evidence level.

@@ -96,3 +96,32 @@ class VerificationVerdict(BaseModel):
     reasoning: str
     key_evidence: list[str]
     gaps_remaining: list[str]
+
+
+class PaperFeatureVector(BaseModel):
+    """Per-paper metadata feature vector for the sufficiency classifier.
+
+    All fields are Optional because API calls may fail.
+    Derived features (log_impact_factor, normalized_citation_count) are
+    computed from raw values during extraction.
+    """
+
+    pmid: str
+
+    # --- Metadata features ---
+    publication_year: Optional[int] = None
+    log_impact_factor: Optional[float] = None          # log(1 + IF)
+    normalized_citation_count: Optional[float] = None  # citations / age
+    author_h_index_max: Optional[int] = None           # max h-index among authors
+
+
+class NLPFeatureVector(BaseModel):
+    """NLP features for a single claim–evidence pair.
+
+    Entity Overlap Ratio: Jaccard similarity of named entities
+    detected in the claim and evidence texts.
+    """
+    entity_overlap_ratio: Optional[float] = None  # Jaccard similarity (0.0 - 1.0)
+    claim_entity_coverage: Optional[float] = None  # Recall: |Claim & Evidence| / |Claim|
+    claim_entities: list[str] = Field(default_factory=list)
+    evidence_entities: list[str] = Field(default_factory=list)
