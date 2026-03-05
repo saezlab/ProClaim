@@ -68,6 +68,9 @@ class RelevancePubMedSearcher(PubMedSearcher):
 
                 doi_elem = article.find('.//ELocationID[@EIdType="doi"]')
                 doi = doi_elem.text if doi_elem is not None else ''
+                if not doi:
+                    doi_aid = article.find('.//ArticleIdList/ArticleId[@IdType="doi"]')
+                    doi = doi_aid.text if doi_aid is not None else ''
                 
                 papers.append(Paper(
                     paper_id=pmid,

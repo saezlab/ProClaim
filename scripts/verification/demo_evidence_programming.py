@@ -90,24 +90,52 @@ state = EvidenceState.init_new(
 
 # Wire LLM callable for subagent functions
 from openai import OpenAI as _OpenAI
+import re as _re
 _llm_client = _OpenAI(
     base_url="{llm_base_url}",
     api_key=os.environ.get("GLM_API_KEY", "EMPTY"),
 )
 import time as _time
+_THINK_RE = _re.compile(r'<think>.*?</think>\\s*', _re.DOTALL)
 def llm(prompt: str, _retries: int = 3) -> str:
     for _attempt in range(_retries):
+        # --- Try streaming chat completions ---
+        _content, _reasoning = [], []
         try:
-            resp = _llm_client.chat.completions.create(
+            _stream = _llm_client.chat.completions.create(
                 model="{subagent_model}",
                 messages=[{{"role": "user", "content": prompt}}],
                 temperature=0.1,
+                max_tokens=2000,
+                stream=True,
             )
-            if resp.choices and resp.choices[0].message.content:
-                return resp.choices[0].message.content
-            print(f'llm(): empty choices on attempt {{_attempt+1}}/{{_retries}}')
+            for _chunk in _stream:
+                if _chunk.choices:
+                    _d = _chunk.choices[0].delta
+                    if _d.content:
+                        _content.append(_d.content)
+                    _rc = getattr(_d, 'reasoning_content', None)
+                    if _rc:
+                        _reasoning.append(_rc)
+            _result = ''.join(_reasoning) + ''.join(_content)
+            if _result.strip():
+                return _THINK_RE.sub('', _result).strip()
         except Exception as _e:
-            print(f'llm(): error on attempt {{_attempt+1}}/{{_retries}}: {{_e}}')
+            print(f'llm(): chat completions error on attempt {{_attempt+1}}/{{_retries}}: {{_e}}')
+        # --- Fallback: /v1/completions (bypasses reasoning parser) ---
+        try:
+            _resp = _llm_client.completions.create(
+                model="{subagent_model}",
+                prompt='<|im_start|>user\\n' + prompt + '<|im_end|>\\n<|im_start|>assistant\\n',
+                max_tokens=2000,
+                temperature=0.1,
+            )
+            _text = _resp.choices[0].text if _resp.choices else ''
+            _text = _THINK_RE.sub('', _text).strip()
+            if _text:
+                return _text
+        except Exception as _e2:
+            print(f'llm(): completions fallback error on attempt {{_attempt+1}}/{{_retries}}: {{_e2}}')
         if _attempt < _retries - 1:
             _time.sleep(2 ** _attempt)
     print('llm(): all retries exhausted, returning empty string')
@@ -119,7 +147,12 @@ print("Setup complete. State initialized. llm() callable ready.")
 ## Available functions (after setup)
 
 All functions operate on `state` (a live Python object).
-State is auto-saved to disk after every mutation.
+
+**IMPORTANT — auto-save**: `state` auto-saves to disk after every mutation
+(add_paper, add_fact, add_conflict, etc.).  You do NOT need to call
+`state.save()` or `state.checkpoint_save()` manually — persistence is
+handled automatically.  If you truly need an explicit save (rare), use
+`state.save()` with no arguments — it writes to the workspace directory.
 
     search_pubmed(query, state, max_results=5) -> list[str]
     search_pubmed_progressive(claim, state) -> list[str]
@@ -239,7 +272,7 @@ async def verify_claim_notebook(
         max_iterations=cfg.max_iterations,
         model=cfg.model,
         subagent_model=cfg.subagent_model,
-        llm_base_url=cfg.openai_base_url,
+        llm_base_url=cfg.subagent_base_url,
         schemas=schema_docs(),
     )
 
@@ -342,7 +375,7 @@ def verify_claim_repl_mode(cfg: VerificationSettings) -> Path:
         workspace=cfg.resolved_workspace,
         model=cfg.model,
         subagent_model=cfg.subagent_model,
-        base_url=cfg.openai_base_url,
+        base_url=cfg.subagent_base_url,
         api_key=cfg.api_key,
         max_iterations=cfg.max_iterations,
         sufficiency_threshold=cfg.sufficiency_threshold,

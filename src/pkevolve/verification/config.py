@@ -122,19 +122,21 @@ class LLMSettings(BaseSettings):
         env_file_encoding="utf-8",
         env_prefix="",
         extra="ignore",
+        populate_by_name=True,
     )
 
-    # Anthropic-compatible endpoint (Claude Agent SDK)
-    anthropic_base_url: str = Field(
+    # Agent endpoint (Anthropic-compatible, used by Claude Agent SDK)
+    agent_base_url: str = Field(
         default="https://api.z.ai/api/anthropic",
-        description="Anthropic-compatible base URL for Claude Agent SDK.",
+        validation_alias="ANTHROPIC_BASE_URL",
+        description="Anthropic-compatible base URL for the outer agent (Claude Agent SDK).",
     )
 
-    # OpenAI-compatible endpoint (REPL subagents, vLLM, etc.)
-    openai_base_url: str = Field(
+    # Subagent endpoint (OpenAI-compatible, used by REPL subagents / vLLM)
+    subagent_base_url: str = Field(
         default="http://localhost:8000/v1/",
-        alias="LLM_BASE_URL",
-        description="OpenAI-compatible base URL for subagent LLM calls.",
+        validation_alias="LLM_BASE_URL",
+        description="OpenAI-compatible base URL for subagent LLM calls (vLLM, etc.).",
     )
 
     # Model identifiers
@@ -266,12 +268,12 @@ class VerificationSettings(BaseSettings):
         return self.api.api_key
 
     @property
-    def anthropic_base_url(self) -> str:
-        return self.llm.anthropic_base_url
+    def agent_base_url(self) -> str:
+        return self.llm.agent_base_url
 
     @property
-    def openai_base_url(self) -> str:
-        return self.llm.openai_base_url
+    def subagent_base_url(self) -> str:
+        return self.llm.subagent_base_url
 
     @property
     def temperature(self) -> float:
@@ -297,7 +299,7 @@ class VerificationSettings(BaseSettings):
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
             "ANTHROPIC_AUTH_TOKEN": self.api_key,
-            "ANTHROPIC_BASE_URL": self.anthropic_base_url,
+            "ANTHROPIC_BASE_URL": self.agent_base_url,
             "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": "300000",
         }
         env.pop("ANTHROPIC_API_KEY", None)
@@ -316,20 +318,6 @@ class VerificationSettings(BaseSettings):
 
         Note: ``claim`` is intentionally excluded from YAML — it varies
         per-run and should be passed as a keyword override or via CLI.
-
-        Example YAML::
-
-            mode: repl
-            max_iterations: 10
-            sufficiency_threshold: 0.85
-
-            llm:
-              model: glm-5
-              subagent_model: glm-4.6
-              openai_base_url: http://localhost:8000/v1/
-              temperature: 0.15
-
-            output_dir: results/verification/mapk1_experiment
 
         Usage::
 
@@ -449,8 +437,8 @@ class VerificationSettings(BaseSettings):
         parser.add_argument("--max-iterations", type=int, default=None, help="Max sufficiency iterations.")
         parser.add_argument("--output-dir", default=None, help="Output workspace directory.")
         parser.add_argument("--notebook-path", default=None, help="Notebook path (Mode A only).")
-        parser.add_argument("--openai-base-url", default=None, help="OpenAI-compatible base URL.")
-        parser.add_argument("--anthropic-base-url", default=None, help="Anthropic-compatible base URL.")
+        parser.add_argument("--subagent-base-url", default=None, help="OpenAI-compatible base URL for subagent LLM.")
+        parser.add_argument("--agent-base-url", default=None, help="Anthropic-compatible base URL for outer agent.")
         parser.add_argument("--verbose", "-v", action="store_true", default=False, help="Debug logging.")
 
         parsed = parser.parse_args(args)
@@ -504,10 +492,10 @@ class VerificationSettings(BaseSettings):
             llm_overrides["model"] = parsed.model
         if parsed.subagent_model is not None:
             llm_overrides["subagent_model"] = parsed.subagent_model
-        if parsed.openai_base_url is not None:
-            llm_overrides["openai_base_url"] = parsed.openai_base_url
-        if parsed.anthropic_base_url is not None:
-            llm_overrides["anthropic_base_url"] = parsed.anthropic_base_url
+        if parsed.subagent_base_url is not None:
+            llm_overrides["subagent_base_url"] = parsed.subagent_base_url
+        if parsed.agent_base_url is not None:
+            llm_overrides["agent_base_url"] = parsed.agent_base_url
 
         if llm_overrides:
             # Merge with YAML-level llm if present

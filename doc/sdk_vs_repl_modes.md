@@ -245,8 +245,8 @@ sufficiency_threshold: 0.80
 llm:
   model: glm-5
   subagent_model: glm-4.6
-  openai_base_url: "http://localhost:8000/v1/"
-  anthropic_base_url: "https://api.z.ai/api/anthropic"
+  subagent_base_url: "http://localhost:8000/v1/"
+  agent_base_url: "https://api.z.ai/api/anthropic"
   temperature: 0.2
 ```
 

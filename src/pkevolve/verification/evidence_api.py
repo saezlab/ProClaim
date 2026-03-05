@@ -2,13 +2,8 @@
 Evidence API — pure Python library for evidence manipulation.
 
 All functions operate on EvidenceState objects in-memory. No disk I/O,
-no MCP dependency. This is the importable API surface that both the REPL
-kernel and the MCP wrappers call.
-
-The MCP tools in mcp_tools.py become thin wrappers around these functions,
-adding only load/save/trace bookends.
-
-In REPL mode, the LLM calls these functions directly::
+no MCP dependency. The LLM agent calls these functions directly via
+nb_execute in the Jupyter kernel::
 
     papers = search_pubmed("MAPK1 activation", state)
     result = check_sufficiency(state)
@@ -447,7 +442,11 @@ def find_related_articles(
             record = PaperRecord(
                 pmid=art_pmid, title=title, abstract=abstract or "",
                 authors=authors, source="pubmed",
-                doi=(article.findtext(".//ELocationID[@EIdType='doi']", "") or None),
+                doi=(
+                    article.findtext(".//ELocationID[@EIdType='doi']", "")
+                    or article.findtext(".//ArticleIdList/ArticleId[@IdType='doi']", "")
+                    or None
+                ),
             )
             state.add_paper(record)
             added_pmids.append(art_pmid)

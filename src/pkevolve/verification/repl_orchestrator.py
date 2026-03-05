@@ -179,7 +179,7 @@ def verify_claim_repl(
         workspace = cfg.resolved_workspace
         model = cfg.model
         subagent_model = cfg.subagent_model
-        base_url = cfg.openai_base_url
+        base_url = cfg.subagent_base_url
         api_key = cfg.api_key
         max_turns = cfg.max_turns
         max_iterations = cfg.max_iterations

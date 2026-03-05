@@ -99,11 +99,23 @@ def _fetch_pmc(pmid: str, title: str = "") -> Optional[str]:
         fetch_resp.raise_for_status()
         fetch_root = ET.fromstring(fetch_resp.content)
 
-        # Extract body <p> and <title> elements
+        # Extract body text with structural awareness
         parts: list[str] = []
-        for elem in fetch_root.iter():
-            if elem.tag in ("p", "title") and elem.text:
-                parts.append(elem.text.strip())
+
+        # Try structured extraction from <body> first
+        body = fetch_root.find(".//body")
+        if body is not None:
+            for elem in body.iter():
+                if elem.tag in ("p", "title", "label"):
+                    text = "".join(elem.itertext()).strip()
+                    if text:
+                        parts.append(text)
+
+        # Fallback: extract from <abstract> + all <p> if body was empty
+        if not parts:
+            for elem in fetch_root.iter():
+                if elem.tag in ("p", "title", "abstract") and elem.text:
+                    parts.append(elem.text.strip())
 
         full_text = "\n\n".join(parts) if parts else ""
         if len(full_text) < _MIN_TEXT_LEN:
@@ -124,6 +136,150 @@ def _fetch_pmc(pmid: str, title: str = "") -> Optional[str]:
     except Exception as exc:
         logger.debug("Layer 1 (PMC) failed for PMID %s: %s", pmid, exc)
         return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Layer 1b:  Europe PMC  (REST API — better OA coverage than NCBI PMC)
+# ──────────────────────────────────────────────────────────────────────
+
+_EUROPEPMC_API = "https://www.ebi.ac.uk/europepmc/webservices/rest"
+
+
+def _fetch_europepmc(pmid: str, title: str = "") -> Optional[str]:
+    """Fetch full text from Europe PMC REST API.
+
+    Europe PMC often has OA full text for articles that NCBI PMC does not
+    index under the Open Access subset (e.g. author manuscripts, EuropePMC
+    grants).  Returns the full text body, or None.
+    """
+    try:
+        # Step 1: search by PMID to get PMCID and check OA status
+        search_resp = requests.get(
+            f"{_EUROPEPMC_API}/search",
+            params={
+                "query": f"EXT_ID:{pmid} AND SRC:MED",
+                "resultType": "core",
+                "format": "json",
+            },
+            timeout=15,
+        )
+        search_resp.raise_for_status()
+        data = search_resp.json()
+        results = data.get("resultList", {}).get("result", [])
+
+        if not results:
+            logger.debug("Europe PMC: no result for PMID %s", pmid)
+            return None
+
+        hit = results[0]
+        pmcid = hit.get("pmcid")
+        is_oa = hit.get("isOpenAccess") == "Y"
+
+        if not pmcid:
+            logger.debug("Europe PMC: no PMCID for PMID %s", pmid)
+            return None
+
+        if not is_oa:
+            logger.debug("Europe PMC: PMID %s (PMC%s) not open access", pmid, pmcid)
+            return None
+
+        # Step 2: fetch full text XML
+        ft_resp = requests.get(
+            f"{_EUROPEPMC_API}/{pmcid}/fullTextXML",
+            timeout=60,
+        )
+        if ft_resp.status_code != 200:
+            logger.debug(
+                "Europe PMC: fullTextXML returned %d for %s",
+                ft_resp.status_code, pmcid,
+            )
+            return None
+
+        root = ET.fromstring(ft_resp.content)
+
+        # Extract body text
+        parts: list[str] = []
+        body = root.find(".//body")
+        if body is not None:
+            for elem in body.iter():
+                if elem.tag in ("p", "title", "label"):
+                    text = "".join(elem.itertext()).strip()
+                    if text:
+                        parts.append(text)
+
+        full_text = "\n\n".join(parts) if parts else ""
+        if len(full_text) < _MIN_TEXT_LEN:
+            logger.debug("Europe PMC: body too short for PMID %s", pmid)
+            return None
+
+        if not _title_overlap(title, full_text):
+            logger.warning(
+                "Europe PMC text for PMID %s failed title cross-validation; discarding.",
+                pmid,
+            )
+            return None
+
+        logger.info(
+            "Layer 1b (Europe PMC): retrieved %d chars for PMID %s",
+            len(full_text), pmid,
+        )
+        return full_text
+
+    except Exception as exc:
+        logger.debug("Layer 1b (Europe PMC) failed for PMID %s: %s", pmid, exc)
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# DOI resolution (needed for Unpaywall when DOI is missing)
+# ──────────────────────────────────────────────────────────────────────
+
+def _resolve_doi(pmid: str) -> Optional[str]:
+    """Resolve a DOI from a PMID via NCBI E-utilities (elink + efetch).
+
+    Falls back to Europe PMC if NCBI doesn't have it.
+    """
+    # Try NCBI efetch first (ArticleIdList often has DOI)
+    try:
+        resp = requests.get(
+            f"{_EUTILS_BASE}/efetch.fcgi",
+            params={"db": "pubmed", "id": pmid, "retmode": "xml"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+
+        # Check ELocationID
+        doi_elem = root.find(".//ELocationID[@EIdType='doi']")
+        if doi_elem is not None and doi_elem.text:
+            return doi_elem.text.strip()
+
+        # Check ArticleIdList
+        for aid in root.findall(".//ArticleIdList/ArticleId"):
+            if aid.get("IdType") == "doi" and aid.text:
+                return aid.text.strip()
+    except Exception as exc:
+        logger.debug("DOI resolution via NCBI failed for PMID %s: %s", pmid, exc)
+
+    # Fallback: Europe PMC
+    try:
+        resp = requests.get(
+            f"{_EUROPEPMC_API}/search",
+            params={
+                "query": f"EXT_ID:{pmid} AND SRC:MED",
+                "resultType": "lite",
+                "format": "json",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        results = resp.json().get("resultList", {}).get("result", [])
+        if results and results[0].get("doi"):
+            return results[0]["doi"]
+    except Exception as exc:
+        logger.debug("DOI resolution via Europe PMC failed for PMID %s: %s", pmid, exc)
+
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -336,9 +492,13 @@ def fetch_full_text(
     """Retrieve full text for a paper through a layered fallback chain.
 
     Tries in order:
-        1. PMC Open Access XML  (free, most reliable for OA papers)
-        2. INDRA literature     (broader publisher coverage incl. Elsevier)
-        3. Unpaywall + PDF      (last resort — PDF download & OCR-free extraction)
+        1.  PMC Open Access XML  (NCBI E-utilities, free)
+        1b. Europe PMC REST API  (broader OA coverage incl. author manuscripts)
+        2.  INDRA literature     (broader publisher coverage incl. Elsevier)
+        3.  Unpaywall + PDF      (last resort — OA PDF download & text extraction)
+
+    If *doi* is not provided and layers 1–2 fail, attempts DOI resolution
+    via NCBI/Europe PMC before trying Unpaywall (which requires a DOI).
 
     Returns the extracted text (truncated to *max_chars*), or ``None`` if
     all layers fail.  Never returns the abstract — the caller should handle
@@ -350,8 +510,13 @@ def fetch_full_text(
         title: Paper title for cross-validation against retrieved text.
         max_chars: Maximum characters to return.
     """
-    # Layer 1: PMC
+    # Layer 1: NCBI PMC
     text = _fetch_pmc(pmid, title=title)
+    if text and len(text) >= _MIN_TEXT_LEN:
+        return text[:max_chars]
+
+    # Layer 1b: Europe PMC (often has OA full text NCBI doesn't)
+    text = _fetch_europepmc(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
         return text[:max_chars]
 
@@ -359,6 +524,12 @@ def fetch_full_text(
     text = _fetch_indra(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
         return text[:max_chars]
+
+    # Resolve DOI if missing (needed for Unpaywall)
+    if not doi:
+        doi = _resolve_doi(pmid)
+        if doi:
+            logger.info("Resolved DOI %s for PMID %s", doi, pmid)
 
     # Layer 3: Unpaywall + PDF
     text = _fetch_unpaywall_pdf(doi or "", title=title)

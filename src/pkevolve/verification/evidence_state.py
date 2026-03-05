@@ -146,8 +146,27 @@ class EvidenceState(BaseModel):
             **details,
         })
 
-    def save(self, path: Path) -> None:
-        """Write state as JSON to disk."""
+    def save(self, path: Optional[Path] = None) -> None:
+        """Write state as JSON to disk.
+
+        If *path* is omitted, falls back to ``<workspace>/evidence_state.json``
+        (requires that ``_workspace`` was set via ``init_new`` or ``load``).
+        Raises ``ValueError`` when no path can be determined.
+
+        If *path* points to a directory, ``evidence_state.json`` is appended
+        automatically so callers don't need to remember the filename.
+        """
+        if path is None:
+            if self._workspace is None:
+                raise ValueError(
+                    "save() called without a path and no workspace is set. "
+                    "Pass a file path or initialize with init_new(workspace=...)."
+                )
+            path = self._workspace / "evidence_state.json"
+        else:
+            path = Path(path)
+            if path.is_dir():
+                path = path / "evidence_state.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.model_dump_json(indent=2))
 

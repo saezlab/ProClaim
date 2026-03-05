@@ -21,6 +21,13 @@ The LLM is only used for three steps (fact extraction, gap query formulation, ve
 ### Usage
 
 ```bash
+# Starting an endpoint
+bash /hps/nobackup/saezrodriguez/ail/workspace/start_vllm_ihpc.sh \
+    --user <username> \
+    --gpu-type <gpu_name> \
+    --gpus 1 \
+    --model Qwen/Qwen3-8B
+
 # Using a preset endpoint
 uv run python scripts/verification/demo_evidence_programming.py \
     --preset local_glm_5 \
@@ -31,7 +38,7 @@ uv run python scripts/verification/demo_evidence_programming.py \
     --base-url http://my-server:8000/v1 \
     --api-key EMPTY \
     --model my-model \
-    --claim "Does p53 activate BAX?"
+    --claim "SRC directly down-regulates CTTN."
 ```
 
 ### Available presets
