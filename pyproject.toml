@@ -26,8 +26,10 @@ dependencies = [
     "nbclient>=0.10",
     "jupyter_client>=8.6",
     "ipykernel>=6.0",
-    "claude_agent_sdk",
-    "spacy",
+    "spacy>=3.0",
+    "claude-agent-sdk",
+    "sentence-transformers",
+    "seaborn>=0.13.2",
 ]
 
 [project.optional-dependencies]
