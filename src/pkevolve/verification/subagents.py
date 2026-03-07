@@ -26,6 +26,7 @@ Usage::
 
 import json
 import logging
+import re
 from typing import Callable, Optional
 
 from pkevolve.verification.data_models import (
@@ -39,6 +40,56 @@ logger = logging.getLogger(__name__)
 
 # Type alias for the LLM callable
 LLMCallable = Callable[[str], str]
+
+# Regex to strip <think> reasoning tags from LLM responses
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+def _clean_llm_json(text: str) -> str:
+    """Strip thinking tags and markdown code fences from an LLM response."""
+    text = _THINK_RE.sub("", text).strip()
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+    return text
+
+
+def _extract_json_array(text: str) -> list | None:
+    """Try to extract a JSON array from *text*.
+
+    Applies ``_clean_llm_json`` first, then attempts direct parse and
+    bracket-based extraction as a fallback.  The fallback searches from the
+    rightmost ``[`` backwards so that stray brackets in reasoning text
+    (e.g. ``[the evidence]``) are skipped.
+
+    Returns the parsed list or ``None`` if no valid JSON array could be found.
+    """
+    text = _clean_llm_json(text)
+    # Direct parse
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+    except json.JSONDecodeError:
+        pass
+    # Bracket extraction: try [ positions from right to left
+    end = text.rfind("]")
+    if end == -1:
+        return None
+    search_bound = end
+    while True:
+        start = text.rfind("[", 0, search_bound)
+        if start == -1:
+            break
+        try:
+            data = json.loads(text[start : end + 1])
+            if isinstance(data, list):
+                return data
+        except json.JSONDecodeError:
+            search_bound = start  # try further left
+            continue
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -102,30 +153,13 @@ Output ONLY a JSON array of fact objects. No other text."""
 
 def _parse_facts_response(response: str, source_pmid: str) -> list[Fact]:
     """Parse LLM response into Fact objects."""
-    # Try to extract JSON array from response
-    text = response.strip()
-
-    # Handle markdown code fences
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        # Try to find a JSON array in the response
-        import re
-        match = re.search(r"\[.*\]", text, re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group())
-            except json.JSONDecodeError:
-                logger.warning("Could not parse facts JSON from LLM response")
-                return []
-        else:
-            logger.warning("No JSON array found in LLM response")
-            return []
+    data = _extract_json_array(response)
+    if data is None:
+        logger.warning(
+            "Could not parse facts JSON from LLM response (first 500 chars): %s",
+            response[:500],
+        )
+        return []
 
     facts: list[Fact] = []
     for i, item in enumerate(data):
@@ -237,25 +271,13 @@ Output ONLY a JSON array of conflict objects. If no conflicts, output []."""
 
     response = llm(prompt).strip()
 
-    # Parse JSON
-    text = response
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        import re
-        match = re.search(r"\[.*\]", text, re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group())
-            except json.JSONDecodeError:
-                return []
-        else:
-            return []
+    data = _extract_json_array(response)
+    if data is None:
+        logger.warning(
+            "Could not parse conflicts JSON from LLM response (first 500 chars): %s",
+            response[:500],
+        )
+        return []
 
     conflicts: list[dict] = []
     for item in data:
@@ -267,6 +289,147 @@ Output ONLY a JSON array of conflict objects. If no conflicts, output []."""
                 "severity": float(item.get("severity", 0.5)),
             })
     return conflicts
+
+
+# ---------------------------------------------------------------------------
+# Gap Identification
+# ---------------------------------------------------------------------------
+
+
+def identify_gaps(
+    llm: LLMCallable,
+    claim: str,
+    subclaims: list[str],
+    facts: list[Fact],
+) -> list[Gap]:
+    """Identify evidence gaps using LLM reasoning over extracted facts.
+
+    The LLM inspects the claim, subclaims, and stance-labeled facts to
+    determine what evidence is missing, conflicting, or weak.
+
+    Args:
+        llm: LLM callable.
+        claim: The claim being verified.
+        subclaims: List of subclaims.
+        facts: All extracted facts so far.
+
+    Returns:
+        List of Gap objects with gap_type, description, and priority.
+    """
+    facts_str = "\n".join(
+        f"  [{f.stance.value}] {f.text} (PMID:{f.source_pmid})"
+        for f in facts
+    ) or "  (no facts extracted yet)"
+
+    subclaims_str = "\n".join(f"  - {sc}" for sc in subclaims)
+
+    # Count basic evidence stats for context
+    n_support = sum(1 for f in facts if f.stance == Stance.SUPPORT)
+    n_refute = sum(1 for f in facts if f.stance == Stance.REFUTE)
+    n_neutral = sum(1 for f in facts if f.stance == Stance.NEUTRAL)
+    unique_sources = len(set(f.source_pmid for f in facts))
+
+    prompt = f"""\
+You are an evidence gap analyst for scientific claim verification.
+
+The current evidence has been judged INSUFFICIENT. Your task: inspect the
+extracted facts and identify specific gaps — what is missing, conflicting,
+or weak — so the system can search for additional evidence.
+
+Claim: {claim}
+
+Subclaims:
+{subclaims_str}
+
+Extracted facts ({len(facts)} total — {n_support} support, {n_refute} refute, {n_neutral} neutral, from {unique_sources} unique sources):
+{facts_str}
+
+Gap types to choose from:
+- missing_subclaim_evidence: a subclaim lacks supporting facts
+- contradictory_evidence: conflicting evidence needs resolution
+- low_source_diversity: too few independent sources
+- weak_stance_evidence: evidence exists but is weak/indirect
+- missing_mechanism: mechanistic explanation is missing
+- missing_quantitative: quantitative data (dose-response, effect sizes) is missing
+- missing_temporal: temporal/longitudinal data is missing
+- missing_population: population-specific evidence is missing
+
+Output ONLY a JSON array of gap objects. Each gap:
+{{
+  "subclaim": "the relevant subclaim text",
+  "gap_type": "one of the gap types above",
+  "description": "specific description of what is missing",
+  "priority": "high" | "medium" | "low"
+}}
+
+Identify 1-4 gaps, ordered from highest to lowest priority. Output [] if no specific gaps."""
+
+    response = llm(prompt)
+    if not response:
+        return _fallback_gaps(claim, subclaims, facts)
+    return _parse_gaps_response(response, claim, subclaims, facts)
+
+
+def _parse_gaps_response(
+    response: str,
+    claim: str,
+    subclaims: list[str],
+    facts: list[Fact],
+) -> list[Gap]:
+    """Parse LLM response into Gap objects with fallback."""
+    data = _extract_json_array(response)
+    if data is None:
+        logger.warning(
+            "Could not parse gaps JSON from LLM response (first 500 chars): %s",
+            response[:500],
+        )
+        print(
+            f"[identify_gaps] JSON parse failed. Raw response (first 300 chars):\n"
+            f"{response[:300]}"
+        )
+        return _fallback_gaps(claim, subclaims, facts)
+
+    from pkevolve.verification.data_models import GapType, GapPriority
+    valid_types = {gt.value for gt in GapType}
+    valid_priorities = {gp.value for gp in GapPriority}
+
+    gaps: list[Gap] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        gap_type_str = item.get("gap_type", "")
+        if gap_type_str not in valid_types:
+            gap_type_str = "missing_subclaim_evidence"
+        priority_str = str(item.get("priority", "medium")).lower()
+        if priority_str not in valid_priorities:
+            priority_str = "medium"
+        gaps.append(Gap(
+            subclaim=item.get("subclaim", claim),
+            gap_type=GapType(gap_type_str),
+            description=item.get("description", "Evidence gap identified by LLM"),
+            priority=GapPriority(priority_str),
+        ))
+
+    if not gaps:
+        return _fallback_gaps(claim, subclaims, facts)
+
+    priority_order = {GapPriority.HIGH: 0, GapPriority.MEDIUM: 1, GapPriority.LOW: 2}
+    return sorted(gaps, key=lambda g: priority_order[g.priority])
+
+
+def _fallback_gaps(
+    claim: str,
+    subclaims: list[str],
+    facts: list[Fact],
+) -> list[Gap]:
+    """Minimal fallback when LLM gap identification fails."""
+    from pkevolve.verification.data_models import GapType, GapPriority
+    return [Gap(
+        subclaim=claim,
+        gap_type=GapType.MISSING_SUBCLAIM,
+        description="Need more evidence to reach sufficiency threshold",
+        priority=GapPriority.MEDIUM,
+    )]
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +454,7 @@ def formulate_gap_queries(
         return []
 
     gaps_str = "\n".join(
-        f"  [{g.gap_type.value}] Subclaim: {g.subclaim} | Priority: {g.priority:.1f} | {g.description}"
+        f"  [{g.gap_type.value}] Subclaim: {g.subclaim} | Priority: {g.priority.value} | {g.description}"
         for g in gaps
     )
     prompt = f"""\

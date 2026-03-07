@@ -40,7 +40,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from pkevolve.verification.feature_extractor import PaperFeatureExtractor
+from scripts.sufficiency_classifier.feature_extractor import PaperFeatureExtractor
 from scripts.sufficiency_classifier.extract_features_scifact import (
     SemanticSimilarityComputer,
     NLIEentailmentComputer,

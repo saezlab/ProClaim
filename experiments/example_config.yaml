@@ -5,7 +5,7 @@
 # The claim is always provided via CLI --claim, since it varies per run.
 #
 # Usage:
-#   uv run python scripts/verification/demo_evidence_programming.py \
+#   uv run python -m pkevolve.verification.evidence_programming \
 #       --config experiments/example_config.yaml \
 #       --claim "[INSERT CLAIM HERE]"
 #
@@ -20,7 +20,7 @@
 mode: sdk
 
 # Verification workflow parameters
-max_iterations: 2
+max_iterations: 1
 sufficiency_threshold: 0.80
 
 # LLM configuration

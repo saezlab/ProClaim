@@ -33,7 +33,7 @@ from mcp.client.session import ClientSession
 from claude_agent_sdk import ClaudeAgentOptions, query, AssistantMessage, UserMessage, ToolUseBlock, ToolResultBlock
 
 # Local imports
-from pkevolve.verification.feature_extractor import PaperFeatureExtractor
+from scripts.sufficiency_classifier.feature_extractor import PaperFeatureExtractor
 from pkevolve.verification.data_models import PaperFeatureVector, NLPFeatureVector
 
 class BiomedicalEntityExtractor:

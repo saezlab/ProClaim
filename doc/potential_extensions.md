@@ -79,7 +79,7 @@ scispacy provides:
 
 **Integration Point**: Could replace much of `llm_extract_facts` — INDRA statements are stance-labeled and grounded by design.
 
-**Current Gap Addressed**: The LLM-based fact extraction in `demo_evidence_programming.py` is:
+**Current Gap Addressed**: The LLM-based fact extraction in `evidence_programming.py` is:
 - Expensive (LLM call per paper)
 - Inconsistent (depends on prompt engineering)
 - Ungrounded (raw text, no entity IDs)
@@ -128,7 +128,7 @@ PyOBO provides:
 
 **Integration Point**: Replace manual prompts in `llm_extract_facts`, `llm_formulate_gap_query`, `llm_verdict` with learnable modules.
 
-**Current Gap Addressed**: Current prompts in `demo_evidence_programming.py` are:
+**Current Gap Addressed**: Current prompts in `evidence_programming.py` are:
 - Hand-crafted and static
 - Not optimized for specific models
 - No automatic few-shot selection
@@ -176,7 +176,7 @@ result = client.chat.completions.create(
 **Repository**: https://github.com/langchain-ai/langgraph  
 **Purpose**: Stateful, multi-actor agent workflows with checkpointing.
 
-**Integration Point**: Currently underutilized. The evidence programming loop in `demo_evidence_programming.py` is a manual `for` loop; this could be a proper `StateGraph`.
+**Integration Point**: Currently underutilized. The evidence programming loop in `evidence_programming.py` is a manual `for` loop; this could be a proper `StateGraph`.
 
 **Current Gap Addressed**: The existing `langgraph/edge_correction_agent.py` shows partial adoption, but the verification framework doesn't use it.
 

@@ -59,28 +59,7 @@ variables ready:
     workspace      – Path to the workspace directory
     llm            – Callable[[str], str]  (calls the LLM endpoint)
 
-    # Evidence API (operate on `state` in-place)
-    search_pubmed(query, state, max_results=5)
-    search_pubmed_progressive(claim, state, max_results_per_tier=5)
-    find_related_articles(pmid, state, max_results=5)
-    get_full_text_article(pmid, state)
-    get_paper_text(pmid, state)
-    add_facts_from_dicts(facts_data, state)
-    extract_and_add_facts(llm, pmid, state) -> int       # PREFERRED for fact extraction
-    update_synthesis(subclaim, text, state)
-    add_conflict(fact_a_id, fact_b_id, description, severity, state)
-    get_evidence_summary(state)
-    check_sufficiency(state) -> SufficiencyResult
-    compress_evidence(state, target_tokens=40000) -> EvidenceState
-    emit_verdict(verdict, confidence, reasoning, key_evidence, gaps_remaining, state, workspace)
-    formulate_pubmed_query(claim)
-    search_for_gap(gap_description, state, max_results=3)
-
-    # Subagents (require the `llm` callable)
-    extract_facts(llm, paper_text, claim, subclaims, source_pmid) -> list[Fact]
-    synthesize_subclaim(llm, facts, subclaim) -> str
-    detect_conflicts(llm, facts) -> list[dict]
-    formulate_gap_queries(llm, gaps) -> list[str]
+{function_docs}
 
 {schemas}
 
@@ -92,7 +71,7 @@ variables ready:
 3. Extract facts using extract_and_add_facts(llm, pmid, state) for EACH paper.
    This reads the paper and uses the LLM to extract grounded facts.
    Do NOT write fact dicts manually — use extract_and_add_facts.
-4. Check sufficiency: result = check_sufficiency(state); print(result).
+4. Check sufficiency: result = check_sufficiency(state, llm); print(result).
    This is FREE (no LLM cost). Call it after EVERY retrieval round.
 5. If insufficient: read the gaps, call search_for_gap or find_related_articles.
 6. Synthesize: call update_synthesis for each subclaim.
@@ -210,11 +189,12 @@ def verify_claim_repl(
         llm_model=subagent_model or model,
     )
 
-    # Build system prompt with auto-generated schema docs
-    from pkevolve.verification.evidence_api import schema_docs
+    # Build system prompt with auto-generated schema and function docs
+    from pkevolve.verification.evidence_api import schema_docs, function_docs
     system = SYSTEM_PROMPT.format(
         max_iterations=max_iterations,
         schemas=schema_docs(),
+        function_docs=function_docs(),
     )
 
     messages: list[dict] = [

@@ -60,12 +60,12 @@ Claude Agent SDK  →  calls nb_execute(code)  →  MCP server  →  Jupyter ker
 
 ```bash
 # CLI
-uv run python scripts/verification/demo_evidence_programming.py \
+uv run python -m pkevolve.verification.evidence_programming \
     --claim "Does MAPK1 directly activate H3-3A?" \
     --mode sdk --model glm-5
 
 # With YAML config
-uv run python scripts/verification/demo_evidence_programming.py \
+uv run python -m pkevolve.verification.evidence_programming \
     --config experiments/example_config.yaml --mode sdk
 ```
 
@@ -101,12 +101,12 @@ Python script  →  LLM.chat.completions.create()  →  parse ```python``` block
 
 ```bash
 # CLI
-uv run python scripts/verification/demo_evidence_programming.py \
+uv run python -m pkevolve.verification.evidence_programming \
     --claim "Does p53 activate BAX?" \
     --mode repl --model glm-5
 
 # With YAML config
-uv run python scripts/verification/demo_evidence_programming.py \
+uv run python -m pkevolve.verification.evidence_programming \
     --config experiments/example_config.yaml --mode repl
 ```
 
@@ -202,7 +202,7 @@ transparency for academic reproducibility:
 3. **Save the config YAML** for each run via `cfg.save_yaml()` — this
    captures all parameters except API keys
 4. **Document the system prompt template** — it is defined in
-   `demo_evidence_programming.py` and fully controllable
+   `evidence_programming.py` and fully controllable
 5. **Pin the model identifier** in the YAML config for exact reproduction
 
 ### When to prefer REPL mode

@@ -12,7 +12,7 @@ when only core data structures are needed.
 def __getattr__(name: str):
     """Lazy imports — only load a module when its symbol is accessed."""
     # Data models
-    if name in ("PaperRecord", "Fact", "Stance", "GapType", "Conflict",
+    if name in ("PaperRecord", "Fact", "Stance", "GapType", "GapPriority", "Conflict",
                 "Gap", "SufficiencyResult", "VerificationVerdict"):
         import pkevolve.verification.data_models as dm
         return getattr(dm, name)
@@ -28,10 +28,6 @@ def __getattr__(name: str):
     if name == "TraceLog":
         from pkevolve.verification.evidence_state import TraceLog
         return TraceLog
-    # Classifier
-    if name == "SufficiencyClassifier":
-        from pkevolve.verification.classifier import SufficiencyClassifier
-        return SufficiencyClassifier
     # Compressor
     if name == "SufficiencyPreservingCompressor":
         from pkevolve.verification.compressor import SufficiencyPreservingCompressor
@@ -45,6 +41,7 @@ __all__ = [
     "Fact",
     "Stance",
     "GapType",
+    "GapPriority",
     "Conflict",
     "Gap",
     "SufficiencyResult",
@@ -57,8 +54,6 @@ __all__ = [
     "APISettings",
     "LLMSettings",
     "get_settings",
-    # Classifier
-    "SufficiencyClassifier",
     # Compressor
     "SufficiencyPreservingCompressor",
 ]

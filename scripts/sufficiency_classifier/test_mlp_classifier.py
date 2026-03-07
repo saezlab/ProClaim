@@ -39,6 +39,64 @@ class SufficiencyMLP(nn.Module):
     def forward(self, x):
         return self.network(x)
 
+
+def flatten_features(features: dict) -> dict:
+    """Flatten a nested or flat feature dict into a single-level dict.
+
+    Handles both formats:
+    - Nested: {"metadata_aggregation": {...}, "nlp_aggregation": {...}, "cross_features": {...}}
+    - Flat: {"feature_name": value, ...}
+    """
+    _NESTED_KEYS = ("metadata_aggregation", "nlp_aggregation", "cross_features")
+    if any(k in features for k in _NESTED_KEYS):
+        flat: dict = {}
+        for sub_key in _NESTED_KEYS:
+            if sub_key in features:
+                flat.update(features[sub_key])
+        return flat
+    return dict(features)
+
+
+def mlp_predict(
+    model: SufficiencyMLP,
+    features: dict,
+    expected_features: list[str],
+    mean: "np.ndarray",
+    scale: "np.ndarray",
+) -> tuple[float, float]:
+    """Run MLP prediction on a feature dict.
+
+    Args:
+        model: Trained SufficiencyMLP (eval mode).
+        features: Flat or nested feature dict.
+        expected_features: Ordered feature names matching model input.
+        mean: Scaler mean array.
+        scale: Scaler scale array.
+
+    Returns:
+        (probability, raw_logit) tuple.
+    """
+    flat = flatten_features(features)
+
+    vec = []
+    for fname in expected_features:
+        val = flat.get(fname)
+        if val is None or not isinstance(val, (int, float)):
+            vec.append(0.0)
+        else:
+            vec.append(float(val))
+
+    X_raw = np.array([vec])
+    X_scaled = (X_raw - mean) / scale
+    X_tensor = torch.FloatTensor(X_scaled)
+
+    with torch.no_grad():
+        logit = model(X_tensor)
+        prob = torch.sigmoid(logit).item()
+
+    return prob, logit.item()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--claim_id", type=int, required=True, help="Claim ID to test")
@@ -100,38 +158,14 @@ def main():
     for idx, item in enumerate(matching_items):
         feats = item.get("features", {})
 
-        # Support both flat and nested feature formats
-        flat_feats = {}
-        has_nested = any(k in feats for k in ("metadata_aggregation", "nlp_aggregation", "cross_features"))
-        if has_nested:
-            for sub_key in ("metadata_aggregation", "nlp_aggregation", "cross_features"):
-                if sub_key in feats:
-                    flat_feats.update(feats[sub_key])
-        else:
-            flat_feats = feats
-
-        vec = []
-        for fname in expected_features:
-            val = flat_feats.get(fname)
-            if val is None or not isinstance(val, (int, float)):
-                vec.append(0.0)
-            else:
-                vec.append(float(val))
-
-        X_raw = np.array([vec])
-        X_scaled = (X_raw - mean) / scale
-        X_tensor = torch.FloatTensor(X_scaled)
-
-        with torch.no_grad():
-            logit = model(X_tensor)
-            prob_1 = torch.sigmoid(logit).item()
+        prob_1, logit_val = mlp_predict(model, feats, expected_features, mean, scale)
 
         pred = 1 if prob_1 > 0.5 else 0
         true_y = item.get("target_y")
         pool_type = item.get("pool_type", "unknown")
         correct = "✓" if pred == true_y else "✗"
 
-        print(f"{idx:<4} {pool_type:<22} {true_y:<8} {pred:<8} {prob_1:<10.4f} {logit.item():<10.4f} {correct}")
+        print(f"{idx:<4} {pool_type:<22} {true_y:<8} {pred:<8} {prob_1:<10.4f} {logit_val:<10.4f} {correct}")
     
 if __name__ == "__main__":
     main()

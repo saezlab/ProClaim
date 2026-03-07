@@ -73,10 +73,8 @@ src/pkevolve/verification/
 ├── classifier.py                # Heuristic SufficiencyClassifier
 ├── compressor.py                # L1 deduplication compressor
 ├── renderers.py                 # HTML renderers for Jupyter
-└── adapters.py                  # Dataset adapters
-
-scripts/verification/
-├── demo_evidence_programming.py # CLI entry point (--mode sdk|repl)
+├── adapters.py                  # Dataset adapters
+├── evidence_programming.py      # CLI entry point (--mode sdk|repl)
 └── README.md
 ```
 
@@ -352,7 +350,7 @@ LLM generates Python code that calls evidence_api functions directly in
 a persistent Jupyter kernel.
 
 ```python
-# scripts/verification/demo_evidence_programming.py  (simplified)
+# src/pkevolve/verification/evidence_programming.py  (simplified)
 
 options = ClaudeAgentOptions(
     model="glm-4.6",
@@ -894,7 +892,7 @@ Files created:
 **Goal:** Mode A using nb_execute as primary tool.
 
 Files modified:
-- `demo_evidence_programming.py` — --mode sdk|repl, single notebook-tools MCP server
+- `evidence_programming.py` — --mode sdk|repl, single notebook-tools MCP server
 
 **Verification:** `--mode sdk` runs with only notebook-tools MCP server.
 
@@ -918,7 +916,7 @@ following issues across 6 files:
 - `evidence_api.py`: `add_facts_from_dicts()` validates `source_pmid ∈ state.papers`
 - `evidence_api.py`: `schema_docs()` enriched with EvidenceState field listing,
   type annotations, and "Common pitfalls" section
-- `repl_orchestrator.py` + `demo_evidence_programming.py`: "Grounded Evidence Only"
+- `repl_orchestrator.py` + `evidence_programming.py`: "Grounded Evidence Only"
   anti-fabrication rules added to both system prompts
 
 **Round 3 — PMC full-text retrieval (3 fixes)**
@@ -927,7 +925,7 @@ following issues across 6 files:
 - `evidence_api.py`: `add_facts_from_dicts()` now rejects (not just warns) unknown PMIDs
 
 **Round 4 — LLM callable robustness (3 fixes)**
-- `kernel_runner.py` + `demo_evidence_programming.py`: `llm()` callable now retries
+- `kernel_runner.py` + `evidence_programming.py`: `llm()` callable now retries
   3× with exponential backoff and guards against `None`/empty `resp.choices`
 - `subagents.py`: `extract_facts()` returns `[]` if `llm()` returns empty string
 - `evidence_api.py`: `extract_and_add_facts()` appends to `state.extracted_pmids`

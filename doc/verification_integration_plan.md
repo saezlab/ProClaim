@@ -43,7 +43,7 @@ We need to extend the `PaperRecord` model to store the extracted features.
 
 ## 3. New Agent Script (`scripts/verification/demo_verification_with_features.py`)
 
-This script will adapt the logic of `demo_evidence_programming.py` but use the new tools.
+This script will adapt the logic of `evidence_programming.py` but use the new tools.
 
 ### Workflow
 1.  **Initialization**:

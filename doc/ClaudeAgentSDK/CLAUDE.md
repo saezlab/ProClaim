@@ -127,7 +127,7 @@ When using LiteLLM proxy, mapped CLI names also work:
 
 ### Scripts using this pattern
 
-- `scripts/verification/demo_evidence_programming.py` -- evidence verification with notebook output
+- `src/pkevolve/verification/evidence_programming.py` -- evidence verification with notebook output
 - `scripts/claude_sdk/run_signor_qa_glm.py` -- batch SIGNOR QA via GLM models
 - `scripts/claude_sdk/run_signor_qa_claude.py` -- batch SIGNOR QA via Claude
 - `src/pkevolve/verification/orchestrator.py` -- evidence programming orchestrator

@@ -6,7 +6,7 @@ no MCP dependency. The LLM agent calls these functions directly via
 nb_execute in the Jupyter kernel::
 
     papers = search_pubmed("MAPK1 activation", state)
-    result = check_sufficiency(state)
+    result = check_sufficiency(state, llm)
     state = compress_evidence(state, state.claim)
 """
 
@@ -18,7 +18,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from pkevolve.verification.classifier import SufficiencyClassifier
 from pkevolve.verification.compressor import SufficiencyPreservingCompressor
 from pkevolve.verification.data_models import (
     Conflict,
@@ -33,7 +32,6 @@ from pkevolve.verification.evidence_state import EvidenceState
 logger = logging.getLogger(__name__)
 
 # Shared singleton instances
-_classifier = SufficiencyClassifier()
 _compressor = SufficiencyPreservingCompressor()
 
 # Maximum sufficiency checks before forced verdict
@@ -161,6 +159,62 @@ def schema_docs() -> str:
         "  - If extract_and_add_facts returns 0 for a paper, try get_full_text_article(pmid, state)\n"
         "    first, then call extract_facts(llm, text, state.claim, state.subclaims, pmid) manually.\n"
     )
+
+
+def function_docs() -> str:
+    """Auto-generate function signature docs from evidence_api and subagents.
+
+    Inspects all public functions that the agent can call via nb_execute,
+    producing a prompt-ready signature block.  Called at system-prompt
+    construction time so docs stay in sync with code.
+    """
+    import inspect
+    import re as _re
+
+    def _short_sig(fn) -> str:
+        """Produce a signature with short type names (no module paths)."""
+        sig = str(inspect.signature(fn))
+        # pkevolve.verification.data_models.Fact -> Fact, etc.
+        sig = _re.sub(r"[a-z_]+(?:\.[a-z_]+)*\.([A-Z]\w*)", r"\1", sig)
+        # typing qualifiers: Optional[Path] stays, Callable[[str], str] stays
+        return sig
+
+    # Functions from evidence_api
+    _api_funcs = [
+        search_pubmed, search_pubmed_progressive, find_related_articles,
+        get_full_text_article, get_paper_text, extract_and_add_facts,
+        add_facts_from_dicts, update_synthesis, add_conflict,
+        get_evidence_summary, check_sufficiency, compress_evidence,
+        emit_verdict, formulate_pubmed_query, search_for_gap,
+    ]
+
+    # Functions from subagents
+    from pkevolve.verification.subagents import (
+        extract_facts, synthesize_subclaim, detect_conflicts,
+        formulate_gap_queries,
+    )
+    _sub_funcs = [extract_facts, synthesize_subclaim, detect_conflicts,
+                  formulate_gap_queries]
+
+    lines = ["## Available functions (after setup)\n"]
+    lines.append("### evidence_api\n")
+    for fn in _api_funcs:
+        sig = _short_sig(fn)
+        # Get first line of docstring as description
+        doc = (fn.__doc__ or "").strip().split("\n")[0]
+        lines.append(f"    {fn.__name__}{sig}")
+        if doc:
+            lines.append(f"        {doc}")
+
+    lines.append("\n### subagents\n")
+    for fn in _sub_funcs:
+        sig = _short_sig(fn)
+        doc = (fn.__doc__ or "").strip().split("\n")[0]
+        lines.append(f"    {fn.__name__}{sig}")
+        if doc:
+            lines.append(f"        {doc}")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -810,12 +864,81 @@ def get_evidence_summary(state: EvidenceState) -> str:
 # ---------------------------------------------------------------------------
 
 
-def check_sufficiency(state: EvidenceState) -> SufficiencyResult:
-    """Run the sufficiency classifier on the current evidence state.
+# Lazy singleton for MLP classifier (heavy: loads torch + weights on first call)
+_mlp_state = None
+
+
+def _get_mlp_state():
+    """Lazy-load the MLP model, config, and FeatureAggregator."""
+    global _mlp_state
+    if _mlp_state is not None:
+        return _mlp_state
+
+    import sys as _sys
+    import numpy as np
+    import torch
+
+    _THIS_DIR = Path(__file__).resolve().parent
+    project_root = _THIS_DIR.parent.parent.parent
+
+    # Make scripts/sufficiency_classifier importable
+    scripts_dir = str(project_root / "scripts")
+    if scripts_dir not in _sys.path:
+        _sys.path.insert(0, scripts_dir)
+
+    from sufficiency_classifier.test_mlp_classifier import SufficiencyMLP
+    from sufficiency_classifier.feature_aggregation import FeatureAggregator
+
+    # Load config
+    model_dir = project_root / "results" / "models" / "classifier_best"
+    with open(model_dir / "mlp_config.json") as f:
+        config = json.load(f)
+
+    # Load model
+    model = SufficiencyMLP(
+        input_dim=config["input_dim"],
+        hidden_dim=config.get("hidden_dim", 64),
+    )
+    weights_path = model_dir / "best_model.pth"
+    if not weights_path.exists():
+        weights_path = model_dir / "mlp_classifier_weights.pth"
+    model.load_state_dict(
+        torch.load(weights_path, map_location="cpu", weights_only=True)
+    )
+    model.eval()
+
+    _mlp_state = {
+        "model": model,
+        "config": config,
+        "expected_features": config["expected_features"],
+        "mean": np.array(config["scaler_mean"]),
+        "scale": np.array(config["scaler_scale"]),
+        "aggregator": FeatureAggregator(),
+    }
+    logger.info("MLP sufficiency classifier loaded from %s", model_dir)
+    return _mlp_state
+
+
+def check_sufficiency(
+    state: EvidenceState,
+    llm,
+    threshold: float = 0.5,
+) -> SufficiencyResult:
+    """Run the trained MLP sufficiency classifier on the current evidence state.
+
+    Uses ``SufficiencyMLP`` from ``scripts/sufficiency_classifier/test_mlp_classifier.py``
+    and ``FeatureAggregator`` from ``scripts/sufficiency_classifier/feature_aggregation.py``.
+
+    Requires per-paper features (``paper.metadata``, ``paper.nlp``) to have
+    been populated — otherwise the MLP will see zeros for missing features.
+
+    When the classifier predicts INSUFFICIENT, gap identification is delegated to
+    the ``identify_gaps`` LLM subagent.
 
     Appends result to state.sufficiency_history and increments iteration.
     Raises MaxIterationsExceeded if the iteration limit is reached.
     """
+
     if state.iteration >= MAX_ITERATIONS:
         raise MaxIterationsExceeded(
             f"Iteration limit ({MAX_ITERATIONS}) reached. "
@@ -823,26 +946,72 @@ def check_sufficiency(state: EvidenceState) -> SufficiencyResult:
             state=state,
         )
 
-    result = _classifier(state)
+    mlp = _get_mlp_state()
+
+    # Convert EvidenceState papers → FeatureAggregator input format
+    papers_dicts = []
+    num_full_text = 0
+    for paper in state.papers.values():
+        d: dict = {}
+        if paper.metadata:
+            d["metadata_features"] = paper.metadata.model_dump()
+        if paper.nlp:
+            d["nlp_features"] = paper.nlp.model_dump()
+        papers_dicts.append(d)
+        if paper.full_text:
+            num_full_text += 1
+
+    # Aggregate features via FeatureAggregator
+    nested = mlp["aggregator"].aggregate_all(papers_dicts)
+
+    # num_full_text is not computed by FeatureAggregator — inject from state
+
+    from sufficiency_classifier.test_mlp_classifier import flatten_features, mlp_predict
+
+    flat_feats = flatten_features(nested)
+    flat_feats["num_full_text"] = float(num_full_text)
+    prob, _ = mlp_predict(
+        mlp["model"], flat_feats, mlp["expected_features"],
+        mlp["mean"], mlp["scale"],
+    )
+
+    # Log feature values for transparency
+    vec = [flat_feats.get(k, 0.0) for k in mlp["expected_features"]]
+    feat_summary = ", ".join(
+        f"{k}={v:.3f}" for k, v in zip(mlp["expected_features"], vec)
+    )
+    logger.info("MLP features: %s → prob=%.4f (threshold=%.2f)", feat_summary, prob, threshold)
+
+    label = "SUFFICIENT_SUPPORT" if prob >= threshold else "INSUFFICIENT"
+
+    # LLM-driven gap identification for INSUFFICIENT results
+    gaps: list = []
+    if label == "INSUFFICIENT":
+        from pkevolve.verification.subagents import identify_gaps
+        gaps = identify_gaps(
+            llm=llm,
+            claim=state.claim,
+            subclaims=state.subclaims,
+            facts=state.facts,
+        )
+
+    result = SufficiencyResult(label=label, confidence=prob, gaps=gaps)
 
     state.sufficiency_history.append(result)
     state.iteration += 1
 
-    # Print feedback
-    status = (
-        "SUFFICIENT" if result.confidence >= 0.80 and result.label != "INSUFFICIENT"
-        else "INSUFFICIENT"
-    )
+    # Print structured feedback for the agent
     print(f"=== SUFFICIENCY CHECK (iteration {state.iteration}/{MAX_ITERATIONS}) ===")
-    print(f"Label: {result.label}")
-    print(f"Confidence: {result.confidence:.3f}")
-    print(f"Status: {status}")
-    if result.gaps:
-        print(f"\nIdentified gaps ({len(result.gaps)}):")
-        for gap in result.gaps:
-            print(f"  [{gap.priority:.1f}] {gap.gap_type.value}: {gap.description}")
-    else:
-        print("\nNo specific gaps identified.")
+    print(f"Label: {label}")
+    print(f"Confidence: {prob:.6f}")
+    print(f"Threshold: {threshold}")
+    print(f"Decision: {'PASS — evidence is sufficient' if label != 'INSUFFICIENT' else 'FAIL — more evidence needed'}")
+    if gaps:
+        print(f"\nGaps ({len(gaps)}):")
+        for i, gap in enumerate(gaps, 1):
+            print(f"  {i}. [{gap.priority.value}] {gap.gap_type.value}")
+            print(f"     Subclaim: {gap.subclaim}")
+            print(f"     Action: {gap.description}")
 
     return result
 

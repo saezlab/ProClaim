@@ -15,7 +15,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from pkevolve.verification.feature_extractor import PaperFeatureExtractor, compute_entity_overlap
+from scripts.sufficiency_classifier.feature_extractor import PaperFeatureExtractor, compute_entity_overlap
 
 # Well-known PMIDs for testing
 TEST_PMIDS = [

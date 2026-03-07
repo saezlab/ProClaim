@@ -346,7 +346,7 @@ via `mlp_config_path` so any checkpoint can be swapped in.
 
 SBERT (`all-MiniLM-L6-v2`, ~90 MB) + NLI DeBERTa-v3-large (~1.3 GB) on first call.
 
-**Mitigation**: Lazy singleton loading. Pre-warm in `demo_evidence_programming.py`
+**Mitigation**: Lazy singleton loading. Pre-warm in `evidence_programming.py`
 before the REPL loop starts. On GPU nodes the load is ~3s; on CPU ~8s.
 
 ### 7.2 Feature Order Mismatch

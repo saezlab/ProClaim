@@ -6,7 +6,7 @@ citation count, author h-index) by reusing search/paper_utils.py functions
 and querying OpenAlex for author-level metrics.
 
 Usage:
-    from pkevolve.verification.feature_extractor import PaperFeatureExtractor
+    from scripts.sufficiency_classifier.feature_extractor import PaperFeatureExtractor
 
     extractor = PaperFeatureExtractor()
     features = extractor.extract_metadata("36194155")

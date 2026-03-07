@@ -31,6 +31,13 @@ class GapType(str, Enum):
     MISSING_POPULATION = "missing_population"
 
 
+class GapPriority(str, Enum):
+    """Discrete priority levels for evidence gaps."""
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class PaperRecord(BaseModel):
     """A single paper retrieved from PubMed or other sources."""
 
@@ -79,7 +86,7 @@ class Gap(BaseModel):
     subclaim: str
     gap_type: GapType
     description: str
-    priority: float  # 0-1
+    priority: GapPriority
 
 
 class SufficiencyResult(BaseModel):

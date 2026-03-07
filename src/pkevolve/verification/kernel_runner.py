@@ -232,11 +232,12 @@ from pkevolve.verification.subagents import (
     extract_facts,
     synthesize_subclaim,
     detect_conflicts,
+    identify_gaps,
     formulate_gap_queries,
 )
 from pkevolve.verification.evidence_state import EvidenceState
 from pkevolve.verification.data_models import (
-    PaperRecord, Fact, Stance, Conflict, Gap, GapType,
+    PaperRecord, Fact, Stance, Conflict, Gap, GapType, GapPriority,
     SufficiencyResult, VerificationVerdict,
 )
 from pkevolve.verification.renderers import (
@@ -244,7 +245,6 @@ from pkevolve.verification.renderers import (
     render_facts_from_state,
     render_sufficiency_from_state,
 )
-from pkevolve.verification.classifier import SufficiencyClassifier
 from pkevolve.verification.compressor import SufficiencyPreservingCompressor
 
 # Initialize state
@@ -261,21 +261,14 @@ print(f"State initialized: {{state}}")
         if llm_base_url and llm_api_key and llm_model:
             # Build as plain string concatenation to avoid triple-quote
             # nesting issues inside the f-string prelude.
-            #
-            # The llm() callable tries streaming chat completions first,
-            # then falls back to the /v1/completions endpoint for vLLM
-            # builds where the chat reasoning parser is broken (e.g.
-            # Qwen3 thinking models with the gpt-oss parser).
             llm_code = (
                 "\n# Default LLM callable for subagents and extract_and_add_facts\n"
-                "import re as _re, time as _time\n"
+                "import time as _time\n"
                 "from openai import OpenAI as _OpenAI\n"
                 f"_llm_client = _OpenAI(base_url={llm_base_url!r}, api_key={llm_api_key!r})\n"
-                "_THINK_RE = _re.compile(r'<think>.*?</think>\\s*', _re.DOTALL)\n"
                 "def llm(prompt: str, _retries: int = 3) -> str:\n"
                 "    for _attempt in range(_retries):\n"
-                "        # --- Try streaming chat completions ---\n"
-                "        _content, _reasoning = [], []\n"
+                "        _content = []\n"
                 "        try:\n"
                 "            _stream = _llm_client.chat.completions.create(\n"
                 f"                model={llm_model!r},\n"
@@ -289,28 +282,11 @@ print(f"State initialized: {{state}}")
                 "                    _d = _chunk.choices[0].delta\n"
                 "                    if _d.content:\n"
                 "                        _content.append(_d.content)\n"
-                "                    _rc = getattr(_d, 'reasoning_content', None)\n"
-                "                    if _rc:\n"
-                "                        _reasoning.append(_rc)\n"
-                "            _result = ''.join(_reasoning) + ''.join(_content)\n"
-                "            if _result.strip():\n"
-                "                return _THINK_RE.sub('', _result).strip()\n"
+                "            _result = ''.join(_content).strip()\n"
+                "            if _result:\n"
+                "                return _result\n"
                 "        except Exception as _e:\n"
-                "            print(f'llm(): chat completions error on attempt {_attempt+1}/{_retries}: {_e}')\n"
-                "        # --- Fallback: /v1/completions (bypasses reasoning parser) ---\n"
-                "        try:\n"
-                "            _resp = _llm_client.completions.create(\n"
-                f"                model={llm_model!r},\n"
-                "                prompt='<|im_start|>user\\n' + prompt + '<|im_end|>\\n<|im_start|>assistant\\n',\n"
-                "                max_tokens=2000,\n"
-                "                temperature=0.1,\n"
-                "            )\n"
-                "            _text = _resp.choices[0].text if _resp.choices else ''\n"
-                "            _text = _THINK_RE.sub('', _text).strip()\n"
-                "            if _text:\n"
-                "                return _text\n"
-                "        except Exception as _e2:\n"
-                "            print(f'llm(): completions fallback error on attempt {_attempt+1}/{_retries}: {_e2}')\n"
+                "            print(f'llm(): error on attempt {_attempt+1}/{_retries}: {_e}')\n"
                 "        if _attempt < _retries - 1:\n"
                 "            _time.sleep(2 ** _attempt)\n"
                 "    print('llm(): all retries exhausted, returning empty string')\n"

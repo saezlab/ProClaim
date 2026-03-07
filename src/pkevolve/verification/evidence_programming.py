@@ -15,11 +15,11 @@ This is Mode A of the Recursive Language Model (RLM) architecture:
 Connects directly to GLM's native Anthropic-compatible endpoint at api.z.ai.
 
 Usage:
-  uv run python scripts/verification/demo_evidence_programming.py \\
+  uv run python -m pkevolve.verification.evidence_programming \\
       --claim "Does MAPK1 directly activate H3-3A?"
 
   # Standalone REPL mode (Mode B, no Claude SDK)
-  uv run python scripts/verification/demo_evidence_programming.py \\
+  uv run python -m pkevolve.verification.evidence_programming \\
       --claim "Does p53 activate BAX?" --mode repl
 """
 
@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 
 # Path resolution (project convention)
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent.parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -90,23 +90,20 @@ state = EvidenceState.init_new(
 
 # Wire LLM callable for subagent functions
 from openai import OpenAI as _OpenAI
-import re as _re
+import time as _time
 _llm_client = _OpenAI(
     base_url="{llm_base_url}",
     api_key=os.environ.get("GLM_API_KEY", "EMPTY"),
 )
-import time as _time
-_THINK_RE = _re.compile(r'<think>.*?</think>\\s*', _re.DOTALL)
 def llm(prompt: str, _retries: int = 3) -> str:
     for _attempt in range(_retries):
-        # --- Try streaming chat completions ---
-        _content, _reasoning = [], []
+        _content = []
         try:
             _stream = _llm_client.chat.completions.create(
                 model="{subagent_model}",
                 messages=[{{"role": "user", "content": prompt}}],
                 temperature=0.1,
-                max_tokens=2000,
+                max_tokens=5000,
                 stream=True,
             )
             for _chunk in _stream:
@@ -114,28 +111,11 @@ def llm(prompt: str, _retries: int = 3) -> str:
                     _d = _chunk.choices[0].delta
                     if _d.content:
                         _content.append(_d.content)
-                    _rc = getattr(_d, 'reasoning_content', None)
-                    if _rc:
-                        _reasoning.append(_rc)
-            _result = ''.join(_reasoning) + ''.join(_content)
-            if _result.strip():
-                return _THINK_RE.sub('', _result).strip()
+            _result = ''.join(_content).strip()
+            if _result:
+                return _result
         except Exception as _e:
-            print(f'llm(): chat completions error on attempt {{_attempt+1}}/{{_retries}}: {{_e}}')
-        # --- Fallback: /v1/completions (bypasses reasoning parser) ---
-        try:
-            _resp = _llm_client.completions.create(
-                model="{subagent_model}",
-                prompt='<|im_start|>user\\n' + prompt + '<|im_end|>\\n<|im_start|>assistant\\n',
-                max_tokens=2000,
-                temperature=0.1,
-            )
-            _text = _resp.choices[0].text if _resp.choices else ''
-            _text = _THINK_RE.sub('', _text).strip()
-            if _text:
-                return _text
-        except Exception as _e2:
-            print(f'llm(): completions fallback error on attempt {{_attempt+1}}/{{_retries}}: {{_e2}}')
+            print(f'llm(): error on attempt {{_attempt+1}}/{{_retries}}: {{_e}}')
         if _attempt < _retries - 1:
             _time.sleep(2 ** _attempt)
     print('llm(): all retries exhausted, returning empty string')
@@ -143,8 +123,6 @@ def llm(prompt: str, _retries: int = 3) -> str:
 
 print("Setup complete. State initialized. llm() callable ready.")
 ```
-
-## Available functions (after setup)
 
 All functions operate on `state` (a live Python object).
 
@@ -154,21 +132,7 @@ All functions operate on `state` (a live Python object).
 handled automatically.  If you truly need an explicit save (rare), use
 `state.save()` with no arguments — it writes to the workspace directory.
 
-    search_pubmed(query, state, max_results=5) -> list[str]
-    search_pubmed_progressive(claim, state) -> list[str]
-    find_related_articles(pmid, state, max_results=5) -> list[str]
-    get_full_text_article(pmid, state) -> str
-    get_paper_text(pmid, state) -> str
-    extract_and_add_facts(llm, pmid, state) -> int     # PREFERRED for fact extraction
-    add_facts_from_dicts(facts_data, state) -> int
-    update_synthesis(subclaim, text, state)
-    add_conflict(fact_a_id, fact_b_id, description, severity, state) -> str
-    get_evidence_summary(state) -> str
-    check_sufficiency(state) -> SufficiencyResult
-    compress_evidence(state, target_tokens=40000) -> EvidenceState
-    emit_verdict(verdict, confidence, reasoning, key_evidence, gaps_remaining, state, workspace)
-    formulate_pubmed_query(claim) -> str
-    search_for_gap(gap_description, state, max_results=3) -> list[str]
+{function_docs}
 
 {schemas}
 
@@ -181,7 +145,7 @@ handled automatically.  If you truly need an explicit save (rare), use
 5. Extract facts using extract_and_add_facts(llm, pmid, state) for each paper.
    Do NOT write fact dicts manually — use extract_and_add_facts.
 6. After extracting: call nb_render_facts to show the facts table.
-7. Check sufficiency: result = check_sufficiency(state); print(result)
+7. Check sufficiency: result = check_sufficiency(state, llm); print(result)
 8. After checking: call nb_render_sufficiency.
 9. If insufficient: read the gaps and do targeted retrieval.
 10. Use nb_markdown between steps to explain your reasoning.
@@ -263,7 +227,7 @@ async def verify_claim_notebook(
     EvidenceState.init_new(claim=claim, subclaims=[claim], workspace=workspace)
 
     # Build system prompt with auto-generated schema docs
-    from pkevolve.verification.evidence_api import schema_docs
+    from pkevolve.verification.evidence_api import schema_docs, function_docs
     system_prompt = SYSTEM_PROMPT.format(
         project_root=str(PROJECT_ROOT),
         workspace=str(workspace),
@@ -274,6 +238,7 @@ async def verify_claim_notebook(
         subagent_model=cfg.subagent_model,
         llm_base_url=cfg.subagent_base_url,
         schemas=schema_docs(),
+        function_docs=function_docs(),
     )
 
     def _on_stderr(line: str) -> None:

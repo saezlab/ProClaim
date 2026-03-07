@@ -67,8 +67,8 @@ from pkevolve.verification.mcp_tools import (  # noqa: E402
     # We replace the search/get_text tools with our own MCP client calls
     # but still use some logic from there if needed, or reimplement.
 )
-from pkevolve.verification.feature_extractor import PaperFeatureExtractor  # noqa: E402
-from pkevolve.verification.nlp_tools import (  # noqa: E402
+from scripts.sufficiency_classifier.feature_extractor import PaperFeatureExtractor  # noqa: E402
+from scripts.sufficiency_classifier.nlp_tools import (  # noqa: E402
     BiomedicalEntityExtractor,
     SemanticSimilarityComputer,
     compute_recall_from_entities,

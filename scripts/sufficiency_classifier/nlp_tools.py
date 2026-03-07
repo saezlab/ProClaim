@@ -17,9 +17,9 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.session import ClientSession
 
 # Locate project root to find server script
-# Assuming this file is in src/pkevolve/verification/nlp_tools.py
-# Root is ../../../
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+# This file is in scripts/sufficiency_classifier/nlp_tools.py
+# Root is ../../
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 logger = logging.getLogger(__name__)
 
