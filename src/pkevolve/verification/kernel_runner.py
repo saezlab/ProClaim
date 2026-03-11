@@ -259,41 +259,18 @@ print(f"State initialized: {{state}}")
 """
         # Wire up the default llm callable if endpoint info is provided
         if llm_base_url and llm_api_key and llm_model:
-            # Build as plain string concatenation to avoid triple-quote
-            # nesting issues inside the f-string prelude.
             llm_code = (
-                "\n# Default LLM callable for subagents and extract_and_add_facts\n"
-                "import time as _time\n"
-                "from openai import OpenAI as _OpenAI\n"
-                f"_llm_client = _OpenAI(base_url={llm_base_url!r}, api_key={llm_api_key!r})\n"
-                "def llm(prompt: str, _retries: int = 3) -> str:\n"
-                "    for _attempt in range(_retries):\n"
-                "        _content = []\n"
-                "        try:\n"
-                "            _stream = _llm_client.chat.completions.create(\n"
-                f"                model={llm_model!r},\n"
-                '                messages=[{"role": "user", "content": prompt}],\n'
-                "                temperature=0.1,\n"
-                "                max_tokens=2000,\n"
-                "                stream=True,\n"
-                "            )\n"
-                "            for _chunk in _stream:\n"
-                "                if _chunk.choices:\n"
-                "                    _d = _chunk.choices[0].delta\n"
-                "                    if _d.content:\n"
-                "                        _content.append(_d.content)\n"
-                "            _result = ''.join(_content).strip()\n"
-                "            if _result:\n"
-                "                return _result\n"
-                "        except Exception as _e:\n"
-                "            print(f'llm(): error on attempt {_attempt+1}/{_retries}: {_e}')\n"
-                "        if _attempt < _retries - 1:\n"
-                "            _time.sleep(2 ** _attempt)\n"
-                "    print('llm(): all retries exhausted, returning empty string')\n"
-                "    return ''\n"
-                f'print("llm() callable wired to {llm_model} at {llm_base_url}")\n'
+                "\n# LLM callable for subagents and extract_and_add_facts\n"
+                "from pkevolve.verification.llm_factory import make_llm\n"
+                f"llm = make_llm(\n"
+                f"    base_url={llm_base_url!r},\n"
+                f"    api_key={llm_api_key!r},\n"
+                f"    model={llm_model!r},\n"
+                ")\n"
+                f'print("llm() wired to {llm_model} at {llm_base_url}")\n'
             )
             prelude += llm_code
+
 
         if extra_code:
             prelude += "\n" + extra_code + "\n"

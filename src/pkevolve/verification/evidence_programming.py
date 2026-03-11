@@ -73,12 +73,14 @@ from pkevolve.verification.evidence_api import (
     update_synthesis, add_conflict, get_evidence_summary,
     check_sufficiency, compress_evidence, emit_verdict,
     formulate_pubmed_query, search_for_gap, extract_and_add_facts,
+    populate_paper_features,
 )
 from pkevolve.verification.subagents import (
     extract_facts, synthesize_subclaim, detect_conflicts, formulate_gap_queries,
 )
 from pkevolve.verification.evidence_state import EvidenceState
 from pkevolve.verification.data_models import Fact, Stance, SufficiencyResult
+from pkevolve.verification.llm_factory import make_llm
 
 workspace = Path("{workspace}")
 workspace.mkdir(parents=True, exist_ok=True)
@@ -88,39 +90,11 @@ state = EvidenceState.init_new(
     workspace=workspace,
 )
 
-# Wire LLM callable for subagent functions
-from openai import OpenAI as _OpenAI
-import time as _time
-_llm_client = _OpenAI(
+llm = make_llm(
     base_url="{llm_base_url}",
     api_key=os.environ.get("GLM_API_KEY", "EMPTY"),
+    model="{subagent_model}",
 )
-def llm(prompt: str, _retries: int = 3) -> str:
-    for _attempt in range(_retries):
-        _content = []
-        try:
-            _stream = _llm_client.chat.completions.create(
-                model="{subagent_model}",
-                messages=[{{"role": "user", "content": prompt}}],
-                temperature=0.1,
-                max_tokens=5000,
-                stream=True,
-            )
-            for _chunk in _stream:
-                if _chunk.choices:
-                    _d = _chunk.choices[0].delta
-                    if _d.content:
-                        _content.append(_d.content)
-            _result = ''.join(_content).strip()
-            if _result:
-                return _result
-        except Exception as _e:
-            print(f'llm(): error on attempt {{_attempt+1}}/{{_retries}}: {{_e}}')
-        if _attempt < _retries - 1:
-            _time.sleep(2 ** _attempt)
-    print('llm(): all retries exhausted, returning empty string')
-    return ''
-
 print("Setup complete. State initialized. llm() callable ready.")
 ```
 
@@ -144,14 +118,16 @@ handled automatically.  If you truly need an explicit save (rare), use
 4. After searching: call nb_render_papers to show the papers table.
 5. Extract facts using extract_and_add_facts(llm, pmid, state) for each paper.
    Do NOT write fact dicts manually — use extract_and_add_facts.
-6. After extracting: call nb_render_facts to show the facts table.
-7. Check sufficiency: result = check_sufficiency(state, llm); print(result)
-8. After checking: call nb_render_sufficiency.
-9. If insufficient: read the gaps and do targeted retrieval.
-10. Use nb_markdown between steps to explain your reasoning.
-11. Repeat until sufficient or {max_iterations} iterations.
-12. Call emit_verdict via nb_execute.
-13. Call nb_render_verdict.
+6. Call populate_paper_features(state) after extracting facts.
+   This MUST be done before check_sufficiency() to compute NLP and metadata features.
+7. After extracting: call nb_render_facts to show the facts table.
+8. Check sufficiency: result = check_sufficiency(state, llm); print(result)
+9. After checking: call nb_render_sufficiency.
+10. If insufficient: read the gaps and do targeted retrieval.
+11. Use nb_markdown between steps to explain your reasoning.
+12. Repeat until sufficient or {max_iterations} iterations.
+13. Call emit_verdict via nb_execute.
+14. Call nb_render_verdict.
 
 ## Rules
 
@@ -180,6 +156,26 @@ handled automatically.  If you truly need an explicit save (rare), use
 - source_pmid must always be a PMID already present in state.papers.
 - If no papers contain relevant evidence, say so in the verdict — do NOT
   invent supporting or refuting statements.
+
+## Feature Computation for MLP Classifier
+
+The check_sufficiency() function uses an MLP classifier that requires NLP and
+metadata features to be populated for each paper. You MUST call
+populate_paper_features(state) after extracting facts and before calling
+check_sufficiency().
+
+Required sequence in EVERY iteration:
+1. search_pubmed_progressive(...)        ← retrieve papers
+2. extract_and_add_facts(llm, pmid, state) for each paper  ← extract facts
+3. populate_paper_features(state)        ← MUST CALL (computes features)
+4. check_sufficiency(state, llm)         ← classifier needs features
+
+If you skip populate_paper_features(), the MLP classifier will receive all-zero
+NLP features (semantic similarity, entity coverage, NLI scores) and the
+sufficiency prediction will be inaccurate.
+
+The function is idempotent — it automatically skips papers that already have
+features populated, so you can safely call it multiple times.
 
 ## Important
 

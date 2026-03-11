@@ -130,7 +130,6 @@ class NLPFeatureVector(BaseModel):
     Entity Overlap Ratio: Jaccard similarity of named entities
     detected in the claim and evidence texts.
     """
-    entity_overlap_ratio: Optional[float] = None  # Jaccard similarity (0.0 - 1.0)
     claim_entity_coverage: Optional[float] = None  # Recall: |Claim & Evidence| / |Claim|
     semantic_similarity: Optional[float] = None    # SBERT cosine similarity (0.0 - 1.0)
     claim_entities: list[str] = Field(default_factory=list)

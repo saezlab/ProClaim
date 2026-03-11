@@ -821,6 +821,149 @@ def extract_and_add_facts(
 
 
 # ---------------------------------------------------------------------------
+# Feature Population (for MLP Classifier)
+# ---------------------------------------------------------------------------
+
+
+def populate_paper_features(
+    state: EvidenceState,
+    compute_nli: bool = True,
+    max_text_length: int = 10000,
+    force_recompute: bool = False,
+) -> str:
+    """Populate NLP and metadata features for papers.
+
+    MUST be called after extract_and_add_facts() and before check_sufficiency()
+    to ensure the MLP classifier has access to all required features.
+
+    This function extracts:
+    - NLP features: entity coverage, semantic similarity, NLI entailment
+    - Metadata features: publication year, impact factor, citations, h-index
+
+    By default, skips papers that already have both nlp and metadata features
+    populated (efficient for incremental processing). Use force_recompute=True
+    to recompute all features.
+
+    Args:
+        state: The evidence state containing papers to process.
+        compute_nli: Whether to compute NLI features (requires GPU for best performance).
+        max_text_length: Maximum characters to use from each paper's full text.
+        force_recompute: If True, recompute features even if already present.
+
+    Returns:
+        Status message indicating how many papers were processed.
+    """
+    from pkevolve.verification.feature_tools import (
+        compute_entity_coverage,
+        SemanticSimilarityComputer,
+        NLIEntailmentComputer,
+        PaperFeatureExtractor,
+    )
+
+    logger.info("Populating paper features for %d papers", len(state.papers))
+
+    # Initialize extractors (lazy loading of models)
+    sim_computer = None
+    nli_computer = None
+    meta_extractor = None
+
+    # Process each paper
+    processed_count = 0
+    skipped_count = 0
+
+    for paper in state.papers.values():
+        # Check if features already exist (skip if both nlp and metadata are present)
+        if not force_recompute and paper.nlp is not None and paper.metadata is not None:
+            logger.debug("Skipping PMID %s: features already populated", paper.pmid)
+            skipped_count += 1
+            continue
+
+        # Use full text if available, fall back to abstract for NLP features
+        text = paper.full_text or paper.abstract
+        if not text:
+            logger.warning("Skipping PMID %s: no full text or abstract available", paper.pmid)
+            # Still attempt metadata extraction even without text
+            if force_recompute or paper.metadata is None:
+                if meta_extractor is None:
+                    meta_extractor = PaperFeatureExtractor()
+                try:
+                    paper.metadata = meta_extractor.extract_metadata(paper.pmid)
+                except Exception as exc:
+                    logger.error("Failed to extract metadata for PMID %s: %s", paper.pmid, exc)
+            processed_count += 1
+            continue
+
+        text_source = "full_text" if paper.full_text else "abstract"
+        if not paper.full_text:
+            logger.info(
+                "PMID %s: no full text, using abstract (%d chars) for NLP features",
+                paper.pmid, len(text),
+            )
+
+        # Truncate text if needed
+        text = text[:max_text_length]
+
+        # Lazy-initialize NLP computers only when needed
+        if sim_computer is None:
+            sim_computer = SemanticSimilarityComputer()
+        if compute_nli and nli_computer is None:
+            nli_computer = NLIEntailmentComputer()
+
+        # --- NLP features ---
+        if force_recompute or paper.nlp is None:
+            try:
+                # Entity coverage
+                nlp = compute_entity_coverage(state.claim, text)
+
+                # Semantic similarity
+                nlp.semantic_similarity = sim_computer.compute(state.claim, text)
+
+                # NLI entailment (optional, GPU-intensive)
+                if nli_computer:
+                    nli_result = nli_computer.compute(state.claim, text)
+                    nlp.nli_entailment = nli_result["nli_entailment"]
+                    nlp.nli_contradiction = nli_result["nli_contradiction"]
+                    nlp.nli_neutral = nli_result["nli_neutral"]
+                    nlp.nli_best_chunk_text = nli_result["nli_best_chunk_text"]
+
+                paper.nlp = nlp
+                logger.debug(
+                    "PMID %s: coverage=%.3f, similarity=%.3f",
+                    paper.pmid,
+                    nlp.claim_entity_coverage or 0.0,
+                    nlp.semantic_similarity or 0.0,
+                )
+            except Exception as exc:
+                logger.error("Failed to compute NLP features for PMID %s: %s", paper.pmid, exc)
+
+        # --- Metadata features ---
+        if force_recompute or paper.metadata is None:
+            # Lazy-initialize metadata extractor only when needed
+            if meta_extractor is None:
+                meta_extractor = PaperFeatureExtractor()
+
+            try:
+                paper.metadata = meta_extractor.extract_metadata(paper.pmid)
+                logger.debug(
+                    "PMID %s: year=%s, log_IF=%.3f",
+                    paper.pmid,
+                    paper.metadata.publication_year,
+                    paper.metadata.log_impact_factor or 0.0,
+                )
+            except Exception as exc:
+                logger.error("Failed to extract metadata for PMID %s: %s", paper.pmid, exc)
+
+        processed_count += 1
+
+    # Save state
+    state.save()
+
+    msg = f"Populated features for {processed_count} papers, skipped {skipped_count} (already processed)"
+    logger.info(msg)
+    return msg
+
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

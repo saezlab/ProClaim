@@ -1,16 +1,31 @@
 """
-Paper Feature Extractor — metadata feature extraction for the classifier.
+Feature extraction tools for sufficiency classifier.
 
-Extracts per-paper metadata features (publication year, impact factor,
-citation count, author h-index) by reusing search/paper_utils.py functions
-and querying OpenAlex for author-level metrics.
+Extracts NLP and metadata features for papers to support the MLP sufficiency classifier.
+Integrates entity coverage, semantic similarity, NLI entailment, and metadata extraction.
 
 Usage:
-    from scripts.sufficiency_classifier.feature_extractor import PaperFeatureExtractor
+    from pkevolve.verification.feature_tools import (
+        compute_entity_coverage,
+        SemanticSimilarityComputer,
+        NLIEntailmentComputer,
+        PaperFeatureExtractor,
+    )
 
-    extractor = PaperFeatureExtractor()
-    features = extractor.extract_metadata("36194155")
-    print(features.model_dump_json(indent=2))
+    # Entity coverage
+    nlp_features = compute_entity_coverage("MAPK1 activates H3-3A", evidence_text)
+
+    # Semantic similarity
+    sim_computer = SemanticSimilarityComputer()
+    similarity = sim_computer.compute(claim, evidence_text)
+
+    # NLI entailment
+    nli_computer = NLIEntailmentComputer()
+    nli_scores = nli_computer.compute(claim, evidence_text)
+
+    # Metadata features
+    meta_extractor = PaperFeatureExtractor()
+    metadata = meta_extractor.extract_metadata("36194155")
 """
 
 import logging
@@ -33,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# General NER — Entity Overlap Ratio
+# Entity Coverage — spaCy-based NER
 # ---------------------------------------------------------------------------
 
 _spacy_nlp = None
@@ -53,7 +68,7 @@ def _get_spacy_nlp():
                 import en_core_sci_sm
                 _spacy_nlp = en_core_sci_sm.load()
             except ImportError:
-                print("Warning: en_core_sci_sm not found. Falling back to en_core_web_sm.")
+                logger.warning("en_core_sci_sm not found. Falling back to en_core_web_sm.")
                 _spacy_nlp = spacy.load("en_core_web_sm")
     return _spacy_nlp
 
@@ -71,7 +86,7 @@ def extract_entities(text: str) -> set[str]:
         return set()
     nlp = _get_spacy_nlp()
     doc = nlp(text)
-    
+
     # scispaCy is trained to detect biomedical entities directly in doc.ents
     return {ent.text.lower() for ent in doc.ents}
 
@@ -97,7 +112,7 @@ def compute_entity_coverage(claim: str, evidence_text: str) -> NLPFeatureVector:
     coverage = None
     if claim_ents:
         coverage = len(claim_ents & evidence_ents) / len(claim_ents)
-    elif not claim_ents: 
+    elif not claim_ents:
         # If claim has no entities, coverage is arguably 1.0 (trivial) or None.
         # Let's say None or 0.0? Usually None if not applicable.
         pass
@@ -107,6 +122,158 @@ def compute_entity_coverage(claim: str, evidence_text: str) -> NLPFeatureVector:
         claim_entities=sorted(claim_ents),
         evidence_entities=sorted(evidence_ents),
     )
+
+
+# ---------------------------------------------------------------------------
+# Semantic Similarity — SBERT
+# ---------------------------------------------------------------------------
+
+class SemanticSimilarityComputer:
+    """Compute SBERT cosine similarity between claim and evidence.
+
+    For long evidence texts that exceed the model's token limit (~512 tokens),
+    the evidence is split into overlapping chunks. Each chunk is compared
+    against the claim and the maximum similarity is returned (max-pooling).
+    """
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2", chunk_size: int = 256, chunk_overlap: int = 64):
+        from sentence_transformers import SentenceTransformer
+        logger.info(f"Loading SBERT model: {model_name}...")
+        self.model = SentenceTransformer(model_name)
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+
+    def _chunk_text(self, text: str) -> list[str]:
+        """Split text into overlapping word-level chunks."""
+        words = text.split()
+        if len(words) <= self.chunk_size:
+            return [text]
+        chunks = []
+        step = self.chunk_size - self.chunk_overlap
+        for i in range(0, len(words), step):
+            chunk = " ".join(words[i:i + self.chunk_size])
+            chunks.append(chunk)
+            if i + self.chunk_size >= len(words):
+                break
+        return chunks
+
+    def compute(self, claim: str, evidence: str) -> float:
+        """Compute cosine similarity. Returns max similarity over evidence chunks."""
+        from sentence_transformers.util import cos_sim
+
+        if not claim or not evidence:
+            return 0.0
+
+        chunks = self._chunk_text(evidence)
+        claim_emb = self.model.encode(claim, convert_to_tensor=True)
+        chunk_embs = self.model.encode(chunks, convert_to_tensor=True, batch_size=32)
+
+        # cos_sim returns a (1, N) tensor
+        similarities = cos_sim(claim_emb, chunk_embs)
+        return float(similarities.max().item())
+
+
+# ---------------------------------------------------------------------------
+# NLI Entailment — CrossEncoder
+# ---------------------------------------------------------------------------
+
+class NLIEntailmentComputer:
+    """Compute NLI probabilities using a cross-encoder model.
+
+    For long evidence texts that exceed the model's token limit,
+    the evidence is split into overlapping chunks and the chunk with
+    the highest opinionated score (entailment or contradiction) is selected.
+    Returns the NLI probabilities for that best chunk.
+    """
+
+    def __init__(self, model_name: str = "cross-encoder/nli-deberta-v3-large", chunk_size: int = 256, chunk_overlap: int = 64):
+        from sentence_transformers import CrossEncoder
+        import torch
+        logger.info(f"Loading NLI model: {model_name}...")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = CrossEncoder(model_name, device=device)
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+
+    def _chunk_text(self, text: str) -> list[str]:
+        """Split text into overlapping word-level chunks."""
+        words = text.split()
+        if len(words) <= self.chunk_size:
+            return [text]
+        chunks = []
+        step = self.chunk_size - self.chunk_overlap
+        for i in range(0, len(words), step):
+            chunk = " ".join(words[i:i + self.chunk_size])
+            chunks.append(chunk)
+            if i + self.chunk_size >= len(words):
+                break
+        return chunks
+
+    def compute(self, claim: str, evidence: str) -> dict[str, float | str | None]:
+        """Compute NLI scores. Returns probabilities for the best chunk.
+
+        Returns:
+            Dictionary with keys:
+            - nli_entailment: float
+            - nli_contradiction: float
+            - nli_neutral: float
+            - nli_best_chunk_text: str (the chunk with highest opinionated score)
+        """
+        import torch
+        import numpy as np
+
+        if not claim or not evidence:
+            return {
+                "nli_entailment": 0.0,
+                "nli_contradiction": 0.0,
+                "nli_neutral": 1.0,
+                "nli_best_chunk_text": None,
+            }
+
+        chunks = self._chunk_text(evidence)
+        pairs = [[claim, chunk] for chunk in chunks]
+
+        logits = self.model.predict(pairs)
+
+        if isinstance(logits, list):
+            logits = np.array(logits)
+
+        scores_tensor = torch.tensor(logits)
+        if len(scores_tensor.shape) == 1:
+            scores_tensor = scores_tensor.unsqueeze(0)
+
+        probs = torch.nn.functional.softmax(scores_tensor, dim=-1)  # shape (num_chunks, 3)
+
+        # Map label indices
+        id2label = getattr(self.model.config, 'id2label', {})
+
+        # Default mapping for cross-encoder/nli-deberta-v3-*
+        ent_idx, con_idx, neu_idx = 1, 0, 2
+        for idx, label in id2label.items():
+            if not isinstance(label, str):
+                continue
+            label = label.lower()
+            if "entail" in label:
+                ent_idx = int(idx)
+            elif "contradict" in label:
+                con_idx = int(idx)
+            elif "neutral" in label:
+                neu_idx = int(idx)
+
+        # Find best chunk: highest opinionated score (entailment or contradiction)
+        opinion_scores = torch.max(probs[:, ent_idx], probs[:, con_idx])
+        best_chunk_idx = torch.argmax(opinion_scores).item()
+
+        # Extract probabilities for the best chunk
+        best_probs = probs[best_chunk_idx].tolist()
+        best_chunk_text = chunks[best_chunk_idx] if best_chunk_idx < len(chunks) else None
+
+        return {
+            "nli_entailment": float(best_probs[ent_idx]),
+            "nli_contradiction": float(best_probs[con_idx]),
+            "nli_neutral": float(best_probs[neu_idx]),
+            "nli_best_chunk_text": best_chunk_text,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +346,7 @@ def get_max_author_h_index(pmid: str, delay: float = 0.15) -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# Feature Extractor
+# Metadata Feature Extractor
 # ---------------------------------------------------------------------------
 
 class PaperFeatureExtractor:
@@ -205,9 +372,9 @@ class PaperFeatureExtractor:
             cache_path: Path to the JSON cache file to store extracted metadata.
         """
         self._delay = rate_limit_delay
-        
+
         # Setup Cache
-        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        project_root = Path(__file__).resolve().parent.parent.parent
         self._cache_file = project_root / cache_path
         self._cache = self._load_cache()
 
