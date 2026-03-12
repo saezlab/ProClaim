@@ -90,6 +90,8 @@ state = EvidenceState.init_new(
     workspace=workspace,
 )
 
+os.environ["MLP_MODEL_DIR"] = "{mlp_model_dir}"
+
 llm = make_llm(
     base_url="{llm_base_url}",
     api_key=os.environ.get("GLM_API_KEY", "EMPTY"),
@@ -233,6 +235,7 @@ async def verify_claim_notebook(
         model=cfg.model,
         subagent_model=cfg.subagent_model,
         llm_base_url=cfg.subagent_base_url,
+        mlp_model_dir=cfg.mlp_model_dir or "results/models/classifier_best",
         schemas=schema_docs(),
         function_docs=function_docs(),
     )
@@ -330,6 +333,9 @@ async def verify_claim_notebook(
 def verify_claim_repl_mode(cfg: VerificationSettings) -> Path:
     """Run evidence programming via standalone REPL orchestrator (Mode B)."""
     from pkevolve.verification.repl_orchestrator import verify_claim_repl
+    import os
+    
+    os.environ["MLP_MODEL_DIR"] = cfg.mlp_model_dir or "results/models/classifier_best"
 
     verdict = verify_claim_repl(
         claim=cfg.claim,

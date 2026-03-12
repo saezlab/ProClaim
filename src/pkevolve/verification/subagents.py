@@ -59,36 +59,50 @@ def _extract_json_array(text: str) -> list | None:
     """Try to extract a JSON array from *text*.
 
     Applies ``_clean_llm_json`` first, then attempts direct parse and
-    bracket-based extraction as a fallback.  The fallback searches from the
-    rightmost ``[`` backwards so that stray brackets in reasoning text
-    (e.g. ``[the evidence]``) are skipped.
-
+    bracket-based extraction as a fallback. The fallback searches from the
+    first ``[`` to the last ``]``.
+    
     Returns the parsed list or ``None`` if no valid JSON array could be found.
     """
     text = _clean_llm_json(text)
-    # Direct parse
+    
+    # 1. Direct parse
     try:
         data = json.loads(text)
         if isinstance(data, list):
             return data
-    except json.JSONDecodeError:
+    except Exception:
         pass
-    # Bracket extraction: try [ positions from right to left
+        
+    # 2. Heuristic extraction: find first [ and last ]
+    start = text.find("[")
     end = text.rfind("]")
-    if end == -1:
-        return None
-    search_bound = end
-    while True:
-        start = text.rfind("[", 0, search_bound)
-        if start == -1:
-            break
+    
+    if start != -1 and end != -1 and start < end:
+        array_text = text[start:end+1]
         try:
-            data = json.loads(text[start : end + 1])
+            data = json.loads(array_text)
             if isinstance(data, list):
                 return data
-        except json.JSONDecodeError:
-            search_bound = start  # try further left
-            continue
+        except Exception:
+            pass
+            
+    # 3. Fallback to bracket pair matching across the string
+    # Try multiple sub-strings if there are multiple arrays (rare, but possible)
+    current_start = text.find("[")
+    while current_start != -1:
+        # Find closing bracket from end to avoid nested brackets issues
+        current_end = text.rfind("]")
+        while current_end > current_start:
+            try:
+                candidate = text[current_start:current_end+1]
+                data = json.loads(candidate)
+                if isinstance(data, list):
+                    return data
+            except Exception:
+                current_end = text.rfind("]", current_start, current_end)
+        current_start = text.find("[", current_start + 1)
+        
     return None
 
 

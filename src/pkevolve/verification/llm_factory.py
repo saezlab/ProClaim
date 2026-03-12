@@ -92,6 +92,9 @@ def make_llm(
 
     def _call_streaming(prompt: str) -> str:
         """Single streaming attempt; returns text or raises."""
+        import sys
+        import re
+
         content: list[str] = []
         response = client.chat.completions.create(
             model=model,
@@ -101,6 +104,7 @@ def make_llm(
             stream=True,
             extra_body=extra_body,
         )
+
         for chunk in response:
             if chunk.choices:
                 delta = chunk.choices[0].delta
@@ -108,7 +112,24 @@ def make_llm(
                 # reasoning tokens appear in delta.reasoning_content (ignored here).
                 if delta.content:
                     content.append(delta.content)
-        return "".join(content).strip()
+
+        full_text = "".join(content).strip()
+
+        # Filter out <think>...</think> tags for stdout display
+        # but keep them in the returned text
+        display_text = re.sub(r'<think>.*?</think>', '', full_text, flags=re.DOTALL)
+
+        # Print a summary to stdout (so Agent sees activity)
+        if display_text:
+            # Show first 200 chars as a preview
+            preview = display_text[:200].replace('\n', ' ')
+            if len(display_text) > 200:
+                preview += "..."
+            print(f"[LLM response: {len(display_text)} chars] {preview}")
+        else:
+            print("[LLM response received]")
+
+        return full_text
 
     def _call_blocking(prompt: str) -> str:
         """Single non-streaming attempt; returns text or raises."""

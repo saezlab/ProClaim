@@ -1033,7 +1033,9 @@ def _get_mlp_state():
     from sufficiency_classifier.feature_aggregation import FeatureAggregator
 
     # Load config
-    model_dir = project_root / "results" / "models" / "classifier_best"
+    import os
+    model_dir_rel = os.environ.get("MLP_MODEL_DIR", "results/models/classifier_best")
+    model_dir = project_root / model_dir_rel
     with open(model_dir / "mlp_config.json") as f:
         config = json.load(f)
 

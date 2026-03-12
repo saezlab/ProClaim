@@ -216,10 +216,12 @@ def render_sufficiency(workspace: str) -> None:
                 gt = gt.get("value", str(gt))
             desc = g.get("description", "")
             pri = g.get("priority", 0)
+            # Handle priority as either string or number
+            pri_str = f"{pri:.1f}" if isinstance(pri, (int, float)) else str(pri)
             gap_items += (
                 f"<li><span style='color:#f59e0b'>&#9888;</span> "
                 f"<strong>{gt}</strong>: {desc} "
-                f"<em>(priority: {pri:.1f})</em></li>"
+                f"<em>(priority: {pri_str})</em></li>"
             )
         gap_html = (
             f"<h4>Gaps Identified ({len(gaps)})</h4><ul>{gap_items}</ul>"
@@ -382,10 +384,12 @@ def render_sufficiency_from_state(state) -> None:
                 gt = gt.get("value", str(gt))
             desc = g.get("description", "")
             pri = g.get("priority", 0)
+            # Handle priority as either string or number
+            pri_str = f"{pri:.1f}" if isinstance(pri, (int, float)) else str(pri)
             gap_items += (
                 f"<li><span style='color:#f59e0b'>&#9888;</span> "
                 f"<strong>{gt}</strong>: {desc} "
-                f"<em>(priority: {pri:.1f})</em></li>"
+                f"<em>(priority: {pri_str})</em></li>"
             )
         gap_html = (
             f"<h4>Gaps Identified ({len(gaps)})</h4><ul>{gap_items}</ul>"

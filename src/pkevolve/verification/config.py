@@ -203,6 +203,11 @@ class VerificationSettings(BaseSettings):
         le=1.0,
         description="Confidence threshold for early stopping.",
     )
+    mlp_model_dir: Optional[str] = Field(
+        default=None,
+        description="Path to the MLP model directory (relative to project root). "
+                    "Defaults to 'results/models/classifier_best'.",
+    )
     max_turns: int = Field(
         default=30,
         ge=1,
@@ -303,6 +308,7 @@ class VerificationSettings(BaseSettings):
             "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": "300000",
         }
         env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("CLAUDE_API_KEY", None)
         return env
 
     # ── Factory: from YAML file ───────────────────────────────────────
