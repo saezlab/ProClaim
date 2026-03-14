@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Notebook-enabled Evidence Verification — RLM Mode A.
+Notebook-enabled Evidence Verification.
 
 Runs the Claude Agent SDK orchestrator with ONE MCP server (notebook-tools).
 The agent uses nb_execute to run Python code that calls evidence_api functions
 directly in a persistent Jupyter kernel.  No evidence-tools MCP server needed.
 
-This is Mode A of the Recursive Language Model (RLM) architecture:
+The Recursive Language Model (RLM) architecture:
   - Claude Agent SDK provides the outer agent loop
   - nb_execute is the primary tool (REPL gateway)
   - Evidence state lives as a Python variable in the kernel
@@ -17,10 +17,6 @@ Connects directly to GLM's native Anthropic-compatible endpoint at api.z.ai.
 Usage:
   uv run python -m pkevolve.verification.evidence_programming \\
       --claim "Does MAPK1 directly activate H3-3A?"
-
-  # Standalone REPL mode (Mode B, no Claude SDK)
-  uv run python -m pkevolve.verification.evidence_programming \\
-      --claim "Does p53 activate BAX?" --mode repl
 """
 
 import sys
@@ -56,57 +52,26 @@ in a persistent kernel.  The notebook is your audit trail.
 
 ## First step — set up the kernel
 
-Call nb_init to create the notebook.  Then call nb_execute with the
-following setup code:
+Call nb_init to create the notebook.  Then call nb_execute with this
+one-liner to bootstrap the kernel:
 
 ```python
-import sys, os
-from pathlib import Path
-
-_src = str(Path("{project_root}") / "src")
-if _src not in sys.path:
-    sys.path.insert(0, _src)
-
-from pkevolve.verification.evidence_api import (
-    search_pubmed, search_pubmed_progressive, find_related_articles,
-    get_full_text_article, get_paper_text, add_facts_from_dicts,
-    update_synthesis, add_conflict, get_evidence_summary,
-    check_sufficiency, compress_evidence, emit_verdict,
-    formulate_pubmed_query, search_for_gap, extract_and_add_facts,
-    populate_paper_features,
-)
-from pkevolve.verification.subagents import (
-    extract_facts, synthesize_subclaim, detect_conflicts, formulate_gap_queries,
-)
-from pkevolve.verification.evidence_state import EvidenceState
-from pkevolve.verification.data_models import Fact, Stance, SufficiencyResult
-from pkevolve.verification.llm_factory import make_llm
-
-workspace = Path("{workspace}")
-workspace.mkdir(parents=True, exist_ok=True)
-state = EvidenceState.init_new(
+from pkevolve.verification.evidence_api import setup_kernel
+state, llm, workspace = setup_kernel(
     claim="{claim}",
-    subclaims=["{claim}"],
-    workspace=workspace,
+    workspace_path="{workspace}",
 )
-
-os.environ["MLP_MODEL_DIR"] = "{mlp_model_dir}"
-
-llm = make_llm(
-    base_url="{llm_base_url}",
-    api_key=os.environ.get("GLM_API_KEY", "EMPTY"),
-    model="{subagent_model}",
-)
-print("Setup complete. State initialized. llm() callable ready.")
 ```
 
-All functions operate on `state` (a live Python object).
+After this cell, the kernel has three ready-to-use variables:
 
-**IMPORTANT — auto-save**: `state` auto-saves to disk after every mutation
-(add_paper, add_fact, add_conflict, etc.).  You do NOT need to call
-`state.save()` or `state.checkpoint_save()` manually — persistence is
-handled automatically.  If you truly need an explicit save (rare), use
-`state.save()` with no arguments — it writes to the workspace directory.
+    state     – EvidenceState (mutable; auto-saves after every mutation)
+    llm       – Callable[[str], str]  (pre-configured LLM endpoint)
+    workspace – Path to the output directory
+
+All evidence API functions are importable from
+``pkevolve.verification.evidence_api``.  Import what you need and call
+them directly via nb_execute.
 
 {function_docs}
 
@@ -227,15 +192,11 @@ async def verify_claim_notebook(
     # Build system prompt with auto-generated schema docs
     from pkevolve.verification.evidence_api import schema_docs, function_docs
     system_prompt = SYSTEM_PROMPT.format(
-        project_root=str(PROJECT_ROOT),
         workspace=str(workspace),
         notebook_path=str(notebook_path),
         claim=claim,
         max_iterations=cfg.max_iterations,
         model=cfg.model,
-        subagent_model=cfg.subagent_model,
-        llm_base_url=cfg.subagent_base_url,
-        mlp_model_dir=cfg.mlp_model_dir or "results/models/classifier_best",
         schemas=schema_docs(),
         function_docs=function_docs(),
     )
@@ -327,34 +288,6 @@ async def verify_claim_notebook(
 
 
 # ---------------------------------------------------------------------------
-# Mode B: Standalone REPL (no Claude SDK)
-# ---------------------------------------------------------------------------
-
-def verify_claim_repl_mode(cfg: VerificationSettings) -> Path:
-    """Run evidence programming via standalone REPL orchestrator (Mode B)."""
-    from pkevolve.verification.repl_orchestrator import verify_claim_repl
-    import os
-    
-    os.environ["MLP_MODEL_DIR"] = cfg.mlp_model_dir or "results/models/classifier_best"
-
-    verdict = verify_claim_repl(
-        claim=cfg.claim,
-        workspace=cfg.resolved_workspace,
-        model=cfg.model,
-        subagent_model=cfg.subagent_model,
-        base_url=cfg.subagent_base_url,
-        api_key=cfg.api_key,
-        max_iterations=cfg.max_iterations,
-        sufficiency_threshold=cfg.sufficiency_threshold,
-    )
-
-    print(f"\nVerdict: {verdict.verdict} (confidence: {verdict.confidence:.2f})")
-    print(f"Reasoning: {verdict.reasoning}")
-
-    return cfg.resolved_workspace / "verdict.json"
-
-
-# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -382,26 +315,16 @@ def main():
     )
     logger.info("Log file: %s", log_file)
 
-    mode_label = (
-        "Claude Agent SDK + nb_execute" if cfg.mode == "sdk" else "Standalone REPL"
-    )
     print(f"Claim: {cfg.claim}")
-    print(f"Mode: {cfg.mode} ({mode_label})")
     print(f"Model: {cfg.model}")
     if cfg.llm.subagent_model:
         print(f"Subagent model: {cfg.subagent_model}")
     print(f"Workspace: {workspace}")
-    if cfg.mode == "sdk":
-        print(f"Notebook: {notebook_path}")
+    print(f"Notebook: {notebook_path}")
     print()
 
-    if cfg.mode == "sdk":
-        result = asyncio.run(verify_claim_notebook(cfg))
-        print(f"\nNotebook saved: {result}")
-    else:
-        result = verify_claim_repl_mode(cfg)
-        print(f"\nVerdict saved: {result}")
-
+    result = asyncio.run(verify_claim_notebook(cfg))
+    print(f"\nNotebook saved: {result}")
     print(f"Workspace: {workspace}")
 
 

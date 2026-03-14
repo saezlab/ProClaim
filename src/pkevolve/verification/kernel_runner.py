@@ -2,9 +2,8 @@
 Jupyter kernel lifecycle management for REPL-based evidence programming.
 
 Provides a KernelRunner that manages a persistent Python kernel for
-executing LLM-generated code. Used by both:
-  - notebook_mcp.py  (Mode A: Claude Agent SDK + nb_execute)
-  - repl_orchestrator.py  (Mode B: standalone REPL loop)
+executing LLM-generated code, used by notebook_mcp.py (Claude Agent
+SDK + nb_execute).
 
 The kernel acts as the "working memory" in the Recursive Language Model
 paradigm: evidence state lives as a Python variable in the kernel,
@@ -176,106 +175,6 @@ class KernelRunner:
     def execute_silent(self, code: str, timeout: int = 120) -> None:
         """Execute code without capturing outputs (e.g. prelude imports)."""
         self.execute(code, timeout=timeout)
-
-    # -- Prelude -----------------------------------------------------------
-
-    def inject_prelude(
-        self,
-        claim: str,
-        workspace: str,
-        extra_code: Optional[str] = None,
-        *,
-        llm_base_url: Optional[str] = None,
-        llm_api_key: Optional[str] = None,
-        llm_model: Optional[str] = None,
-    ) -> None:
-        """Inject the standard REPL prelude into the kernel.
-
-        Pre-loads imports, initializes EvidenceState as ``state``, and
-        makes the evidence API available for direct use.
-
-        If *llm_base_url*, *llm_api_key*, and *llm_model* are given, a
-        default ``llm`` callable is wired up so that ``extract_and_add_facts``
-        and the subagent functions work out of the box.
-        """
-        prelude = f"""\
-import sys, os
-from pathlib import Path
-
-# Ensure pkevolve is importable
-_project_root = Path({workspace!r}).resolve()
-while _project_root.name != "grn-llm-correct" and _project_root != _project_root.parent:
-    _project_root = _project_root.parent
-_src = str(_project_root / "src")
-if _src not in sys.path:
-    sys.path.insert(0, _src)
-
-# Core imports
-from pkevolve.verification.evidence_api import (
-    search_pubmed,
-    search_pubmed_progressive,
-    find_related_articles,
-    get_full_text_article,
-    get_paper_text,
-    check_sufficiency,
-    compress_evidence,
-    add_facts_from_dicts,
-    update_synthesis,
-    add_conflict,
-    emit_verdict,
-    formulate_pubmed_query,
-    get_evidence_summary,
-    extract_and_add_facts,
-    search_for_gap,
-)
-from pkevolve.verification.subagents import (
-    extract_facts,
-    synthesize_subclaim,
-    detect_conflicts,
-    identify_gaps,
-    formulate_gap_queries,
-)
-from pkevolve.verification.evidence_state import EvidenceState
-from pkevolve.verification.data_models import (
-    PaperRecord, Fact, Stance, Conflict, Gap, GapType, GapPriority,
-    SufficiencyResult, VerificationVerdict,
-)
-from pkevolve.verification.renderers import (
-    render_papers_from_state,
-    render_facts_from_state,
-    render_sufficiency_from_state,
-)
-from pkevolve.verification.compressor import SufficiencyPreservingCompressor
-
-# Initialize state
-workspace = Path({workspace!r})
-workspace.mkdir(parents=True, exist_ok=True)
-state = EvidenceState.init_new(
-    claim={claim!r},
-    subclaims=[{claim!r}],
-    workspace=workspace,
-)
-print(f"State initialized: {{state}}")
-"""
-        # Wire up the default llm callable if endpoint info is provided
-        if llm_base_url and llm_api_key and llm_model:
-            llm_code = (
-                "\n# LLM callable for subagents and extract_and_add_facts\n"
-                "from pkevolve.verification.llm_factory import make_llm\n"
-                f"llm = make_llm(\n"
-                f"    base_url={llm_base_url!r},\n"
-                f"    api_key={llm_api_key!r},\n"
-                f"    model={llm_model!r},\n"
-                ")\n"
-                f'print("llm() wired to {llm_model} at {llm_base_url}")\n'
-            )
-            prelude += llm_code
-
-
-        if extra_code:
-            prelude += "\n" + extra_code + "\n"
-
-        self.execute_silent(prelude)
 
 
 # ---------------------------------------------------------------------------

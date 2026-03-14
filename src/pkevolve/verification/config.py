@@ -186,10 +186,9 @@ class VerificationSettings(BaseSettings):
         description="Scientific claim to verify. Always provided via CLI "
                     "(--claim).",
     )
-    mode: Literal["sdk", "repl"] = Field(
+    mode: Literal["sdk"] = Field(
         default="sdk",
-        description="Orchestration mode: sdk (Claude Agent SDK + nb_execute) "
-                    "or repl (standalone REPL).",
+        description="Orchestration mode (Claude Agent SDK + nb_execute).",
     )
 
     max_iterations: int = Field(
@@ -288,10 +287,31 @@ class VerificationSettings(BaseSettings):
     def unpaywall_email(self) -> str:
         return self.api.unpaywall_email
 
+    # ── LLM factory ───────────────────────────────────────────────────
+
+    def make_subagent_llm(self):
+        """Build the subagent ``llm(prompt) -> str`` callable from config.
+
+        Uses ``subagent_base_url``, ``api_key``, and ``subagent_model``
+        so callers don't need to pass any LLM parameters.
+        """
+        from pkevolve.verification.llm_factory import make_llm
+
+        return make_llm(
+            base_url=self.subagent_base_url,
+            api_key=self.api_key,
+            model=self.subagent_model,
+        )
+
     # ── Builders ──────────────────────────────────────────────────────
 
     def build_sdk_env(self) -> dict[str, str]:
-        """Build the environment dict for the Claude Agent SDK process."""
+        """Build the environment dict for the Claude Agent SDK process.
+
+        Includes ``LLM_BASE_URL``, ``LLM_API_KEY``, ``LLM_MODEL``, and
+        ``MLP_MODEL_DIR`` so that ``setup_kernel()`` in the MCP server's
+        Jupyter kernel can resolve LLM config without agent involvement.
+        """
         if self.api_key == "EMPTY":
             raise RuntimeError(
                 "GLM_API_KEY not set. Add it to .env at project root.\n"
@@ -306,6 +326,11 @@ class VerificationSettings(BaseSettings):
             "ANTHROPIC_AUTH_TOKEN": self.api_key,
             "ANTHROPIC_BASE_URL": self.agent_base_url,
             "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": "300000",
+            # LLM config for setup_kernel() inside the Jupyter kernel
+            "LLM_BASE_URL": self.subagent_base_url,
+            "LLM_API_KEY": self.api_key,
+            "LLM_MODEL": self.subagent_model,
+            "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
         }
         env.pop("ANTHROPIC_API_KEY", None)
         env.pop("CLAUDE_API_KEY", None)

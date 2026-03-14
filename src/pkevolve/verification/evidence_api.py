@@ -1250,3 +1250,61 @@ def emit_verdict(
         print(f"Verdict emitted: {verdict} (confidence: {confidence:.2f}).")
 
     return v
+
+
+# ---------------------------------------------------------------------------
+# Kernel bootstrap helper
+# ---------------------------------------------------------------------------
+
+
+def setup_kernel(
+    claim: str,
+    workspace_path: str,
+) -> tuple:
+    """One-call kernel bootstrap — returns ``(state, llm, workspace)``.
+
+    LLM connection parameters are read from environment variables set by
+    the orchestrator before kernel launch:
+
+    - ``LLM_BASE_URL``  — OpenAI-compatible base URL
+    - ``LLM_API_KEY``   — API key (falls back to ``GLM_API_KEY`` / ``EMPTY``)
+    - ``LLM_MODEL``     — model identifier
+    - ``MLP_MODEL_DIR`` — path to MLP classifier weights
+
+    The agent never needs to know or pass these values.
+
+    Example (inside nb_execute)::
+
+        from pkevolve.verification.evidence_api import setup_kernel
+        state, llm, workspace = setup_kernel(
+            claim="MAPK1 directly activates H3-3A.",
+            workspace_path="/path/to/workspace",
+        )
+    """
+    import os
+
+    ws = Path(workspace_path)
+    ws.mkdir(parents=True, exist_ok=True)
+
+    state = EvidenceState.init_new(
+        claim=claim,
+        subclaims=[claim],
+        workspace=ws,
+    )
+
+    base_url = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1/")
+    api_key = (
+        os.environ.get("LLM_API_KEY")
+        or os.environ.get("GLM_API_KEY")
+        or os.environ.get("ZAI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or "EMPTY"
+    )
+    model = os.environ.get("LLM_MODEL", "glm-5")
+
+    from pkevolve.verification.llm_factory import make_llm
+
+    llm = make_llm(base_url=base_url, api_key=api_key, model=model)
+
+    print(f"Kernel ready. state=<{len(state.papers)} papers>, llm={model!r}")
+    return state, llm, ws
