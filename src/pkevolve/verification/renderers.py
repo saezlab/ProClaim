@@ -462,3 +462,100 @@ def render_verdict(workspace: str) -> None:
         f"</div>"
     )
     display(HTML(html))
+
+
+def render_filtering_summary(workspace: str) -> None:
+    """Render a summary of paper filtering operations from the trace log.
+
+    Reads ``evidence_state.json`` from *workspace* and displays filtering
+    operations, showing which papers were removed and why.
+    """
+    ws = Path(workspace)
+    state = json.loads((ws / "evidence_state.json").read_text())
+    trace = state.get("trace", [])
+    papers = state.get("papers", {})
+    facts = state.get("facts", [])
+
+    # Find filtering operations in trace
+    filter_ops = [op for op in trace if op.get("operation") == "filter_papers_by_stance"]
+
+    if not filter_ops:
+        display(HTML("<p><em>No filtering operations performed yet.</em></p>"))
+        return
+
+    # Count facts by paper and stance
+    facts_by_paper = {}
+    for fact in facts:
+        pmid = fact.get("source_pmid")
+        if pmid not in facts_by_paper:
+            facts_by_paper[pmid] = {"SUPPORT": 0, "REFUTE": 0, "NEUTRAL": 0}
+        stance = fact.get("stance", "NEUTRAL")
+        facts_by_paper[pmid][stance] = facts_by_paper[pmid].get(stance, 0) + 1
+
+    # Build summary for each filtering operation
+    summaries = []
+    for i, op in enumerate(filter_ops, 1):
+        kept_stances = ", ".join(op.get("keep_stances", []))
+        before = op.get("papers_before", 0)
+        after = op.get("papers_after", 0)
+        removed_count = op.get("papers_removed", 0)
+        removed_pmids = op.get("removed_pmids", [])
+
+        summary = (
+            f"<div style='border:1px solid #cbd5e1;border-radius:8px;padding:12px;"
+            f"margin:12px 0;background:#f8fafc'>"
+            f"<h4 style='margin:0 0 8px 0'>Filter Operation {i}</h4>"
+            f"<p><strong>Kept stances:</strong> {kept_stances}</p>"
+            f"<p><strong>Papers before:</strong> {before} → "
+            f"<strong>After:</strong> {after} "
+            f"(<span style='color:#ef4444'>-{removed_count}</span>)</p>"
+        )
+
+        if removed_pmids:
+            summary += "<p><strong>Removed papers:</strong></p><ul>"
+            for pmid in removed_pmids[:10]:  # Show first 10
+                summary += f"<li>{pmid}</li>"
+            if len(removed_pmids) > 10:
+                summary += f"<li><em>...and {len(removed_pmids) - 10} more</em></li>"
+            summary += "</ul>"
+
+        summary += "</div>"
+        summaries.append(summary)
+
+    # Show current paper pool with fact counts
+    current_papers = []
+    for pmid, paper in papers.items():
+        title = paper.get("title", "")[:60]
+        fact_counts = facts_by_paper.get(pmid, {"SUPPORT": 0, "REFUTE": 0, "NEUTRAL": 0})
+        current_papers.append(
+            f"<tr>"
+            f"<td><a href='https://pubmed.ncbi.nlm.nih.gov/{pmid}/' "
+            f"target='_blank'>{pmid}</a></td>"
+            f"<td>{title}...</td>"
+            f"<td style='color:#22c55e'>{fact_counts['SUPPORT']}</td>"
+            f"<td style='color:#ef4444'>{fact_counts['REFUTE']}</td>"
+            f"<td style='color:#9ca3af'>{fact_counts['NEUTRAL']}</td>"
+            f"</tr>"
+        )
+
+    current_table = (
+        "<h4>Current Paper Pool ({} papers)</h4>"
+        "<table style='border-collapse:collapse;width:100%'>"
+        "<tr style='background:#f1f5f9'>"
+        "<th style='padding:6px;border:1px solid #cbd5e1'>PMID</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1'>Title</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1'>SUPPORT</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1'>REFUTE</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1'>NEUTRAL</th>"
+        "</tr>"
+        "{}"
+        "</table>"
+    ).format(len(papers), "".join(current_papers))
+
+    html = (
+        "<h3>Paper Filtering Summary</h3>"
+        + "".join(summaries)
+        + current_table
+    )
+
+    display(HTML(html))

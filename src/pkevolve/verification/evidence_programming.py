@@ -73,7 +73,7 @@ from pkevolve.verification.evidence_api import (
     update_synthesis, add_conflict, get_evidence_summary,
     check_sufficiency, compress_evidence, emit_verdict,
     formulate_pubmed_query, search_for_gap, extract_and_add_facts,
-    populate_paper_features,
+    populate_paper_features, filter_papers_by_stance,
 )
 from pkevolve.verification.subagents import (
     extract_facts, synthesize_subclaim, detect_conflicts, formulate_gap_queries,
@@ -97,7 +97,15 @@ llm = make_llm(
     api_key=os.environ.get("GLM_API_KEY", "EMPTY"),
     model="{subagent_model}",
 )
-print("Setup complete. State initialized. llm() callable ready.")
+
+# Pre-warm heavy models (mandatory for all scenarios)
+from pkevolve.verification.model_registry import prewarm_all_models
+print("Pre-warming ML models (this may take 30-60 seconds)...")
+load_times = prewarm_all_models()
+for model_name, load_time in load_times.items():
+    print(f"  ✓ {{model_name}}: {{load_time:.2f}}s")
+
+print("Setup complete. State initialized. llm() callable ready. Models pre-loaded.")
 ```
 
 All functions operate on `state` (a live Python object).
@@ -123,13 +131,17 @@ handled automatically.  If you truly need an explicit save (rare), use
 6. Call populate_paper_features(state) after extracting facts.
    This MUST be done before check_sufficiency() to compute NLP and metadata features.
 7. After extracting: call nb_render_facts to show the facts table.
-8. Check sufficiency: result = check_sufficiency(state, llm); print(result)
-9. After checking: call nb_render_sufficiency.
-10. If insufficient: read the gaps and do targeted retrieval.
-11. Use nb_markdown between steps to explain your reasoning.
-12. Repeat until sufficient or {max_iterations} iterations.
-13. Call emit_verdict via nb_execute.
-14. Call nb_render_verdict.
+8. **Filter papers**: call filter_papers_by_stance(state) to remove papers with only
+   NEUTRAL facts. This keeps only papers with SUPPORT or REFUTE evidence, improving
+   the signal-to-noise ratio for the sufficiency classifier.
+9. After filtering: call nb_render_papers again to show the filtered paper pool.
+10. Check sufficiency: result = check_sufficiency(state, llm); print(result)
+11. After checking: call nb_render_sufficiency.
+12. If insufficient: read the gaps and do targeted retrieval.
+13. Use nb_markdown between steps to explain your reasoning.
+14. Repeat until sufficient or {max_iterations} iterations.
+15. Call emit_verdict via nb_execute.
+16. Call nb_render_verdict.
 
 ## Rules
 

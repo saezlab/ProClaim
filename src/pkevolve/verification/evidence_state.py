@@ -49,6 +49,8 @@ class EvidenceState(BaseModel):
     sufficiency_history: list[SufficiencyResult] = Field(default_factory=list)
     iteration: int = 0
     token_estimate: int = 0
+    # Track paper count per iteration for minimum paper requirements
+    papers_per_iteration: list[int] = Field(default_factory=list)
     # In-memory trace log — accumulated during REPL sessions,
     # written to disk on save()/checkpoint_save().
     trace: list[dict] = Field(default_factory=list, exclude=True)

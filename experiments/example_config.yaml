@@ -27,16 +27,16 @@ sufficiency_threshold: 0.80
 llm:
   model: glm-5
   subagent_model: ./qwen3-8b  # Must match vLLM model ID exactly
-  subagent_base_url: "http://codon-gpu-008.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
+  subagent_base_url: "http://codon-gpu-012.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
   agent_base_url: "https://api.z.ai/api/anthropic" # Anthropic-compatible endpoint for outer agent
   temperature: 0.7
 
 # Output paths (relative paths resolve from cwd)
-output_dir: results/verification/CDK1_AR
-notebook_path: results/verification/CDK1_AR/evidence_report.ipynb
+output_dir: results/verification/BCL2L1_BAD
+notebook_path: results/verification/BCL2L1_BAD/evidence_report.ipynb
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
 # Logging
 verbose: True
 
-# uv run python -m pkevolve.verification.evidence_programming  --config experiments/example_config.yaml  --claim "CDK1 directly activates AR."
+# uv run python -m pkevolve.verification.evidence_programming  --config experiments/example_config.yaml  --claim "BCL2L1 directly activates BAD."

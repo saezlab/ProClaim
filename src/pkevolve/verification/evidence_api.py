@@ -15,6 +15,7 @@ import logging
 import re
 import warnings as _warnings
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -186,7 +187,11 @@ def function_docs() -> str:
         add_facts_from_dicts, update_synthesis, add_conflict,
         get_evidence_summary, check_sufficiency, compress_evidence,
         emit_verdict, formulate_pubmed_query, search_for_gap,
+        populate_paper_features, filter_papers_by_stance,
     ]
+
+    # Import model registry function for documentation
+    from pkevolve.verification.model_registry import prewarm_all_models as _prewarm
 
     # Functions from subagents
     from pkevolve.verification.subagents import (
@@ -213,6 +218,10 @@ def function_docs() -> str:
         lines.append(f"    {fn.__name__}{sig}")
         if doc:
             lines.append(f"        {doc}")
+
+    lines.append("\n### model_registry\n")
+    lines.append(f"    prewarm_all_models() -> dict[str, float]")
+    lines.append(f"        Pre-load all ML models (NLP, MLP classifier) to avoid first-call latency")
 
     return "\n".join(lines)
 
@@ -844,6 +853,10 @@ def populate_paper_features(
     populated (efficient for incremental processing). Use force_recompute=True
     to recompute all features.
 
+    **Performance note**: Heavy ML models (SBERT, NLI cross-encoder) are cached
+    globally via model_registry after first use. To avoid first-call latency,
+    use prewarm_all_models() during kernel setup.
+
     Args:
         state: The evidence state containing papers to process.
         compute_nli: Whether to compute NLI features (requires GPU for best performance).
@@ -853,19 +866,14 @@ def populate_paper_features(
     Returns:
         Status message indicating how many papers were processed.
     """
-    from pkevolve.verification.feature_tools import (
-        compute_entity_coverage,
-        SemanticSimilarityComputer,
-        NLIEntailmentComputer,
-        PaperFeatureExtractor,
+    from pkevolve.verification.feature_tools import compute_entity_coverage
+    from pkevolve.verification.model_registry import (
+        get_semantic_similarity_computer,
+        get_nli_entailment_computer,
+        get_metadata_extractor,
     )
 
     logger.info("Populating paper features for %d papers", len(state.papers))
-
-    # Initialize extractors (lazy loading of models)
-    sim_computer = None
-    nli_computer = None
-    meta_extractor = None
 
     # Process each paper
     processed_count = 0
@@ -884,9 +892,8 @@ def populate_paper_features(
             logger.warning("Skipping PMID %s: no full text or abstract available", paper.pmid)
             # Still attempt metadata extraction even without text
             if force_recompute or paper.metadata is None:
-                if meta_extractor is None:
-                    meta_extractor = PaperFeatureExtractor()
                 try:
+                    meta_extractor = get_metadata_extractor()
                     paper.metadata = meta_extractor.extract_metadata(paper.pmid)
                 except Exception as exc:
                     logger.error("Failed to extract metadata for PMID %s: %s", paper.pmid, exc)
@@ -903,23 +910,19 @@ def populate_paper_features(
         # Truncate text if needed
         text = text[:max_text_length]
 
-        # Lazy-initialize NLP computers only when needed
-        if sim_computer is None:
-            sim_computer = SemanticSimilarityComputer()
-        if compute_nli and nli_computer is None:
-            nli_computer = NLIEntailmentComputer()
-
         # --- NLP features ---
         if force_recompute or paper.nlp is None:
             try:
                 # Entity coverage
                 nlp = compute_entity_coverage(state.claim, text)
 
-                # Semantic similarity
+                # Semantic similarity (model loaded from registry)
+                sim_computer = get_semantic_similarity_computer()
                 nlp.semantic_similarity = sim_computer.compute(state.claim, text)
 
-                # NLI entailment (optional, GPU-intensive)
-                if nli_computer:
+                # NLI entailment (optional, GPU-intensive, model loaded from registry)
+                if compute_nli:
+                    nli_computer = get_nli_entailment_computer()
                     nli_result = nli_computer.compute(state.claim, text)
                     nlp.nli_entailment = nli_result["nli_entailment"]
                     nlp.nli_contradiction = nli_result["nli_contradiction"]
@@ -938,11 +941,8 @@ def populate_paper_features(
 
         # --- Metadata features ---
         if force_recompute or paper.metadata is None:
-            # Lazy-initialize metadata extractor only when needed
-            if meta_extractor is None:
-                meta_extractor = PaperFeatureExtractor()
-
             try:
+                meta_extractor = get_metadata_extractor()
                 paper.metadata = meta_extractor.extract_metadata(paper.pmid)
                 logger.debug(
                     "PMID %s: year=%s, log_IF=%.3f",
@@ -1007,67 +1007,15 @@ def get_evidence_summary(state: EvidenceState) -> str:
 # ---------------------------------------------------------------------------
 
 
-# Lazy singleton for MLP classifier (heavy: loads torch + weights on first call)
-_mlp_state = None
-
-
-def _get_mlp_state():
-    """Lazy-load the MLP model, config, and FeatureAggregator."""
-    global _mlp_state
-    if _mlp_state is not None:
-        return _mlp_state
-
-    import sys as _sys
-    import numpy as np
-    import torch
-
-    _THIS_DIR = Path(__file__).resolve().parent
-    project_root = _THIS_DIR.parent.parent.parent
-
-    # Make scripts/sufficiency_classifier importable
-    scripts_dir = str(project_root / "scripts")
-    if scripts_dir not in _sys.path:
-        _sys.path.insert(0, scripts_dir)
-
-    from sufficiency_classifier.test_mlp_classifier import SufficiencyMLP
-    from sufficiency_classifier.feature_aggregation import FeatureAggregator
-
-    # Load config
-    import os
-    model_dir_rel = os.environ.get("MLP_MODEL_DIR", "results/models/classifier_best")
-    model_dir = project_root / model_dir_rel
-    with open(model_dir / "mlp_config.json") as f:
-        config = json.load(f)
-
-    # Load model
-    model = SufficiencyMLP(
-        input_dim=config["input_dim"],
-        hidden_dim=config.get("hidden_dim", 64),
-    )
-    weights_path = model_dir / "best_model.pth"
-    if not weights_path.exists():
-        weights_path = model_dir / "mlp_classifier_weights.pth"
-    model.load_state_dict(
-        torch.load(weights_path, map_location="cpu", weights_only=True)
-    )
-    model.eval()
-
-    _mlp_state = {
-        "model": model,
-        "config": config,
-        "expected_features": config["expected_features"],
-        "mean": np.array(config["scaler_mean"]),
-        "scale": np.array(config["scaler_scale"]),
-        "aggregator": FeatureAggregator(),
-    }
-    logger.info("MLP sufficiency classifier loaded from %s", model_dir)
-    return _mlp_state
+# Model registry for singleton management of heavy ML models
+# (MLP classifier, NLP models, etc. are now managed by model_registry.py)
 
 
 def check_sufficiency(
     state: EvidenceState,
     llm,
     threshold: float = 0.5,
+    min_papers_per_iteration: int = 3,
 ) -> SufficiencyResult:
     """Run the trained MLP sufficiency classifier on the current evidence state.
 
@@ -1080,6 +1028,20 @@ def check_sufficiency(
     When the classifier predicts INSUFFICIENT, gap identification is delegated to
     the ``identify_gaps`` LLM subagent.
 
+    **Performance note**: The MLP classifier and feature aggregator are cached
+    globally via model_registry after first use. Use prewarm_all_models() during
+    kernel setup to avoid first-call latency.
+
+    Args:
+        state: Evidence state to check
+        llm: LLM instance for gap identification
+        threshold: MLP probability threshold for sufficiency (default: 0.5)
+        min_papers_per_iteration: Minimum number of NEW papers required per iteration
+                                  before allowing SUFFICIENT result. If fewer papers
+                                  were added this iteration, force INSUFFICIENT to
+                                  encourage more retrieval. Set to 0 to disable.
+                                  (default: 3)
+
     Appends result to state.sufficiency_history and increments iteration.
     Raises MaxIterationsExceeded if the iteration limit is reached.
     """
@@ -1091,7 +1053,21 @@ def check_sufficiency(
             state=state,
         )
 
-    mlp = _get_mlp_state()
+    # Track paper count for this iteration
+    current_paper_count = len(state.papers)
+    previous_paper_count = (
+        state.papers_per_iteration[-1] if state.papers_per_iteration else 0
+    )
+    papers_added_this_iteration = current_paper_count - previous_paper_count
+
+    # Record current count for next iteration
+    state.papers_per_iteration.append(current_paper_count)
+
+    # Get MLP classifier and feature aggregator from model registry
+    from pkevolve.verification.model_registry import get_mlp_classifier, get_feature_aggregator
+
+    mlp = get_mlp_classifier()
+    aggregator = get_feature_aggregator()
 
     # Convert EvidenceState papers → FeatureAggregator input format
     papers_dicts = []
@@ -1107,7 +1083,7 @@ def check_sufficiency(
             num_full_text += 1
 
     # Aggregate features via FeatureAggregator
-    nested = mlp["aggregator"].aggregate_all(papers_dicts)
+    nested = aggregator.aggregate_all(papers_dicts)
 
     # num_full_text is not computed by FeatureAggregator — inject from state
 
@@ -1127,18 +1103,53 @@ def check_sufficiency(
     )
     logger.info("MLP features: %s → prob=%.4f (threshold=%.2f)", feat_summary, prob, threshold)
 
-    label = "SUFFICIENT_SUPPORT" if prob >= threshold else "INSUFFICIENT"
+    # Determine label based on MLP prediction
+    mlp_label = "SUFFICIENT_SUPPORT" if prob >= threshold else "INSUFFICIENT"
+
+    # Override to INSUFFICIENT if minimum paper requirement not met
+    # (but only if MLP would have said SUFFICIENT - don't override INSUFFICIENT)
+    override_reason = None
+    if (
+        mlp_label == "SUFFICIENT_SUPPORT"
+        and min_papers_per_iteration > 0
+        and papers_added_this_iteration < min_papers_per_iteration
+        and state.iteration < MAX_ITERATIONS  # Don't force on last iteration
+    ):
+        override_reason = (
+            f"Minimum paper requirement not met: only {papers_added_this_iteration} "
+            f"new papers this iteration (need {min_papers_per_iteration}). "
+            f"Continue searching to gather more evidence."
+        )
+        label = "INSUFFICIENT"
+        logger.info(
+            "Overriding SUFFICIENT → INSUFFICIENT: %d papers added (need %d)",
+            papers_added_this_iteration, min_papers_per_iteration
+        )
+    else:
+        label = mlp_label
 
     # LLM-driven gap identification for INSUFFICIENT results
     gaps: list = []
     if label == "INSUFFICIENT":
         from pkevolve.verification.subagents import identify_gaps
-        gaps = identify_gaps(
-            llm=llm,
-            claim=state.claim,
-            subclaims=state.subclaims,
-            facts=state.facts,
-        )
+
+        # If we overrode due to min papers, add a synthetic gap
+        if override_reason:
+            from pkevolve.verification.data_models import Gap, GapType, GapPriority
+            gaps = [Gap(
+                subclaim=state.claim,
+                gap_type=GapType.LOW_DIVERSITY,
+                description=override_reason,
+                priority=GapPriority.HIGH,
+            )]
+        else:
+            # Normal gap identification
+            gaps = identify_gaps(
+                llm=llm,
+                claim=state.claim,
+                subclaims=state.subclaims,
+                facts=state.facts,
+            )
 
     result = SufficiencyResult(label=label, confidence=prob, gaps=gaps)
 
@@ -1147,8 +1158,12 @@ def check_sufficiency(
 
     # Print structured feedback for the agent
     print(f"=== SUFFICIENCY CHECK (iteration {state.iteration}/{MAX_ITERATIONS}) ===")
-    print(f"Label: {label}")
-    print(f"Confidence: {prob:.6f}")
+    print(f"Papers: {current_paper_count} total (+{papers_added_this_iteration} this iteration)")
+    print(f"MLP Prediction: {mlp_label} (confidence: {prob:.6f})")
+    if override_reason:
+        print(f"⚠️  Override: SUFFICIENT → INSUFFICIENT")
+        print(f"Reason: Need {min_papers_per_iteration} new papers, only {papers_added_this_iteration} added")
+    print(f"Final Label: {label}")
     print(f"Threshold: {threshold}")
     print(f"Decision: {'PASS — evidence is sufficient' if label != 'INSUFFICIENT' else 'FAIL — more evidence needed'}")
     if gaps:
@@ -1159,6 +1174,92 @@ def check_sufficiency(
             print(f"     Action: {gap.description}")
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Paper Filtering
+# ---------------------------------------------------------------------------
+
+
+def filter_papers_by_stance(
+    state: EvidenceState,
+    keep_stances: Optional[list[str]] = None,
+) -> None:
+    """Filter papers in-place, keeping only those with facts matching specified stances.
+
+    Args:
+        state: EvidenceState to filter
+        keep_stances: List of stances to keep. Defaults to ["SUPPORT", "REFUTE"]
+                     (excludes papers with only NEUTRAL facts)
+
+    This function removes papers from state.papers that don't have at least one
+    fact with a stance in keep_stances. Papers with no facts are also removed.
+
+    The filtering is recorded in state.trace for auditability.
+
+    Example:
+        # Remove papers with only NEUTRAL facts
+        filter_papers_by_stance(state)  # keeps SUPPORT and REFUTE only
+
+        # Keep all papers with any facts
+        filter_papers_by_stance(state, keep_stances=["SUPPORT", "REFUTE", "NEUTRAL"])
+    """
+    if keep_stances is None:
+        keep_stances = ["SUPPORT", "REFUTE"]
+
+    keep_stances_set = set(keep_stances)
+
+    # Build a map of pmid -> facts
+    facts_by_paper: dict[str, list[Fact]] = {}
+    for fact in state.facts:
+        pmid = fact.source_pmid
+        if pmid not in facts_by_paper:
+            facts_by_paper[pmid] = []
+        facts_by_paper[pmid].append(fact)
+
+    # Identify papers to keep
+    papers_to_keep = set()
+    papers_to_remove = set()
+
+    for pmid in state.papers.keys():
+        paper_facts = facts_by_paper.get(pmid, [])
+
+        # Check if paper has at least one fact with a stance in keep_stances
+        has_relevant_fact = any(
+            f.stance.value in keep_stances_set for f in paper_facts
+        )
+
+        if has_relevant_fact:
+            papers_to_keep.add(pmid)
+        else:
+            papers_to_remove.add(pmid)
+
+    # Remove papers
+    for pmid in papers_to_remove:
+        del state.papers[pmid]
+
+    # Log the filtering operation
+    state.trace.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "operation": "filter_papers_by_stance",
+        "keep_stances": keep_stances,
+        "papers_before": len(papers_to_keep) + len(papers_to_remove),
+        "papers_after": len(papers_to_keep),
+        "papers_removed": len(papers_to_remove),
+        "removed_pmids": list(papers_to_remove),
+    })
+
+    # Auto-save
+    state._auto_save()
+
+    # Print summary
+    print(f"=== PAPER FILTERING ===")
+    print(f"Keep stances: {', '.join(keep_stances)}")
+    print(f"Papers before: {len(papers_to_keep) + len(papers_to_remove)}")
+    print(f"Papers after: {len(papers_to_keep)}")
+    print(f"Removed {len(papers_to_remove)} papers with only excluded stances")
+    if papers_to_remove:
+        print(f"Removed PMIDs: {', '.join(sorted(papers_to_remove))}")
 
 
 # ---------------------------------------------------------------------------

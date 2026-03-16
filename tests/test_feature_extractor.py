@@ -15,7 +15,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from scripts.sufficiency_classifier.feature_extractor import PaperFeatureExtractor, compute_entity_overlap
+from scripts.sufficiency_classifier.feature_extractor import PaperFeatureExtractor, compute_entity_coverage
 
 # Well-known PMIDs for testing
 TEST_PMIDS = [
@@ -75,10 +75,10 @@ def main():
     # Expected overlap: Barack Obama (normalized: barack obama)
     print(f"\nClaim: {claim}")
     print(f"Evidence: {evidence}")
-    nlp_vec = compute_entity_overlap(claim, evidence)
+    nlp_vec = compute_entity_coverage(claim, evidence)
     print("Result:", json.dumps(nlp_vec.model_dump(), indent=2))
 
-    if nlp_vec.entity_overlap_ratio is not None and nlp_vec.entity_overlap_ratio > 0:
+    if nlp_vec.claim_entity_coverage is not None and nlp_vec.claim_entity_coverage > 0:
         print("  [PASS] Overlap detected.")
     else:
         print("  [FAIL] No overlap detected.")
@@ -88,13 +88,13 @@ def main():
     evidence2 = "Microsoft updated Windows."
     print(f"\nClaim: {claim2}")
     print(f"Evidence: {evidence2}")
-    nlp_vec2 = compute_entity_overlap(claim2, evidence2)
+    nlp_vec2 = compute_entity_coverage(claim2, evidence2)
     print("Result:", json.dumps(nlp_vec2.model_dump(), indent=2))
     
-    if nlp_vec2.entity_overlap_ratio == 0.0:
+    if nlp_vec2.claim_entity_coverage == 0.0 or nlp_vec2.claim_entity_coverage is None:
         print("  [PASS] Correctly detected zero overlap.")
     else:
-        print(f"  [FAIL] Expected 0.0, got {nlp_vec2.entity_overlap_ratio}")
+        print(f"  [FAIL] Expected 0.0, got {nlp_vec2.claim_entity_coverage}")
 
     # ============================================================
     # End-to-End Feature Integration Test
@@ -180,7 +180,7 @@ def main():
         if not abstract_text:
             print("Warning: Abstract is empty.")
         
-        nlp_vec = compute_entity_overlap(claim['claim'], abstract_text)
+        nlp_vec = compute_entity_coverage(claim['claim'], abstract_text)
         print("NLP Metrics:")
         print(f"  Claim Entities: {nlp_vec.claim_entities}")
         print(f"  Recall (Coverage): {nlp_vec.claim_entity_coverage}")
