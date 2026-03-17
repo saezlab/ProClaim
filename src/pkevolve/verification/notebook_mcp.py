@@ -5,9 +5,8 @@ Provides tools for the orchestrator agent to write evidence programming
 results into a Jupyter notebook in real-time. Each tool call adds cells
 to the notebook and (optionally) executes code in a persistent kernel.
 
-Kernel lifecycle is delegated to KernelRunner (shared with
-repl_orchestrator.py). This module handles only the notebook file
-(nbformat) layer and MCP tool wrappers.
+Kernel lifecycle is managed by KernelRunner. This module handles only
+the notebook file (nbformat) layer and MCP tool wrappers.
 
 Launch:  python -m pkevolve.verification.notebook_mcp
 Connect: Claude Agent SDK connects via stdio transport.

@@ -26,8 +26,8 @@ sufficiency_threshold: 0.80
 # LLM configuration
 llm:
   model: glm-5
-  subagent_model: ./qwen3-8b  # Must match vLLM model ID exactly
-  subagent_base_url: "http://codon-gpu-012.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
+  subagent_model: ./qwen3.5-9b  # Must match vLLM model ID exactly
+  subagent_base_url: "http://codon-gpu-008.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
   agent_base_url: "https://api.z.ai/api/anthropic" # Anthropic-compatible endpoint for outer agent
   temperature: 0.7
 
