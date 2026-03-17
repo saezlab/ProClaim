@@ -81,7 +81,8 @@ them directly via nb_execute.
 
 1. Call nb_init, then nb_execute with the setup code above.
 2. Decompose the claim: state.subclaims = ["subclaim A", ...]
-3. Search: call search_pubmed_progressive(state.claim, state) via nb_execute.
+3. Search: call search_pubmed_llm(state.claim, state, llm) via nb_execute.
+   This uses LLM-driven query generation for diverse claim types (PPI, diagnosis, drug resistance).
 4. After searching: call nb_render_papers to show the papers table.
 5. Extract facts using extract_and_add_facts(llm, pmid, state) for each paper.
    Do NOT write fact dicts manually — use extract_and_add_facts.
@@ -94,7 +95,7 @@ them directly via nb_execute.
 9. After filtering: call nb_render_papers again to show the filtered paper pool.
 10. Check sufficiency: result = check_sufficiency(state, llm); print(result)
 11. After checking: call nb_render_sufficiency.
-12. If insufficient: read the gaps and do targeted retrieval.
+12. If insufficient: read the gaps and do targeted retrieval using search_for_gap() or formulate_gap_queries().
 13. Use nb_markdown between steps to explain your reasoning.
 14. Repeat until sufficient or {max_iterations} iterations.
 15. Call emit_verdict via nb_execute.
@@ -112,7 +113,7 @@ them directly via nb_execute.
 ## CRITICAL: Grounded Evidence Only
 
 - NEVER fabricate facts from your own knowledge.  Every fact must come from
-  a paper retrieved via search_pubmed / search_pubmed_progressive.
+  a paper retrieved via search_pubmed_llm or search_pubmed.
 - Use extract_and_add_facts(llm, pmid, state) to add facts. This reads the
   actual paper and extracts grounded statements.
 - If extract_and_add_facts returns 0 for a paper, try:
@@ -136,10 +137,10 @@ populate_paper_features(state) after extracting facts and before calling
 check_sufficiency().
 
 Required sequence in EVERY iteration:
-1. search_pubmed_progressive(...)        ← retrieve papers
+1. search_pubmed_llm(state.claim, state, llm)              ← retrieve papers with LLM-generated query
 2. extract_and_add_facts(llm, pmid, state) for each paper  ← extract facts
-3. populate_paper_features(state)        ← MUST CALL (computes features)
-4. check_sufficiency(state, llm)         ← classifier needs features
+3. populate_paper_features(state)                          ← MUST CALL (computes features)
+4. check_sufficiency(state, llm)                           ← classifier needs features
 
 If you skip populate_paper_features(), the MLP classifier will receive all-zero
 NLP features (semantic similarity, entity coverage, NLI scores) and the

@@ -182,7 +182,7 @@ def nb_execute(code: str, notebook_path: str) -> str:
 def nb_render_papers(workspace: str, notebook_path: str) -> str:
     """Render the currently retrieved papers as a styled HTML table in the
     notebook. Reads from evidence_state.json in the workspace. Call after
-    search_pubmed or search_pubmed_progressive."""
+    search_pubmed_llm, search_pubmed, or other search functions."""
     code = (
         "from pkevolve.verification.renderers import render_papers; "
         f"render_papers({workspace!r})"

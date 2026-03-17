@@ -79,6 +79,10 @@ class APISettings(BaseSettings):
     )
 
     # API keys -----------------------------------------------------------
+    anthropic_api_key: Optional[str] = Field(
+        default=None,
+        description="Anthropic/Claude API key.",
+    )
     glm_api_key: Optional[str] = Field(
         default=None,
         description="Primary API key for Z.AI / GLM models.",
@@ -105,9 +109,10 @@ class APISettings(BaseSettings):
     # Derived: resolved API key ------------------------------------------
     @property
     def api_key(self) -> str:
-        """Resolve the best available API key (GLM > ZAI > OpenAI > EMPTY)."""
+        """Resolve the best available API key (Anthropic > GLM > ZAI > OpenAI > EMPTY)."""
         return (
-            self.glm_api_key
+            self.anthropic_api_key
+            or self.glm_api_key
             or self.zai_api_key
             or self.openai_api_key
             or "EMPTY"
@@ -332,8 +337,7 @@ class VerificationSettings(BaseSettings):
             "LLM_MODEL": self.subagent_model,
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
         }
-        env.pop("ANTHROPIC_API_KEY", None)
-        env.pop("CLAUDE_API_KEY", None)
+        # Keep ANTHROPIC_API_KEY in environment for Claude models
         return env
 
     # ── Factory: from YAML file ───────────────────────────────────────
@@ -416,7 +420,7 @@ class VerificationSettings(BaseSettings):
             mode="json",
             exclude={
                 "claim": True,  # per-run CLI argument, not a config param
-                "api": {"glm_api_key", "zai_api_key",
+                "api": {"anthropic_api_key", "glm_api_key", "zai_api_key",
                         "openai_api_key", "elsevier_api_key"},
             },
         )

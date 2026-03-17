@@ -182,7 +182,7 @@ def function_docs() -> str:
 
     # Functions from evidence_api
     _api_funcs = [
-        search_pubmed, search_pubmed_progressive, find_related_articles,
+        search_pubmed, search_pubmed_llm, search_pubmed_progressive, find_related_articles,
         get_full_text_article, get_paper_text, extract_and_add_facts,
         add_facts_from_dicts, update_synthesis, add_conflict,
         get_evidence_summary, check_sufficiency, compress_evidence,
@@ -366,6 +366,43 @@ def search_pubmed(
         f"PubMed: found {found}, added {added} new. "
         f"PMIDs: {', '.join(added_pmids) if added_pmids else 'none'}"
     )
+    return added_pmids
+
+
+def search_pubmed_llm(
+    claim: str,
+    state: EvidenceState,
+    llm,
+    max_results: int = 10,
+) -> list[str]:
+    """PubMed search using single LLM-generated query.
+
+    Uses LLM to generate a comprehensive query from the claim, replacing
+    the entity-based progressive search approach. Works for diverse claim
+    types: PPI, diagnosis, drug resistance, disease mechanisms, etc.
+
+    Args:
+        claim: The scientific claim to verify
+        state: EvidenceState to add papers to
+        llm: LLM callable for query generation
+        max_results: Maximum papers to retrieve
+
+    Returns:
+        List of added PMIDs
+    """
+    from pkevolve.search.llm_query_generator import generate_search_query
+
+    # Generate comprehensive query using LLM
+    query = generate_search_query(claim, llm)
+    print(f"[LLM Query] {query}")
+
+    # Search PubMed with the LLM-generated query
+    found, added, added_pmids = _search_and_add(query, state, max_results)
+    print(f"  → Found {found}, added {added} new papers")
+
+    if len(added_pmids) == 0:
+        print("⚠️ No papers found in initial search. Gap handling will refine if needed.")
+
     return added_pmids
 
 
@@ -703,6 +740,7 @@ def add_facts_from_dicts(
     # Recompute coverage
     _recompute_coverage(state)
     state.token_estimate = state.token_count()
+    state._auto_save()  # Persist coverage and token count updates
 
     parts = [f"Added {added} facts."]
     if skipped_empty:
@@ -729,6 +767,7 @@ def update_synthesis(
 ) -> None:
     """Update the evidence synthesis for a subclaim."""
     state.synthesis[subclaim] = synthesis_text
+    state._auto_save()  # Persist synthesis update to disk
     print(f"Synthesis updated for: {subclaim}")
 
 
@@ -1104,13 +1143,14 @@ def check_sufficiency(
     logger.info("MLP features: %s → prob=%.4f (threshold=%.2f)", feat_summary, prob, threshold)
 
     # Determine label based on MLP prediction
-    mlp_label = "SUFFICIENT_SUPPORT" if prob >= threshold else "INSUFFICIENT"
+    # New classifier returns "sufficient" or "insufficient" (lowercase)
+    mlp_label = "sufficient" if prob >= threshold else "insufficient"
 
     # Override to INSUFFICIENT if minimum paper requirement not met
     # (but only if MLP would have said SUFFICIENT - don't override INSUFFICIENT)
     override_reason = None
     if (
-        mlp_label == "SUFFICIENT_SUPPORT"
+        mlp_label == "sufficient"
         and min_papers_per_iteration > 0
         and papers_added_this_iteration < min_papers_per_iteration
         and state.iteration < MAX_ITERATIONS  # Don't force on last iteration
@@ -1120,17 +1160,17 @@ def check_sufficiency(
             f"new papers this iteration (need {min_papers_per_iteration}). "
             f"Continue searching to gather more evidence."
         )
-        label = "INSUFFICIENT"
+        label = "insufficient"
         logger.info(
-            "Overriding SUFFICIENT → INSUFFICIENT: %d papers added (need %d)",
+            "Overriding sufficient → insufficient: %d papers added (need %d)",
             papers_added_this_iteration, min_papers_per_iteration
         )
     else:
         label = mlp_label
 
-    # LLM-driven gap identification for INSUFFICIENT results
+    # LLM-driven gap identification for insufficient results
     gaps: list = []
-    if label == "INSUFFICIENT":
+    if label == "insufficient":
         from pkevolve.verification.subagents import identify_gaps
 
         # If we overrode due to min papers, add a synthetic gap
@@ -1155,17 +1195,18 @@ def check_sufficiency(
 
     state.sufficiency_history.append(result)
     state.iteration += 1
+    state._auto_save()  # Persist sufficiency check result to disk
 
     # Print structured feedback for the agent
     print(f"=== SUFFICIENCY CHECK (iteration {state.iteration}/{MAX_ITERATIONS}) ===")
     print(f"Papers: {current_paper_count} total (+{papers_added_this_iteration} this iteration)")
     print(f"MLP Prediction: {mlp_label} (confidence: {prob:.6f})")
     if override_reason:
-        print(f"⚠️  Override: SUFFICIENT → INSUFFICIENT")
+        print(f"⚠️  Override: sufficient → insufficient")
         print(f"Reason: Need {min_papers_per_iteration} new papers, only {papers_added_this_iteration} added")
     print(f"Final Label: {label}")
     print(f"Threshold: {threshold}")
-    print(f"Decision: {'PASS — evidence is sufficient' if label != 'INSUFFICIENT' else 'FAIL — more evidence needed'}")
+    print(f"Decision: {'PASS — evidence is sufficient' if label == 'sufficient' else 'FAIL — more evidence needed'}")
     if gaps:
         print(f"\nGaps ({len(gaps)}):")
         for i, gap in enumerate(gaps, 1):
@@ -1396,6 +1437,7 @@ def setup_kernel(
     base_url = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1/")
     api_key = (
         os.environ.get("LLM_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
         or os.environ.get("GLM_API_KEY")
         or os.environ.get("ZAI_API_KEY")
         or os.environ.get("OPENAI_API_KEY")

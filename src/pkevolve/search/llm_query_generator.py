@@ -79,6 +79,15 @@ def _sanitize_query(query: str) -> str:
     Returns:
         Sanitized query string
     """
+    import re
+
+    # Remove <think>...</think> tags and their content (common in reasoning models)
+    query = re.sub(r'<think>.*?</think>', '', query, flags=re.DOTALL)
+
+    # Remove other common XML-style reasoning tags
+    query = re.sub(r'<reasoning>.*?</reasoning>', '', query, flags=re.DOTALL)
+    query = re.sub(r'<explanation>.*?</explanation>', '', query, flags=re.DOTALL)
+
     # Remove markdown code block markers
     query = query.strip("`").strip()
 
@@ -97,7 +106,7 @@ def _sanitize_query(query: str) -> str:
         query = query.replace("[", "").replace("]", "")
         logger.warning(f"Removed unmatched brackets from query")
 
-    # Remove leading/trailing spaces
+    # Remove leading/trailing spaces and newlines
     query = query.strip()
 
     return query

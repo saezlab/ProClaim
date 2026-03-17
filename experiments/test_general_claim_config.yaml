@@ -1,19 +1,17 @@
 # ──────────────────────────────────────────────────────────────────────
-# Example YAML config for evidence verification experiments.
+# Test config for GENERAL claim verification (from SciFact dataset)
 #
-# The YAML defines experiment parameters (model, thresholds, etc.).
-# The claim is always provided via CLI --claim, since it varies per run.
+# This config uses a general biomedical claim from the SciFact dataset
+# to test the evidence verification pipeline with general claims.
 #
 # Usage:
 #   uv run python -m pkevolve.verification.evidence_programming \
-#       --config experiments/example_config.yaml \
-#       --claim "[INSERT CLAIM HERE]"
+#       --config experiments/test_general_claim_config.yaml \
+#       --claim "A breast cancer patient's capacity to metabolize tamoxifen has no effect on treatment outcome."
 #
-# CLI flags override values in this file, e.g.:
-#   --model gpt-4o --max-iterations 12
-#
-# Save a snapshot of the current run config for reproducibility:
-#   cfg.save_yaml("experiments/run_2026_03_04.yaml")
+# SciFact Claim ID: 29
+# Claim Type: GENERAL (biomedical treatment outcome)
+# Ground Truth: CONTRADICT (has evidence contradicting this claim)
 # ──────────────────────────────────────────────────────────────────────
 
 # Orchestration mode: "sdk" (Claude Agent SDK + nb_execute) or "repl"
@@ -39,11 +37,12 @@ llm:
   temperature: 0.7
 
 # Output paths (relative paths resolve from cwd)
-output_dir: results/verification/BCL2L1_BAD
-notebook_path: results/verification/BCL2L1_BAD/evidence_report.ipynb
+output_dir: results/verification/scifact_general_claim_29
+notebook_path: results/verification/scifact_general_claim_29/evidence_report.ipynb
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
 # Logging
 verbose: True
 
-# uv run python -m pkevolve.verification.evidence_programming  --config experiments/example_config.yaml  --claim "BCL2L1 directly activates BAD."
+# Example usage:
+# uv run python -m pkevolve.verification.evidence_programming --config experiments/test_general_claim_config.yaml --claim "A breast cancer patient's capacity to metabolize tamoxifen has no effect on treatment outcome."

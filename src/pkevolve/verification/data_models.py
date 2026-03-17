@@ -92,7 +92,7 @@ class Gap(BaseModel):
 class SufficiencyResult(BaseModel):
     """Result from the sufficiency classifier."""
 
-    label: str  # SUFFICIENT_SUPPORT | SUFFICIENT_REFUTE | INSUFFICIENT
+    label: str  # "sufficient" | "insufficient"
     confidence: float  # 0-1, calibrated
     gaps: list[Gap]
 
@@ -100,7 +100,7 @@ class SufficiencyResult(BaseModel):
 class VerificationVerdict(BaseModel):
     """Structured output schema for the orchestrator's final answer."""
 
-    verdict: str  # SUPPORT | REFUTE | INSUFFICIENT
+    verdict: str  # SUPPORT | REFUTE | UNCERTAIN
     confidence: float
     reasoning: str
     key_evidence: list[str]
