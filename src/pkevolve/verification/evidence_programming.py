@@ -84,8 +84,9 @@ them directly via nb_execute.
 3. Search: call search_pubmed_llm(state.claim, state, llm) via nb_execute.
    This uses LLM-driven query generation for diverse claim types (PPI, diagnosis, drug resistance).
 4. After searching: call nb_render_papers to show the papers table.
-5. Extract facts using extract_and_add_facts(llm, pmid, state) for each paper.
-   Do NOT write fact dicts manually — use extract_and_add_facts.
+5. Extract facts from papers. For multiple papers, use extract_and_add_facts_batch(llm, pmids, state, max_workers=8)
+   to process them in parallel. For a single paper, use extract_and_add_facts(llm, pmid, state).
+   Do NOT write fact dicts manually — use extract_and_add_facts or extract_and_add_facts_batch.
 6. Call populate_paper_features(state) after extracting facts.
    This MUST be done before check_sufficiency() to compute NLP and metadata features.
 7. After extracting: call nb_render_facts to show the facts table.
