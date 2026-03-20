@@ -171,6 +171,7 @@ def render_sufficiency(workspace: str) -> None:
     state = json.loads((ws / "evidence_state.json").read_text())
     hist = state.get("sufficiency_history", [])
     iteration = state.get("iteration", 0)
+    max_iterations = state.get("MAX_ITERATIONS", 8)  # Read from state, default to 8
 
     if not hist:
         display(HTML("<p><em>No sufficiency checks performed yet.</em></p>"))
@@ -230,7 +231,7 @@ def render_sufficiency(workspace: str) -> None:
     html = (
         f"<div style='border:2px solid {status_color};border-radius:8px;"
         f"padding:16px;margin:8px 0'>"
-        f"<h3>Sufficiency Check (Iteration {iteration}/8)</h3>"
+        f"<h3>Sufficiency Check (Iteration {iteration}/{max_iterations})</h3>"
         f"<p><strong>Label:</strong> {label} &nbsp; "
         f"<strong>Status:</strong> "
         f"<span style='color:{status_color};font-weight:bold'>"
@@ -355,6 +356,7 @@ def render_sufficiency_from_state(state) -> None:
         d = state
     hist = d.get("sufficiency_history", [])
     iteration = d.get("iteration", 0)
+    max_iterations = d.get("MAX_ITERATIONS", 8)  # Read from state, default to 8
 
     if not hist:
         display(HTML("<p><em>No sufficiency checks performed yet.</em></p>"))
@@ -398,7 +400,7 @@ def render_sufficiency_from_state(state) -> None:
     html = (
         f"<div style='border:2px solid {status_color};border-radius:8px;"
         f"padding:16px;margin:8px 0'>"
-        f"<h3>Sufficiency Check (Iteration {iteration}/8)</h3>"
+        f"<h3>Sufficiency Check (Iteration {iteration}/{max_iterations})</h3>"
         f"<p><strong>Label:</strong> {label} &nbsp; "
         f"<strong>Status:</strong> "
         f"<span style='color:{status_color};font-weight:bold'>"

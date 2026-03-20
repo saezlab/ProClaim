@@ -336,6 +336,7 @@ class VerificationSettings(BaseSettings):
             "LLM_API_KEY": self.api_key,
             "LLM_MODEL": self.subagent_model,
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
+            "MAX_ITERATIONS": str(self.max_iterations),
         }
         # Keep ANTHROPIC_API_KEY in environment for Claude models
         return env

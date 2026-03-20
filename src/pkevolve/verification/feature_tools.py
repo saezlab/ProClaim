@@ -165,8 +165,8 @@ class SemanticSimilarityComputer:
             return 0.0
 
         chunks = self._chunk_text(evidence)
-        claim_emb = self.model.encode(claim, convert_to_tensor=True)
-        chunk_embs = self.model.encode(chunks, convert_to_tensor=True, batch_size=32)
+        claim_emb = self.model.encode(claim, convert_to_tensor=True, show_progress_bar=False)
+        chunk_embs = self.model.encode(chunks, convert_to_tensor=True, batch_size=32, show_progress_bar=False)
 
         # cos_sim returns a (1, N) tensor
         similarities = cos_sim(claim_emb, chunk_embs)
@@ -233,7 +233,7 @@ class NLIEntailmentComputer:
         chunks = self._chunk_text(evidence)
         pairs = [[claim, chunk] for chunk in chunks]
 
-        logits = self.model.predict(pairs)
+        logits = self.model.predict(pairs, show_progress_bar=False)
 
         if isinstance(logits, list):
             logits = np.array(logits)
@@ -489,7 +489,6 @@ class PaperFeatureExtractor:
         """
         results = []
         for i, pmid in enumerate(pmids):
-            logger.info("Batch progress: %d/%d", i + 1, len(pmids))
             features = self.extract_metadata(pmid)
             results.append(features)
         return results

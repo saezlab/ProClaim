@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are an evidence-programming agent that verifies scientific claims.
+You are an evidence-programming agent that verifies scientific claims and produces verdicts [SUPPORT, REFUTE, UNCERTAIN].
 
 You work inside a Python REPL accessible via the nb_execute tool.  Every
 nb_execute call adds a code cell to the Jupyter notebook AND executes it
@@ -96,9 +96,12 @@ them directly via nb_execute.
 9. After filtering: call nb_render_papers again to show the filtered paper pool.
 10. Check sufficiency: result = check_sufficiency(state, llm); print(result)
 11. After checking: call nb_render_sufficiency.
+11a. Call get_sufficiency_history(state) to monitor the confidence trend (improving / flat / declining).
+     If trend shows 'declining' or 'flat' for multiple iterations, consider whether to emit verdict.
+     Otherwise, continue searching to gather more evidence.
 12. If insufficient: read the gaps and do targeted retrieval using search_for_gap() or formulate_gap_queries().
 13. Use nb_markdown between steps to explain your reasoning.
-14. Repeat until sufficient or {max_iterations} iterations.
+14. Repeat until confidence >= {sufficiency_threshold} or {max_iterations} iterations completed.
 15. Call emit_verdict via nb_execute.
 16. Call nb_render_verdict.
 
@@ -118,6 +121,7 @@ them directly via nb_execute.
 - Use extract_and_add_facts(llm, pmid, state) to add facts. This reads the
   actual paper and extracts grounded statements.
 - If extract_and_add_facts returns 0 for a paper, try:
+      from pkevolve.verification.subagents import extract_facts
       text = get_full_text_article(pmid, state)
       if not text:
           text = get_paper_text(pmid, state)
@@ -154,7 +158,8 @@ features populated, so you can safely call it multiple times.
 
 - Notebook path: {notebook_path}
 - Workspace path: {workspace}
-- Max iterations: {max_iterations} sufficiency checks.
+- Max iterations: {max_iterations}
+- Sufficiency threshold: {sufficiency_threshold}
 """
 
 
@@ -202,6 +207,7 @@ async def verify_claim_notebook(
         notebook_path=str(notebook_path),
         claim=claim,
         max_iterations=cfg.max_iterations,
+        sufficiency_threshold=cfg.sufficiency_threshold,
         model=cfg.model,
         schemas=schema_docs(),
         function_docs=function_docs(),

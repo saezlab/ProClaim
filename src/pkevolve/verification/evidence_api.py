@@ -157,8 +157,10 @@ def schema_docs() -> str:
         "  - source_pmid must reference a paper in state.papers. Facts with unknown PMIDs are REJECTED.\n"
         "  - Do NOT write fact dicts by hand. Use extract_and_add_facts(llm, pmid, state) instead.\n"
         "  - When creating a PaperRecord manually, `authors` must be a list[str], e.g. [\"Author Name\"].\n"
-        "  - If extract_and_add_facts returns 0 for a paper, try get_full_text_article(pmid, state)\n"
-        "    first, then call extract_facts(llm, text, state.claim, state.subclaims, pmid) manually.\n"
+        "  - If extract_and_add_facts returns 0 for a paper, import extract_facts from subagents:\n"
+        "      from pkevolve.verification.subagents import extract_facts\n"
+        "    Then: text = get_full_text_article(pmid, state)\n"
+        "    And: facts = extract_facts(llm, text, state.claim, state.subclaims, pmid)\n"
     )
 
 
@@ -186,7 +188,7 @@ def function_docs() -> str:
         get_full_text_article, get_paper_text, extract_and_add_facts,
         extract_and_add_facts_batch,
         add_facts_from_dicts, update_synthesis, add_conflict,
-        get_evidence_summary, check_sufficiency, compress_evidence,
+        get_evidence_summary, check_sufficiency, get_sufficiency_history, compress_evidence,
         emit_verdict, formulate_pubmed_query, search_for_gap,
         populate_paper_features, populate_paper_features_parallel, filter_papers_by_stance,
     ]
@@ -1257,8 +1259,6 @@ def populate_paper_features_parallel(
         logger.info(msg)
         return msg
 
-    print(f"populate_paper_features_parallel: processing {len(papers_to_process)} papers with {max_workers} workers...")
-
     processed_count = 0
     skipped_count = len(state.papers) - len(papers_to_process)
 
@@ -1272,7 +1272,6 @@ def populate_paper_features_parallel(
             pmid, was_processed = future.result()
             if was_processed:
                 processed_count += 1
-                print(f"  ✓ PMID {pmid}: features computed")
             else:
                 skipped_count += 1
 
@@ -1281,7 +1280,6 @@ def populate_paper_features_parallel(
 
     msg = f"Populated features for {processed_count} papers in parallel, skipped {skipped_count} (already processed)"
     logger.info(msg)
-    print(f"populate_paper_features_parallel: {msg}")
     return msg
 
 
@@ -1368,9 +1366,9 @@ def check_sufficiency(
     Raises MaxIterationsExceeded if the iteration limit is reached.
     """
 
-    if state.iteration >= MAX_ITERATIONS:
+    if state.iteration >= state.MAX_ITERATIONS:
         raise MaxIterationsExceeded(
-            f"Iteration limit ({MAX_ITERATIONS}) reached. "
+            f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
             "Call emit_verdict() to produce your final verdict.",
             state=state,
         )
@@ -1436,7 +1434,7 @@ def check_sufficiency(
         mlp_label == "sufficient"
         and min_papers_per_iteration > 0
         and papers_added_this_iteration < min_papers_per_iteration
-        and state.iteration < MAX_ITERATIONS  # Don't force on last iteration
+        and state.iteration < state.MAX_ITERATIONS  # Don't force on last iteration
     ):
         override_reason = (
             f"Minimum paper requirement not met: only {papers_added_this_iteration} "
@@ -1481,7 +1479,7 @@ def check_sufficiency(
     state._auto_save()  # Persist sufficiency check result to disk
 
     # Print structured feedback for the agent
-    print(f"=== SUFFICIENCY CHECK (iteration {state.iteration}/{MAX_ITERATIONS}) ===")
+    print(f"=== SUFFICIENCY CHECK (iteration {state.iteration}) ===")
     print(f"Papers: {current_paper_count} total (+{papers_added_this_iteration} this iteration)")
     print(f"MLP Prediction: {mlp_label} (confidence: {prob:.6f})")
     if override_reason:
@@ -1498,6 +1496,89 @@ def check_sufficiency(
             print(f"     Action: {gap.description}")
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Sufficiency History / Trend Analysis
+# ---------------------------------------------------------------------------
+
+
+def get_sufficiency_history(
+    state: EvidenceState,
+    window: int = 3,
+    min_delta: float = 0.02,
+    decline_delta: float = 0.05,
+) -> dict:
+    """Report the sufficiency confidence trend over recent iterations.
+
+    A pure-Python diagnostic tool — no LLM calls.  Call this after
+    ``check_sufficiency`` to understand whether the evidence search is
+    improving, stagnating, or declining.  The LLM is responsible for
+    deciding what action to take in response.
+
+    Args:
+        state: The current EvidenceState.
+        window: Number of recent iterations to analyse. Default 3.
+        min_delta: If ``max - min`` of the last ``window`` confidence
+            scores is below this, the trend is **flat** (stagnated).
+            Default 0.02.
+        decline_delta: If the last confidence minus the first confidence
+            in the window is below ``-decline_delta``, the trend is
+            **declining**.  Default 0.05.
+
+    Returns:
+        dict: {"trend": str} where trend is one of:
+            - "improving": evidence quality is increasing
+            - "flat": evidence quality has stagnated
+            - "declining": evidence quality is decreasing
+            - "insufficient_history": not enough iterations yet
+
+    The full history table is printed to stdout for human inspection.
+    Use state.sufficiency_history to access raw iteration data.
+    """
+    history = [
+        {
+            "iteration": i + 1,
+            "label": r.label,
+            "confidence": r.confidence,
+        }
+        for i, r in enumerate(state.sufficiency_history)
+    ]
+
+    # --- Print history table -------------------------------------------------
+    print("=== SUFFICIENCY HISTORY ===")
+    if not history:
+        print("  (no sufficiency checks yet)")
+    else:
+        print(f"  {'Iter':>4}  {'Label':<12}  {'Confidence':>10}")
+        for row in history:
+            print(
+                f"  {row['iteration']:>4}  {row['label']:<12}  "
+                f"{row['confidence']:>10.6f}"
+            )
+
+    # --- Trend analysis ------------------------------------------------------
+    if len(history) < window:
+        trend = "insufficient_history"
+    else:
+        recent_scores = [row["confidence"] for row in history[-window:]]
+        first, last = recent_scores[0], recent_scores[-1]
+        score_range = max(recent_scores) - min(recent_scores)
+
+        if last - first < -decline_delta:
+            trend = "declining"
+        elif score_range < min_delta:
+            trend = "flat"
+        else:
+            trend = "improving"
+
+    print(f"\nTrend: {trend}")
+
+    # Return only trend to prevent LLM from over-analyzing the data
+    # The full history is still printed above for human inspection
+    return {
+        "trend": trend,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1717,6 +1798,14 @@ def setup_kernel(
         workspace=ws,
     )
 
+    # Override MAX_ITERATIONS from environment (set by build_sdk_env from config)
+    max_iter_env = os.environ.get("MAX_ITERATIONS")
+    if max_iter_env is not None:
+        try:
+            state.MAX_ITERATIONS = int(max_iter_env)
+        except ValueError:
+            pass  # keep default if env var is malformed
+
     base_url = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1/")
     api_key = (
         os.environ.get("LLM_API_KEY")
@@ -1732,5 +1821,5 @@ def setup_kernel(
 
     llm = make_llm(base_url=base_url, api_key=api_key, model=model)
 
-    print(f"Kernel ready. state=<{len(state.papers)} papers>, llm={model!r}")
+    print(f"Kernel ready. state=<{len(state.papers)} papers>, llm={model!r}, max_iterations={state.MAX_ITERATIONS}")
     return state, llm, ws
