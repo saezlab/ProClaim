@@ -13,6 +13,7 @@ Connect: Claude Agent SDK connects via stdio transport.
 """
 
 import logging
+import os
 from pathlib import Path
 
 import nbformat
@@ -24,6 +25,24 @@ from pkevolve.verification.kernel_runner import KernelRunner
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("notebook-tools")
+
+# ---------------------------------------------------------------------------
+# Output truncation
+# ---------------------------------------------------------------------------
+
+_MAX_OUTPUT = int(os.environ.get("NB_MAX_OUTPUT_CHARS", "12000"))
+DEFAULT_EXEC_LIMIT = _MAX_OUTPUT
+DEFAULT_RENDER_LIMIT = _MAX_OUTPUT
+DEFAULT_READ_OUTPUT_LIMIT = _MAX_OUTPUT
+
+
+def _smart_truncate(text: str, limit: int = DEFAULT_EXEC_LIMIT) -> str:
+    """Truncate text with a header so the agent knows data was clipped."""
+    if len(text) <= limit:
+        return text
+    suffix = f"\n[...TRUNCATED — showing {limit} of {len(text)} chars. "\
+             f"Call nb_read_output to retrieve the full cell output.]"
+    return text[:limit - len(suffix)] + suffix
 
 # ---------------------------------------------------------------------------
 # Global state: in-memory notebooks and kernel runners
@@ -175,7 +194,7 @@ def nb_execute(code: str, notebook_path: str) -> str:
     cell with its output. Use for custom analysis, visualization, or data
     inspection. The kernel retains state between calls."""
     output = _add_code_cell(notebook_path, code, execute=True)
-    return f"Code cell executed. Output:\n{output[:500]}"
+    return f"Code cell executed. Output:\n{_smart_truncate(output, DEFAULT_EXEC_LIMIT)}"
 
 
 @mcp.tool()
@@ -188,7 +207,7 @@ def nb_render_papers(workspace: str, notebook_path: str) -> str:
         f"render_papers({workspace!r})"
     )
     output = _add_code_cell(notebook_path, code, execute=True)
-    return f"Papers table rendered. {output[:200]}"
+    return f"Papers table rendered. {_smart_truncate(output, DEFAULT_RENDER_LIMIT)}"
 
 
 @mcp.tool()
@@ -201,7 +220,7 @@ def nb_render_facts(workspace: str, notebook_path: str) -> str:
         f"render_facts({workspace!r})"
     )
     output = _add_code_cell(notebook_path, code, execute=True)
-    return f"Facts table rendered. {output[:200]}"
+    return f"Facts table rendered. {_smart_truncate(output, DEFAULT_RENDER_LIMIT)}"
 
 
 @mcp.tool()
@@ -214,7 +233,7 @@ def nb_render_sufficiency(workspace: str, notebook_path: str) -> str:
         f"render_sufficiency({workspace!r})"
     )
     output = _add_code_cell(notebook_path, code, execute=True)
-    return f"Sufficiency visualization rendered. {output[:200]}"
+    return f"Sufficiency visualization rendered. {_smart_truncate(output, DEFAULT_RENDER_LIMIT)}"
 
 
 @mcp.tool()
@@ -227,7 +246,49 @@ def nb_render_verdict(workspace: str, notebook_path: str) -> str:
         f"render_verdict({workspace!r})"
     )
     output = _add_code_cell(notebook_path, code, execute=True)
-    return f"Verdict card rendered. {output[:200]}"
+    return f"Verdict card rendered. {_smart_truncate(output, DEFAULT_RENDER_LIMIT)}"
+
+
+@mcp.tool()
+def nb_read_output(
+    notebook_path: str,
+    cell_index: int = -1,
+    max_chars: int = DEFAULT_READ_OUTPUT_LIMIT,
+) -> str:
+    """Read the full text output of a notebook cell.
+
+    Use this when nb_execute or nb_render_* output was truncated (indicated by
+    a [TRUNCATED] marker).  Defaults to the last executed cell.  Specify a
+    0-based cell_index to read a different cell.  max_chars controls the
+    maximum length returned (default 8000)."""
+    import re as _re
+
+    nb = _get_notebook(notebook_path)
+    try:
+        cell = nb.cells[cell_index]
+    except IndexError:
+        return f"Cell index {cell_index} out of range (notebook has {len(nb.cells)} cells)."
+
+    text_parts: list[str] = []
+    for out in cell.get("outputs", []):
+        otype = out.get("output_type", "")
+        if otype == "stream":
+            text_parts.append(out.get("text", ""))
+        elif otype in ("display_data", "execute_result"):
+            data = out.get("data", {})
+            if "text/plain" in data:
+                text_parts.append(data["text/plain"])
+            elif "text/html" in data:
+                text_parts.append(_re.sub(r"<[^>]+>", "", data["text/html"]))
+        elif otype == "error":
+            text_parts.append(
+                f"ERROR: {out.get('ename')}: {out.get('evalue')}"
+            )
+
+    full = "\n".join(text_parts)
+    if not full:
+        return "(no output)"
+    return _smart_truncate(full, max_chars)
 
 
 @mcp.tool()
