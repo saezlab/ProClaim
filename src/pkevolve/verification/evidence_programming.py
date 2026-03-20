@@ -110,6 +110,8 @@ them directly via nb_execute.
 - Use nb_execute for ALL evidence API calls — write Python code directly.
 - Use nb_markdown for narrative explanation.
 - Use nb_render_* for visualizations (these are separate tools).
+- If any tool output ends with [TRUNCATED], call nb_read_output to retrieve
+  the full cell content (defaults to the last cell; pass cell_index for older cells).
 - `state` persists across nb_execute calls (same kernel).
 - All output from nb_execute is via print().
 - When emit_verdict is called, the verification is complete.
@@ -237,6 +239,7 @@ async def verify_claim_notebook(
             "mcp__notebook-tools__nb_render_facts",
             "mcp__notebook-tools__nb_render_sufficiency",
             "mcp__notebook-tools__nb_render_verdict",
+            "mcp__notebook-tools__nb_read_output",
             "mcp__notebook-tools__nb_save",
         ],
         disallowed_tools=[

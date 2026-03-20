@@ -219,7 +219,8 @@ class VerificationSettings(BaseSettings):
     )
     max_output_chars: int = Field(
         default=12_000,
-        description="Truncate kernel output fed back to LLM.",
+        description="Max chars returned to the agent from any notebook tool "
+                    "(nb_execute, nb_render_*, nb_read_output).",
     )
 
     # ── Paths ─────────────────────────────────────────────────────────
@@ -337,6 +338,8 @@ class VerificationSettings(BaseSettings):
             "LLM_MODEL": self.subagent_model,
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
             "MAX_ITERATIONS": str(self.max_iterations),
+            # Notebook MCP truncation limit
+            "NB_MAX_OUTPUT_CHARS": str(self.max_output_chars),
         }
         # Keep ANTHROPIC_API_KEY in environment for Claude models
         return env
