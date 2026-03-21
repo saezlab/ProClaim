@@ -229,3 +229,7 @@ data/signor/
 *.csv
 *.pth
 *.txt
+
+# HPC runtime state files
+.vllm_server_info
+.signor_job_info

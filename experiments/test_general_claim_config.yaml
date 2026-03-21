@@ -32,7 +32,7 @@ llm:
   # agent_base_url: "https://api.z.ai/api/anthropic" # Z.AI Anthropic-compatible endpoint
 
   # Subagent configuration (shared by both Claude and GLM)
-  subagent_model: ./qwen3-8b  # Must match vLLM model ID exactly
+  subagent_model: ./qwen3.5-9b  # Must match vLLM model ID exactly
   subagent_base_url: "http://codon-gpu-015.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
   temperature: 0.7
 

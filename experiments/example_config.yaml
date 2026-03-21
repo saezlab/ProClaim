@@ -26,7 +26,7 @@ sufficiency_threshold: 0.80
 # LLM configuration
 llm:
   # Claude configuration (using official Anthropic API)
-  model: claude-sonnet-4-20250514  # Claude Sonnet 4 (or claude-sonnet-4-5-20250929 for latest)
+  model: claude-sonnet-4-6
   agent_base_url: "https://api.anthropic.com" # Official Anthropic API endpoint
 
   # GLM configuration (commented out - switch back by uncommenting)

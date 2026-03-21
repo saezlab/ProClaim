@@ -17,6 +17,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Dict, Any, Tuple
+import yaml
 
 import pandas as pd
 
@@ -29,10 +30,14 @@ DEFAULT_INPUT_CSV = "/hps/nobackup/saezrodriguez/shared_datasets/signor*/ground_
 DEFAULT_OUTPUT_CSV = PROJECT_ROOT / "results" / "signor_eval_results.csv"
 DEFAULT_CONFIG = PROJECT_ROOT / "experiments" / "example_config.yaml"
 
-# Cost estimates (as per Claude Sonnet 4 pricing, arbitrary placeholder)
-# Update these if exact pricing tracking is critical.
-COST_PER_1M_INPUT_TOKENS = 3.00
-COST_PER_1M_OUTPUT_TOKENS = 15.00
+# Token pricing per 1M tokens (input, output) in USD
+CLAUDE_PRICING = {
+    "claude-opus-4-6": (5.00, 25.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+}
+# Fallback to Sonnet pricing if model is not recognized
+DEFAULT_PRICING = (3.00, 15.00)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -108,6 +113,17 @@ def get_flipped_label(original_label: str, flip: bool) -> str:
 # Execution and Result Parsing
 # ---------------------------------------------------------------------------
 
+def get_model_from_config(config_path: Path) -> str:
+    """Extracts the LLM model name from the given YAML config."""
+    try:
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f)
+                return config.get("llm", {}).get("model", "unknown-model")
+    except Exception as e:
+        logger.warning(f"Failed to load model from {config_path}: {e}")
+    return "unknown-model"
+
 def parse_verdict_file(verdict_path: Path) -> Dict[str, Any]:
     """ Safely parse a verdict.json file to extract required fields. """
     try:
@@ -129,6 +145,8 @@ def run_evaluation(
     claim: str, 
     output_dir: Path, 
     config_path: Path, 
+    in_price: float = DEFAULT_PRICING[0],
+    out_price: float = DEFAULT_PRICING[1],
     env_vars: Dict[str, str] = None
 ) -> Dict[str, Any]:
     """ Runs evidence_programming.py via subprocess to evaluate the given claim. """
@@ -138,11 +156,44 @@ def run_evaluation(
     if verdict_path.exists():
         logger.info(f"Verdict already exists, skipping run: {output_dir}")
         stats = parse_verdict_file(verdict_path)
-        # Placeholder for token usage since we don't currently save it in verdict.json
-        # A more advanced parser would search output_dir/workspace/trace.json or run.log
-        stats["input_tokens"] = 0
-        stats["output_tokens"] = 0
-        stats["cost_estimate"] = 0.0
+
+        # Try to parse token usage from existing run.log
+        in_tok = 0
+        out_tok = 0
+        cache_creation_tok = 0
+        cache_read_tok = 0
+
+        run_log_path = output_dir / "run.log"
+        if run_log_path.exists():
+            try:
+                log_content = run_log_path.read_text()
+                for line in log_content.splitlines():
+                    if "INFO: Usage:" in line and "input_tokens" in line:
+                        try:
+                            usage_str = line.split("INFO: Usage: ")[1].replace("'", '"')
+                            usage_dict = json.loads(usage_str)
+                            in_tok += usage_dict.get("input_tokens", 0)
+                            out_tok += usage_dict.get("output_tokens", 0)
+                            cache_creation_tok += usage_dict.get("cache_creation_input_tokens", 0)
+                            cache_read_tok += usage_dict.get("cache_read_input_tokens", 0)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # Calculate cost with correct Anthropic prompt caching pricing
+        cost_input = (in_tok / 1_000_000) * in_price
+        cost_cache_write = (cache_creation_tok / 1_000_000) * in_price * 1.25
+        cost_cache_read = (cache_read_tok / 1_000_000) * in_price * 0.1
+        cost_output = (out_tok / 1_000_000) * out_price
+        cost = cost_input + cost_cache_write + cost_cache_read + cost_output
+
+        stats["input_tokens"] = in_tok
+        stats["output_tokens"] = out_tok
+        stats["cache_creation_tokens"] = cache_creation_tok
+        stats["cache_read_tokens"] = cache_read_tok
+        stats["total_input_tokens"] = in_tok + cache_creation_tok + cache_read_tok
+        stats["cost_estimate"] = round(cost, 4)
         return stats
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -179,29 +230,56 @@ def run_evaluation(
         }
         
     logger.info(f"Run finished in {time.time() - start_time:.1f}s")
-    
-    # Try parsing token usage from stderr logger output
+
+    # Parse token usage from run.log (not stderr, since logging goes to file)
     in_tok = 0
     out_tok = 0
-    for line in process.stderr.splitlines():
-        if "Usage: " in line and "input_tokens=" in line:
-            # Example text: Usage: Usage(input_tokens=1500, output_tokens=300)
-            try:
-                parts = line.split("input_tokens=")[1]
-                in_tok_str = parts.split(",")[0]
-                out_tok_str = parts.split("output_tokens=")[1].split(")")[0]
-                in_tok += int(in_tok_str)
-                out_tok += int(out_tok_str)
-            except Exception:
-                pass
-                
-    cost = (in_tok / 1_000_000) * COST_PER_1M_INPUT_TOKENS + (out_tok / 1_000_000) * COST_PER_1M_OUTPUT_TOKENS
+    cache_creation_tok = 0
+    cache_read_tok = 0
+
+    run_log_path = output_dir / "run.log"
+    if run_log_path.exists():
+        try:
+            log_content = run_log_path.read_text()
+            for line in log_content.splitlines():
+                if "INFO: Usage:" in line and "input_tokens" in line:
+                    # Example: INFO: Usage: {'input_tokens': 38, 'cache_creation_input_tokens': 23359, ...}
+                    try:
+                        # Extract the dict portion after "Usage: "
+                        usage_str = line.split("INFO: Usage: ")[1]
+                        # Convert single quotes to double quotes for JSON parsing
+                        usage_str = usage_str.replace("'", '"')
+                        usage_dict = json.loads(usage_str)
+
+                        in_tok += usage_dict.get("input_tokens", 0)
+                        out_tok += usage_dict.get("output_tokens", 0)
+                        cache_creation_tok += usage_dict.get("cache_creation_input_tokens", 0)
+                        cache_read_tok += usage_dict.get("cache_read_input_tokens", 0)
+                    except Exception as e:
+                        logger.debug(f"Failed to parse usage line: {e}")
+                        pass
+        except Exception as e:
+            logger.warning(f"Could not read run.log: {e}")
+
+    # Calculate cost with Anthropic prompt caching pricing
+    # Regular input tokens = normal input price
+    # Cache writes (creation) = 125% of input price (25% premium to write to cache)
+    # Cache reads = 10% of input price (90% discount)
+    cost_input = (in_tok / 1_000_000) * in_price
+    cost_cache_write = (cache_creation_tok / 1_000_000) * in_price * 1.25
+    cost_cache_read = (cache_read_tok / 1_000_000) * in_price * 0.1
+    cost_output = (out_tok / 1_000_000) * out_price
+
+    cost = cost_input + cost_cache_write + cost_cache_read + cost_output
     
     stats = parse_verdict_file(verdict_path)
     stats["input_tokens"] = in_tok
     stats["output_tokens"] = out_tok
+    stats["cache_creation_tokens"] = cache_creation_tok
+    stats["cache_read_tokens"] = cache_read_tok
+    stats["total_input_tokens"] = in_tok + cache_creation_tok + cache_read_tok
     stats["cost_estimate"] = round(cost, 4)
-    
+
     return stats
 
 
@@ -231,6 +309,18 @@ def main():
     output_path = Path(args.output_csv)
     config_path = Path(args.config)
     
+    # Determine model and pricing
+    model_name = get_model_from_config(config_path)
+    in_price, out_price = CLAUDE_PRICING.get(model_name, DEFAULT_PRICING)
+    logger.info(f"Using pricing for model '{model_name}': ${in_price:.2f}/1M input, ${out_price:.2f}/1M output")
+
+    # Prepare environment variables to pass to subprocesses
+    # This ensures LLM_BASE_URL from run_signor_batch.sh is propagated to notebook kernels
+    env_vars = {}
+    if "LLM_BASE_URL" in os.environ:
+        env_vars["LLM_BASE_URL"] = os.environ["LLM_BASE_URL"]
+        logger.info(f"Propagating LLM_BASE_URL={os.environ['LLM_BASE_URL']}")
+
     logger.info(f"Reading dataset: {input_path}")
     df = pd.read_csv(input_path)
     
@@ -239,13 +329,15 @@ def main():
     
     # Define columns for the output CSV
     out_cols = [
-        "SIGNOR_ID", "ENTITYA", "ENTITYB", "Original_Label", "Flipped_Label", 
-        "Claim_String", "Is_Flipped", "Repetition", "Agent_Verdict", 
+        "SIGNOR_ID", "ENTITYA", "ENTITYB", "Original_Label", "Flipped_Label",
+        "Claim_String", "Is_Flipped", "Repetition", "Agent_Verdict",
         "Agent_Confidence", "Reasoning_Snippet", "Output_Directory",
-        "Input_Tokens", "Output_Tokens", "Cost_Estimate"
+        "Input_Tokens", "Output_Tokens", "Cache_Creation_Tokens", "Cache_Read_Tokens",
+        "Total_Input_Tokens", "Cost_Estimate"
     ]
     
     # Initialize output CSV if it doesn't exist
+    existing_runs = set()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not output_path.exists():
         with open(output_path, "w", newline="") as f:
@@ -253,6 +345,16 @@ def main():
             writer.writerow(out_cols)
     else:
         logger.info(f"Resuming with existing output CSV: {output_path}")
+        with open(output_path, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    sid_val = row.get("SIGNOR_ID")
+                    flip_val = row.get("Is_Flipped") == "True"
+                    rep_val = int(row.get("Repetition", 1))
+                    existing_runs.add((sid_val, flip_val, rep_val))
+                except Exception:
+                    pass
 
     # Process each row
     total_rows = len(df)
@@ -271,11 +373,14 @@ def main():
              expected_label = get_flipped_label(orig_label, flip=flip)
              
              for rep in range(1, args.reps + 1):
+                 if (sid, flip, rep) in existing_runs:
+                     continue
+                 
                  run_dir_name = f"{sid}/flip_{flip}/rep_{rep}"
                  run_dir = PROJECT_ROOT / "results" / "signor_eval" / run_dir_name
                  
                  logger.info(f"Running Repetition {rep}/{args.reps} (Flipped: {flip})")
-                 stats = run_evaluation(claim_str, run_dir, config_path)
+                 stats = run_evaluation(claim_str, run_dir, config_path, in_price, out_price, env_vars=env_vars)
                  
                  # Append straight to CSV safely
                  row_dict = {
@@ -293,6 +398,9 @@ def main():
                      "Output_Directory": str(run_dir.relative_to(PROJECT_ROOT)),
                      "Input_Tokens": stats.get("input_tokens", 0),
                      "Output_Tokens": stats.get("output_tokens", 0),
+                     "Cache_Creation_Tokens": stats.get("cache_creation_tokens", 0),
+                     "Cache_Read_Tokens": stats.get("cache_read_tokens", 0),
+                     "Total_Input_Tokens": stats.get("total_input_tokens", 0),
                      "Cost_Estimate": stats.get("cost_estimate", 0.0)
                  }
                  
