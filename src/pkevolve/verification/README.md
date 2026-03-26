@@ -55,6 +55,20 @@ The `pkevolve.verification` package implements a **Metacognitive Evidence Verifi
 | `subagents.py` | LLM subagent prompts for fact extraction, synthesis, conflict detection, gap queries | `extract_facts()`, `synthesize_subclaim()`, `detect_conflicts()`, `identify_gaps()`, `formulate_gap_queries()` |
 | `llm_factory.py` | Factory for thread-safe `llm(prompt) -> str` callables with retry + streaming | `make_llm()` |
 
+#### Search Method Comparison
+
+| Function | Query source | LLM cost | Best for |
+|---|---|---|---|
+| `search_pubmed(query, state)` | Caller-supplied string | None | Known query, manual control |
+| `search_pubmed_progressive(claim, state)` | Regex on claim (gene symbols + bio-verb map) | None | Gene symbol PPI claims |
+| `search_pubmed_llm(claim, state, llm)` | LLM-generated | 1 call | Diverse/complex claims |
+| `search_for_gap(gap_description, state)` | Gap description string | None | Mid-loop gap filling |
+
+- **`search_pubmed`** — takes a pre-formed query string and runs it as-is. Use when you already have a well-formed PubMed query.
+- **`search_pubmed_progressive`** — generates a cascade of queries from most-specific to broadest via regex entity extraction (uppercase gene symbols) and a biological verb→noun mapping (e.g. "activates" → "activation"). Stops early once enough papers are found. Fails gracefully on non-gene claims by falling back to bag-of-words.
+- **`search_pubmed_llm`** — passes the claim to an LLM to produce a single comprehensive PubMed query. No tiering — one shot. Better than progressive search for diverse claim types (drug resistance, diagnosis, disease mechanisms) where regex entity extraction is unreliable.
+- **`search_for_gap`** — thin wrapper around `search_pubmed()` for use mid-loop when the sufficiency classifier identifies missing evidence.
+
 ### Retrieval
 
 | Module | Purpose | Key Functions |

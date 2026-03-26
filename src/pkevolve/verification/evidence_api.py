@@ -567,8 +567,18 @@ def find_related_articles(
 def get_full_text_article(pmid: str, state: EvidenceState) -> str:
     """Retrieve full text through a layered fallback chain.
 
-    Tries PMC Open Access, INDRA literature, and Unpaywall+PDF in order.
-    Falls back to abstract if all layers fail.
+    Delegates to ``full_text.fetch_full_text`` which tries in order:
+        1 → PMC Open Access XML
+        1b → Europe PMC REST API
+        1.5 → Semantic Scholar OA PDF
+        2 → INDRA literature
+        3 → Unpaywall + PDF
+        4 → PubMed structured abstract (last resort)
+
+    Layer 4 ensures ``fetch_full_text`` returns the PubMed structured
+    abstract (with section labels) rather than ``None``, so this function
+    almost never falls through to ``paper.abstract``.  Text from Layer 4
+    is prefixed with ``[Abstract only — full text unavailable]``.
 
     Updates ``paper.full_text`` in state on success and returns the text.
     """
@@ -594,7 +604,8 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
         print(f"Full text retrieved for PMID {pmid}: {len(full_text)} chars")
         return full_text
 
-    print(f"No full text available for PMID {pmid}. Using abstract.")
+    # Final fallback: plain abstract already stored on the paper record
+    print(f"No text available for PMID {pmid} (all layers failed). Using stored abstract.")
     return paper.abstract
 
 
