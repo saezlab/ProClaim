@@ -1,200 +1,237 @@
-# Verification Subsystem
+# Verification System — Agent Reference
 
-Evidence programming loop for GRN edge verification. Verifies scientific
-claims (e.g. "MAPK1 directly activates H3-3A") by iteratively gathering,
-analysing, and reasoning over published papers.
+## Purpose
 
-The LLM is used surgically for three steps (fact extraction, gap query
-formulation, verdict). Everything else — search, sufficiency checking,
-compression, state management — is deterministic.
+The `pkevolve.verification` package implements a **Metacognitive Evidence Verification** system. Given a scientific claim (e.g., a gene regulatory interaction), it searches PubMed for supporting/refuting papers, extracts grounded facts, computes NLP/metadata features, runs a trained MLP sufficiency classifier, and emits a structured verdict.
 
-## Architecture
+## Architecture Overview
 
 ```
-evidence_programming.py   ← unified CLI entry point (--mode sdk | repl)
-├── Mode A (sdk)          ← Claude Agent SDK + nb_execute (notebook audit trail)
-│   ├── notebook_mcp.py   ← MCP tool server: nb_init, nb_execute, nb_render_*
-│   └── kernel_runner.py  ← persistent Jupyter kernel management
-├── Mode B (repl)         ← standalone REPL, any OpenAI-compatible endpoint
-│   ├── repl_orchestrator.py  ← LLM generates Python code blocks
-│   └── kernel_runner.py      ← same shared kernel
-├── evidence_api.py       ← pure Python API: search, extract, check, verdict
-├── subagents.py          ← LLM subagent functions (facts, synthesis, conflicts, gaps)
-├── evidence_state.py     ← EvidenceState: mutable container with auto-save
-├── data_models.py        ← Pydantic v2 models: PaperRecord, Fact, Stance, Gap, …
-├── full_text.py          ← layered full-text retrieval (PMC → INDRA → Unpaywall)
-├── compressor.py         ← L1 deduplication (lossless)
-├── config.py             ← VerificationSettings (pydantic-settings + YAML + CLI)
-├── adapters.py           ← dataset adapters (SIGNOR, SciFact → common Claim format)
-└── renderers.py          ← HTML/notebook rendering helpers
+                  ┌──────────────────────────────┐
+                  │  evidence_programming.py      │  ← Entry point (Claude Agent SDK)
+                  │  (notebook orchestrator)       │
+                  └──────────┬───────────────────┘
+                             │ calls MCP tools
+                  ┌──────────▼───────────────────┐
+                  │  notebook_mcp.py              │  ← MCP tool server (nb_execute, etc.)
+                  │  kernel_runner.py             │  ← Jupyter kernel lifecycle
+                  └──────────┬───────────────────┘
+                             │ executes Python in kernel
+          ┌──────────────────▼──────────────────────────┐
+          │              evidence_api.py                  │  ← Core API (all functions)
+          │  search → extract → populate features →      │
+          │  check_sufficiency → emit_verdict             │
+          └──┬──────┬──────────┬──────────┬─────────────┘
+             │      │          │          │
+    ┌────────▼┐ ┌───▼────┐ ┌──▼───────┐ ┌▼──────────────┐
+    │full_text│ │subagents│ │feature_  │ │model_registry │
+    │.py      │ │.py      │ │tools.py  │ │.py            │
+    │(4-layer │ │(LLM     │ │(NLP +    │ │(singleton     │
+    │ fetch)  │ │ calls)  │ │ metadata)│ │ model cache)  │
+    └─────────┘ └─────────┘ └──────────┘ └───────────────┘
+             │                    │               │
+    ┌────────▼────────────────────▼───────────────▼─────┐
+    │  data_models.py  │  evidence_state.py  │ config.py │
+    │  (Pydantic v2)   │  (mutable state +   │ (settings │
+    │                   │   JSON persistence) │  + YAML)  │
+    └───────────────────┴────────────────────┴──────────┘
 ```
 
-## How it works
+## Module Reference
 
-The loop iterates through these steps:
+### Data Layer
 
-1. **Progressive PubMed search** — queries are tried from most specific (exact gene pair + mechanism) to broader bridge queries (each gene + shared biological terms). This handles cases where the two genes never co-occur in the literature.
-2. **Full-text retrieval** — layered fallback: PMC XML → Europe PMC REST → INDRA → Unpaywall PDF. Retrieved text is validated against the paper title.
-3. **Fact extraction (LLM)** — for each paper, the LLM extracts stance-labeled facts (SUPPORT / REFUTE / NEUTRAL) with confidence scores and subclaim mappings.
-4. **Sufficiency check** — a deterministic classifier evaluates source diversity, stance coverage, conflicts, and subclaim coverage. This is the agent's primary feedback signal (no LLM cost).
-5. **Gap-targeted retrieval (LLM)** — if insufficient, the classifier reports gap types and the LLM formulates new PubMed queries. Failed queries are tracked to avoid repetition.
-6. **Citation graph fallback** — when keyword searches find no new papers, `find_related_articles` explores citation neighborhoods (rotating seed PMIDs across iterations).
-7. **Compression** — when `token_estimate` exceeds 40,000, `compress_evidence` deduplicates facts (L1 lossless).
-8. **Verdict (LLM)** — once sufficient or after max iterations, the LLM synthesises a final SUPPORT / REFUTE / INSUFFICIENT verdict.
+| Module | Purpose | Key Exports |
+|--------|---------|-------------|
+| `data_models.py` | Pydantic v2 schemas for all evidence structures | `PaperRecord`, `Fact`, `Stance`, `Conflict`, `Gap`, `SufficiencyResult`, `VerificationVerdict`, `PaperFeatureVector`, `NLPFeatureVector` |
+| `evidence_state.py` | Central mutable state container with auto-save to JSON | `EvidenceState`, `TraceLog` |
+| `config.py` | Layered settings (CLI > YAML > env > defaults) via pydantic-settings | `VerificationSettings`, `APISettings`, `LLMSettings`, `get_settings()` |
 
-Steps 1–7 repeat until confidence ≥ threshold or max iterations are reached.
+### Core API
 
-## Two execution modes
+| Module | Purpose | Key Functions |
+|--------|---------|---------------|
+| `evidence_api.py` | Pure Python evidence manipulation API — **the main interface** | `search_pubmed()`, `search_pubmed_progressive()`, `search_pubmed_llm()`, `get_full_text_article()`, `extract_and_add_facts()`, `extract_and_add_facts_batch()`, `populate_paper_features()`, `filter_papers_by_stance()`, `check_sufficiency()`, `emit_verdict()` |
+| `subagents.py` | LLM subagent prompts for fact extraction, synthesis, conflict detection, gap queries | `extract_facts()`, `synthesize_subclaim()`, `detect_conflicts()`, `identify_gaps()`, `formulate_gap_queries()` |
+| `llm_factory.py` | Factory for thread-safe `llm(prompt) -> str` callables with retry + streaming | `make_llm()` |
 
-Both modes share the same evidence_api, subagents, and kernel_runner.
+### Retrieval
 
-### Mode A: Claude Agent SDK (`--mode sdk`)
+| Module | Purpose | Key Functions |
+|--------|---------|---------------|
+| `full_text.py` | 4-tier full-text fetching: PMC → Europe PMC → INDRA → Unpaywall+PDF | `fetch_full_text(pmid, *, doi=, title=, max_chars=)` |
+| `adapters.py` | Dataset-agnostic claim adapters (SIGNOR edges, SciFact claims) | `SignorAdapter`, `SciFactAdapter`, `Claim` dataclass |
 
-- The outer agent loop is Claude Agent SDK (Anthropic-compatible endpoint)
-- **One MCP server**: `notebook-tools` (`pkevolve.verification.notebook_mcp`) — provides `nb_init`, `nb_execute`, `nb_render_*`, `nb_save`
-- `nb_execute` is the primary tool — the agent writes Python code that calls evidence_api functions directly in a persistent Jupyter kernel
-- The notebook serves as an **audit trail** — every search, extraction, and decision is a cell
-- Requires `GLM_API_KEY` in `.env` and the `claude_agent_sdk` package
+### Feature Extraction & Classification
 
-### Mode B: Standalone REPL (`--mode repl`)
+| Module | Purpose | Key Classes/Functions |
+|--------|---------|----------------------|
+| `feature_tools.py` | NLP features (scispaCy NER, SBERT similarity, DeBERTa NLI) + metadata (OpenAlex) | `SemanticSimilarityComputer`, `NLIEntailmentComputer`, `PaperFeatureExtractor`, `compute_entity_coverage()` |
+| `model_registry.py` | Global singleton cache for heavy ML models (SBERT, NLI, MLP classifier) | `get_mlp_classifier()`, `get_semantic_similarity_computer()`, `get_nli_entailment_computer()`, `get_feature_aggregator()`, `get_metadata_extractor()`, `prewarm_all_models()`, `get_cache_status()` |
+| `compressor.py` | L1 lossless deduplication of facts by (text, stance) | `SufficiencyPreservingCompressor` |
 
-- No Claude SDK needed — uses any OpenAI-compatible endpoint (vLLM, Z.AI, local)
-- The LLM generates Python code blocks; the orchestrator extracts and executes them in a Jupyter kernel
-- Kernel stdout/stderr is fed back as the next user message
-- Hard ceiling of 30 LLM turns; conversation log saved to `conversation.json`
-- Supports batch processing via `verify_claims_batch()`
+### Orchestration & Rendering
+
+| Module | Purpose | Key Exports |
+|--------|---------|-------------|
+| `evidence_programming.py` | Main entry point — Claude Agent SDK orchestrator with notebook as audit trail | `async verify_claim_notebook(cfg)`, `main()` |
+| `notebook_mcp.py` | MCP tool server exposing 9 notebook tools (`nb_init`, `nb_execute`, `nb_render_*`, `nb_read_output`, `nb_save`) | FastMCP server |
+| `kernel_runner.py` | Jupyter kernel lifecycle (start, execute, shutdown) | `KernelRunner` |
+| `renderers.py` | HTML renderers for evidence state (papers, facts, sufficiency, verdict) displayed in notebook cells | `render_papers()`, `render_facts()`, `render_sufficiency()`, `render_verdict()` |
+
+## Data Flow — Verification Workflow
+
+```
+1. CLAIM SETUP
+   Subclaims are set on EvidenceState (populated externally or by the orchestrator).
+
+2. SEARCH (per iteration, up to MAX_ITERATIONS=8)
+   subclaims → search_pubmed_progressive() → PMIDs[]
+   PMIDs → get_full_text_article() → full text or abstract
+
+3. FACT EXTRACTION
+   (claim, paper text) → extract_and_add_facts(llm, pmid, state) → Fact[]
+   Each fact: {text, stance: SUPPORT|REFUTE|NEUTRAL, source_pmid, confidence}
+
+4. FEATURE POPULATION
+   papers[] → populate_paper_features(state) → PaperFeatureVector + NLPFeatureVector per paper
+     - Entity coverage (scispaCy NER recall)
+     - Semantic similarity (SBERT cosine, max-pooled over chunks)
+     - NLI scores (DeBERTa cross-encoder: entailment/contradiction/neutral)
+     - Metadata (publication year, impact factor, citations, h-index via OpenAlex)
+
+5. SUFFICIENCY CHECK
+   aggregated features → MLP classifier → SufficiencyResult {label, confidence, gaps[]}
+   If insufficient → loop back to step 2 with gap-targeted queries
+
+6. VERDICT
+   state → emit_verdict(verdict, confidence, reasoning, key_evidence, gaps_remaining, state) → VerificationVerdict
+```
+
+## Key Data Structures
+
+### EvidenceState (central mutable state)
+
+```python
+EvidenceState(
+    claim="Does MAPK1 phosphorylate H3?",
+    subclaims=["MAPK1 has kinase activity", "H3 is a MAPK1 substrate", ...],
+    papers={pmid: PaperRecord(pmid, title, abstract, full_text, metadata, nlp)},
+    facts=[Fact(text, stance, source_pmid, confidence)],
+    conflicts=[Conflict(fact_a_id, fact_b_id, description, severity)],
+    sufficiency_history=[SufficiencyResult(label, confidence, gaps)],
+    iteration=0,
+)
+```
+
+Auto-saves to `{workspace}/evidence_state.json` after every mutation.
+
+### Feature Vectors (per paper)
+
+```python
+PaperFeatureVector(pmid, publication_year, log_impact_factor, normalized_citation_count, author_h_index_max)
+NLPFeatureVector(claim_entity_coverage, semantic_similarity, nli_entailment, nli_contradiction, nli_neutral)
+```
+
+### 24-Feature Aggregated Schema (MLP input)
+
+Aggregated across all papers in the evidence pool by `FeatureAggregator`:
+
+| Category | Features |
+|----------|----------|
+| **Metadata (11)** | `num_papers`, `num_papers_with_metadata`, `num_full_text`, `max_log_IF`, `mean_log_IF`, `max_h_index`, `avg_max_h_index`, `max_norm_citation`, `mean_norm_citation`, `latest_year_age`, `year_span` |
+| **NLP (7)** | `entailment_ratio`, `contradiction_ratio`, `controversy_index`, `max_entity_coverage`, `mean_entity_coverage`, `max_similarity`, `mean_similarity` |
+| **Cross (6)** | `weighted_entailment_IF`, `weighted_contradiction_IF`, `weighted_entailment_citation`, `weighted_contradiction_citation`, `weighted_entailment_temporal`, `weighted_contradiction_temporal` |
 
 ## Configuration
 
-Configuration uses `pydantic-settings` with layered resolution (highest priority first):
+### From YAML (recommended)
 
-1. CLI flags (`--model`, `--claim`, etc.)
-2. Environment variables (from `.env` at project root)
-3. YAML config file (`--config path/to/config.yaml`)
-4. Field defaults
-
-### YAML config files
-
-Store experiment parameters in YAML for reproducibility (see `experiments/example_config.yaml`):
-
-```yaml
-mode: repl
-max_iterations: 8
-sufficiency_threshold: 0.80
-
-llm:
-  model: glm-5
-  subagent_model: Qwen/Qwen3-8B
-  subagent_base_url: "http://localhost:8000/v1/"
-  agent_base_url: "https://api.z.ai/api/anthropic"
-  temperature: 0.7
-
-output_dir: results/verification/my_experiment
-verbose: true
+```python
+from pkevolve.verification.config import VerificationSettings
+cfg = VerificationSettings.from_yaml("experiments/signor_eval_config.yaml")
 ```
 
-The `claim` field is intentionally excluded from YAML — it varies per run and must be provided via `--claim`.
-
-Save a snapshot of the current run config: `cfg.save_yaml("experiments/run_snapshot.yaml")`
-
-## Usage
+### From CLI
 
 ```bash
-# Start a vLLM endpoint (for subagent LLM calls)
-bash /hps/nobackup/saezrodriguez/ail/workspace/start_vllm_ihpc.sh \
-    --user <username> --gpu-type a100 --gpus 1 --model Qwen/Qwen3-8B
-
-# Mode B (REPL) — any OpenAI-compatible endpoint
 uv run python -m pkevolve.verification.evidence_programming \
-    --mode repl \
-    --model Qwen/Qwen3-8B \
-    --subagent-base-url http://localhost:8000/v1/ \
-    --claim "MAPK1 directly activates H3-3A."
-
-# Mode A (SDK) — requires GLM_API_KEY in .env
-uv run python -m pkevolve.verification.evidence_programming \
-    --mode sdk \
-    --claim "SRC directly down-regulates CTTN." \
-    --output-dir results/verification/src_cttn
-
-# Using a YAML config file
-uv run python -m pkevolve.verification.evidence_programming \
-    --config experiments/example_config.yaml \
-    --claim "Does p53 activate BAX?"
-
-# Override config file values with CLI flags
-uv run python -m pkevolve.verification.evidence_programming \
-    --config experiments/example_config.yaml \
-    --claim "EGFR activates MAPK1 via phosphorylation." \
-    --model gpt-4o --max-iterations 12
+    --config experiments/signor_eval_config.yaml \
+    --claim "Does MAPK1 phosphorylate H3?"
 ```
 
-## CLI options
+### Key Settings
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--claim` | *(required)* | Scientific claim to verify |
-| `--config`, `-c` | — | Path to a YAML config file |
-| `--mode` | `sdk` | Orchestration mode: `sdk` or `repl` |
-| `--model` | `glm-5` | Model identifier for the outer/main agent |
-| `--subagent-model` | same as `--model` | Model for inner subagent LLM calls |
-| `--subagent-base-url` | `http://localhost:8000/v1/` | OpenAI-compatible base URL for subagent |
-| `--agent-base-url` | `https://api.z.ai/api/anthropic` | Anthropic-compatible base URL (Mode A) |
-| `--threshold` | `0.80` | Sufficiency confidence threshold |
-| `--max-iterations` | `8` | Max sufficiency-check iterations |
-| `--output-dir` | `results/verification/notebook_demo` | Output workspace directory |
-| `--notebook-path` | `<output-dir>/evidence_report.ipynb` | Notebook path (Mode A only) |
-| `-v` | off | Enable debug logging |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `llm.model` | — | Main LLM model identifier |
+| `llm.subagent_model` | (falls back to `model`) | Inner subagent model |
+| `llm.agent_base_url` | `https://api.z.ai/api/anthropic` | Anthropic-compatible endpoint |
+| `llm.subagent_base_url` | `http://localhost:8000/v1` | OpenAI-compatible (vLLM) |
+| `max_iterations` | 8 | Search/extract loop limit |
+| `sufficiency_threshold` | 0.80 | MLP confidence threshold |
+| `api.glm_api_key` | env `GLM_API_KEY` | API key (priority: GLM > ZAI > OpenAI) |
 
-## Output
+## Environment Variables
 
-Both modes produce structured output in the workspace directory:
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `GLM_API_KEY` / `ZAI_API_KEY` | Yes (one of) | LLM API authentication |
+| `UNPAYWALL_EMAIL` | Optional | Full-text PDF retrieval via Unpaywall |
+| `ELSEVIER_API_KEY` | Optional | Full-text via INDRA/Elsevier |
+| `MLP_MODEL_DIR` | Optional | Override MLP classifier directory (default: `results/models/classifier_best/`) |
+| `NB_MAX_OUTPUT_CHARS` | Optional | Notebook output truncation limit (default: 12000) |
 
-- **`workspace/evidence_state.json`** — full evidence state: papers, facts, conflicts, sufficiency history, synthesis, coverage, token estimate
-- **`workspace/verdict.json`** — final structured verdict with reasoning, key evidence, and remaining gaps
-- **`run.log`** — execution log
+## Common Agent Tasks
 
-Mode A additionally produces:
-- **`evidence_report.ipynb`** — Jupyter notebook with rendered papers, facts, sufficiency checks, and verdict cards
+### Run a single verification
 
-Mode B additionally produces:
-- **`workspace/conversation.json`** — full LLM conversation log
-- **`workspace/trace.json`** — operation trace with timestamps
+```python
+from pkevolve.verification.config import VerificationSettings
+from pkevolve.verification.evidence_programming import verify_claim_notebook
 
-## Environment variables
+cfg = VerificationSettings.from_yaml("experiments/config.yaml", claim="Does X regulate Y?")
+result_path = await verify_claim_notebook(cfg)  # async — use asyncio.run() if not in async context
+```
 
-| Variable | Description |
-|----------|-------------|
-| `GLM_API_KEY` | API key for Z.AI / GLM models (primary) |
-| `ZAI_API_KEY` | Alias for `GLM_API_KEY` (fallback) |
-| `OPENAI_API_KEY` | Fallback API key |
-| `ANTHROPIC_BASE_URL` | Override the Anthropic-compatible endpoint for Mode A |
-| `LLM_BASE_URL` | Override the OpenAI-compatible endpoint for subagent calls |
-| `API_TIMEOUT_MS` | Request timeout in milliseconds (default: `3000000`) |
-| `UNPAYWALL_EMAIL` | Email for Unpaywall API (full-text PDF retrieval) |
-| `ELSEVIER_API_KEY` | Elsevier API key for INDRA full-text via ScienceDirect |
+### Use the evidence API directly (without notebook)
 
-## Prerequisites
+```python
+from pkevolve.verification.evidence_state import EvidenceState
+from pkevolve.verification.evidence_api import (
+    search_pubmed_progressive, extract_and_add_facts,
+    populate_paper_features, check_sufficiency, emit_verdict
+)
+from pkevolve.verification.llm_factory import make_llm
 
-- Python ≥ 3.10, managed with `uv`
-- The `pkevolve` package must be importable (`uv pip install -e .`)
-- For Mode A: `claude_agent_sdk` + `GLM_API_KEY` in `.env`
-- For Mode B: any OpenAI-compatible endpoint (vLLM, Z.AI OpenAI endpoint, etc.)
+llm = make_llm(base_url="http://localhost:8000/v1", api_key="EMPTY", model="my-model")
+state = EvidenceState.init_new(claim="...", subclaims=["..."], workspace=Path("workspace/"))
 
-## Module reference
+# Search → Extract → Features → Check → Verdict
+pmids = search_pubmed_progressive(claim, state)
+for pmid in pmids:
+    extract_and_add_facts(llm, pmid, state)
+populate_paper_features(state)
+result = check_sufficiency(state, llm)
+verdict = emit_verdict(
+    verdict=result.label, confidence=result.confidence,
+    reasoning="...", key_evidence=["..."], gaps_remaining=[],
+    state=state,
+)
+```
 
-| File | Purpose |
-|------|---------|
-| `evidence_programming.py` | Unified CLI entry point; Mode A orchestrator |
-| `repl_orchestrator.py` | Mode B standalone REPL orchestrator |
-| `evidence_api.py` | Pure Python API: search, extract, check sufficiency, verdict |
-| `subagents.py` | LLM subagent functions: fact extraction, synthesis, conflict detection, gap identification |
-| `evidence_state.py` | `EvidenceState`: mutable Pydantic container with auto-save to JSON |
-| `data_models.py` | Pydantic v2 models: `PaperRecord`, `Fact`, `Stance`, `Gap`, `SufficiencyResult`, `VerificationVerdict` |
-| `full_text.py` | Layered full-text retrieval: PMC → Europe PMC → INDRA → Unpaywall PDF |
-| `compressor.py` | `SufficiencyPreservingCompressor`: L1 deduplication (lossless) |
-| `config.py` | `VerificationSettings`: unified config via pydantic-settings + YAML + CLI |
-| `adapters.py` | Dataset adapters: `SignorAdapter`, `SciFact` → common `Claim` format |
-| `notebook_mcp.py` | MCP tool server for Jupyter notebook management (Mode A) |
-| `kernel_runner.py` | Jupyter kernel lifecycle management (shared by both modes) |
-| `renderers.py` | HTML/notebook rendering helpers |
+### Load and inspect an existing state
+
+```python
+from pkevolve.verification.evidence_state import EvidenceState
+state = EvidenceState.load(Path("workspace/evidence_state.json"))
+print(f"Papers: {len(state.papers)}, Facts: {len(state.facts)}")
+print(f"Last sufficiency: {state.sufficiency_history[-1].label}")
+```
+
+### Prewarm ML models (avoid cold-start latency)
+
+```python
+from pkevolve.verification.model_registry import prewarm_all_models
+timings = prewarm_all_models()  # loads SBERT, NLI, MLP into memory
+```
