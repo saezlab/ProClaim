@@ -78,23 +78,23 @@ class Verdict(BaseModel):
 |---------|-----------|-------------------|
 | **SciFact-Open** | `SUPPORT`, `CONTRADICT`, ∅ (no evidence) | `SUPPORT` → `SUPPORT`, `CONTRADICT` → `REFUTE`, no evidence → `NEI` |
 | **SIGNOR\*** | `SUPPORTED`, `WRONG`, `UNCERTAIN` | `SUPPORTED` → `SUPPORT`, `WRONG` → `REFUTE`, `UNCERTAIN` → `NEI` |
-| **CIViC-Fact** | `SUPPORTS`, `DOES_NOT_SUPPORT` | `SUPPORTS` → `SUPPORT`, `DOES_NOT_SUPPORT` → `REFUTE` (no NEI class) |
-| **ConnectomeDB2025** | `Direct`, `Inferred` | `Direct` → `SUPPORT` (experimentally verified); `Inferred` → `NEI` (orthology-inferred, no primary evidence for that species) |
+| **CIViC-Fact** | `SUPPORTS`, `REFUTES`, `NEI` | `SUPPORTS` → `SUPPORT`, `REFUTES` → `REFUTE`, `NEI` → `NEI` |
+| **ConnectomeDB** | `SUPPORTED`, `REFUTED`, `NEI` | `SUPPORTED` → `SUPPORT`, `REFUTED` → `REFUTE`, `NEI` → `NEI` |
 | **Evidence Programming (our system)** | `SUPPORT`, `REFUTE`, `UNCERTAIN` | `UNCERTAIN` → `NEI` |
 
-Implement this in the evaluation harness as a `normalize_label()` function applied to both predictions and gold labels before any metric computation. For CIViC-Fact (2-class), report binary F1 alongside 3-class metrics and note the missing NEI class.
+Implement this in the evaluation harness as a `normalize_label()` function applied to both predictions and gold labels before any metric computation. For CIViC-Fact (3-class), report macro F1; binary F1 (SUPPORTS vs. REFUTES) as a secondary metric.
 
 ```python
 # src/baselines/shared/label_utils.py
 LABEL_MAP = {
-    # SciFact-Open
+    # SciFact-Open (evidence dict labels)
     "CONTRADICT": "REFUTE",
-    # SIGNOR*
+    # SIGNOR* (ground_truth.csv Label column)
     "SUPPORTED": "SUPPORT", "WRONG": "REFUTE", "UNCERTAIN": "NEI",
-    # CIViC-Fact
-    "DOES_NOT_SUPPORT": "REFUTE", "SUPPORTS": "SUPPORT",
-    # ConnectomeDB2025
-    "DIRECT": "SUPPORT", "INFERRED": "NEI",
+    # CIViC-Fact (gold_label_name field: SUPPORTS / REFUTES / NEI)
+    "SUPPORTS": "SUPPORT", "REFUTES": "REFUTE",
+    # ConnectomeDB (eval files: SUPPORTED from positives, REFUTED/NEI from negatives)
+    "REFUTED": "REFUTE",
     # Identity (already canonical)
     "SUPPORT": "SUPPORT", "REFUTE": "REFUTE", "NEI": "NEI",
 }
@@ -104,24 +104,177 @@ def normalize_label(label: str) -> str:
 ```
 
 ### LLM Backend
-Use the same backbone LLM across all baselines (e.g., Claude Sonnet 4.5 or GPT-4o — pick one and stick with it). This isolates the architectural comparison.
+Use the same backbone LLM across all baselines. This isolates the architectural comparison.
 
 ```python
 # src/baselines/shared/llm.py
 class LLMBackend:
-    def __init__(self, model: str = "claude-sonnet-4-5-20250929"):
+    def __init__(self, model: str = "claude-sonnet-4-5-20250929",
+                 tracker: CostTracker | None = None):
         self.client = Anthropic()
         self.model = model
-        self.call_count = 0
-        self.total_tokens = 0
+        self.tracker = tracker or CostTracker()
     
     def complete(self, system: str, user: str, temperature: float = 0.0) -> str:
-        # Track cost automatically
-        self.call_count += 1
-        response = self.client.messages.create(...)
-        self.total_tokens += response.usage.input_tokens + response.usage.output_tokens
+        """Single-turn completion. Tracks cost automatically."""
+        response = self.client.messages.create(
+            model=self.model, max_tokens=2048, temperature=temperature,
+            system=system, messages=[{"role": "user", "content": user}]
+        )
+        self.tracker.record_llm_call(
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
         return response.content[0].text
+    
+    def complete_with_tools(self, system: str, messages: list,
+                            tools: list, temperature: float = 0.0):
+        """Multi-turn completion with tool use. For ReAct, FIRE, SAFE."""
+        response = self.client.messages.create(
+            model=self.model, max_tokens=2048, temperature=temperature,
+            system=system, messages=messages, tools=tools
+        )
+        self.tracker.record_llm_call(
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
+        return response
 ```
+
+### Cost Tracker
+
+Wraps every LLM call and search call to automatically track cost. Attach one `CostTracker` per baseline run; reset between claims.
+
+```python
+# src/baselines/shared/cost_tracker.py
+import time
+from dataclasses import dataclass, field
+
+@dataclass
+class TraceEntry:
+    step: int
+    action: str          # "llm_call" | "bm25_search" | "pubmed_search" | "read_abstract"
+    input_tokens: int = 0
+    output_tokens: int = 0
+    wall_clock_seconds: float = 0.0
+    details: dict = field(default_factory=dict)
+
+class CostTracker:
+    def __init__(self):
+        self.trace: list[TraceEntry] = []
+        self._step = 0
+        self._t0 = time.time()
+    
+    def record_llm_call(self, input_tokens: int, output_tokens: int, details: dict = {}) -> None:
+        self.trace.append(TraceEntry(
+            step=self._step, action="llm_call",
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            wall_clock_seconds=time.time() - self._t0, details=details
+        ))
+        self._step += 1
+    
+    def record_search_call(self, query: str, n_results: int, source: str = "pubmed") -> None:
+        self.trace.append(TraceEntry(
+            step=self._step, action=f"{source}_search",
+            wall_clock_seconds=time.time() - self._t0,
+            details={"query": query, "n_results": n_results}
+        ))
+        self._step += 1
+    
+    @property
+    def total_llm_calls(self) -> int:
+        return sum(1 for e in self.trace if e.action == "llm_call")
+    
+    @property
+    def total_tokens(self) -> int:
+        return sum(e.input_tokens + e.output_tokens for e in self.trace)
+    
+    @property
+    def total_search_calls(self) -> int:
+        return sum(1 for e in self.trace if e.action != "llm_call")
+    
+    @property
+    def elapsed_seconds(self) -> float:
+        return time.time() - self._t0
+```
+
+### Baseline Result Schema
+
+Every baseline returns a `BaselineResult` for each claim; the eval harness aggregates these.
+
+```python
+# src/baselines/shared/verdict.py
+from pydantic import BaseModel
+
+class Verdict(BaseModel):
+    label: str          # SUPPORT | REFUTE | NEI
+    confidence: float   # 0-1
+    evidence: list[str] # PMIDs or text snippets used
+    reasoning: str      # Free-text explanation
+    
+    @classmethod
+    def from_llm_response(cls, text: str) -> "Verdict":
+        """Parse LLM JSON response. Falls back to regex; defaults to NEI."""
+        ...
+
+class BaselineResult(BaseModel):
+    claim_id: str
+    claim_text: str
+    gold_label: str
+    verdict: Verdict
+    trace: list = []           # TraceEntry list from CostTracker
+    total_llm_calls: int = 0
+    total_tokens: int = 0
+    total_search_calls: int = 0
+    latency_seconds: float = 0
+```
+
+### Shared Prompts
+
+All baselines that make a final verdict call **must** use the same verification prompt. This is critical for fairness — the only variable across baselines is what evidence is provided.
+
+```python
+# src/baselines/shared/prompts.py
+
+VERIFICATION_SYSTEM_PROMPT = """You are a scientific claim verification expert.
+
+Given a claim and retrieved evidence, determine whether the claim is:
+- SUPPORT: The evidence supports the claim
+- REFUTE: The evidence contradicts the claim
+- NEI: There is not enough information to determine
+
+Respond in JSON format:
+{
+    "label": "SUPPORT" | "REFUTE" | "NEI",
+    "confidence": 0.0-1.0,
+    "reasoning": "Brief explanation citing specific evidence",
+    "evidence": ["PMID1", "PMID2", ...]
+}"""
+
+VERIFICATION_USER_TEMPLATE = """Claim: {claim}
+
+Retrieved Evidence:
+{evidence}
+
+Based on the above evidence, classify the claim."""
+
+DECOMPOSITION_PROMPT = """Decompose the following scientific claim into
+independently verifiable atomic facts. Each fact should be a single
+statement that can be checked against scientific literature.
+
+Output as a JSON list of strings.
+
+Claim: {claim}"""
+
+QUERY_GENERATION_PROMPT = """Generate a PubMed search query to find
+evidence about the following. Output only the query string.
+
+Topic: {topic}"""
+```
+
+### Async & Testing
+
+The `EvaluationHarness` uses `asyncio` with a semaphore (`max_concurrent=5`) to run claims concurrently without overwhelming APIs. Phase completion is verified with `pytest`: `test_shared.py` (infrastructure), `test_datasets.py` (loaders + BM25 index round-trip), `test_baselines.py` (5 claims end-to-end per baseline).
 
 ---
 
@@ -131,45 +284,74 @@ All experiments run on shared datasets located at `/hps/nobackup/saezrodriguez/s
 
 ### Dataset Overview
 
-| Dataset | Claims | Classes | Corpus | Source |
-|---------|--------|---------|--------|--------|
-| **SciFact-Open** | 279 | SUPPORT (116), CONTRADICT (90), NEI (73) | 500K S2ORC abstracts (provided in `data/corpus.jsonl`) | Wadden et al. 2022 |
-| **SIGNOR\*** | 66 | SUPPORTED (34), WRONG (24), UNCERTAIN (9) | *No pre-built corpus — see below* | Custom annotation |
-| **CIViC-Fact** | ~23K | SUPPORTS, DOES_NOT_SUPPORT | *No pre-built corpus — see below* | CIViC database |
-| **ConnectomeDB2025** | 5,429 evidence triplets (human subset: ~1.4K) | Direct, Inferred | *No pre-built corpus — see below* | Liu et al. 2025, [doi:10.1093/nar/gkaf1108](https://doi.org/10.1093/nar/gkaf1108) |
+| Dataset | Eval Subset | Classes | Corpus | Source |
+|---------|-------------|---------|--------|--------|
+| **SciFact-Open** | ~41 (20% test split of 206 annotated) | SUPPORT, CONTRADICT | 500K S2ORC abstracts (`data/corpus.jsonl`) | Wadden et al. 2022 |
+| **SIGNOR\*** | 66 edges / **110 variants** (incl. flipped) | SUPPORTED (34), WRONG (28), UNCERTAIN (4) | *No pre-built corpus — see below* | Custom annotation |
+| **CIViC-Fact** | 2,055 (test partition, `flagged != True`) | SUPPORTS, REFUTES, NEI | *No pre-built corpus — see below* | CIViC database |
+| **ConnectomeDB** | 184 positive + 363 negative/NEI | SUPPORTED, REFUTED, NEI | *No pre-built corpus — see below* | Liu et al. 2025, [doi:10.1093/nar/gkaf1108](https://doi.org/10.1093/nar/gkaf1108) |
 
 ### Corpus Strategy per Dataset
 
 **SciFact-Open:** Corpus is provided (500K abstracts from S2ORC). Use directly for BM25 indexing. Agentic baselines use PubMed API but the 500K corpus serves as the controlled retrieval pool for Fixed-k RAG.
 
+**Evaluation subset:** Use the **20% held-out test split** of the 206 annotated claims (those with `evidence != {}`), stratified by consensus label with `random_state=42`. This produces ~41 claims not used in sufficiency classifier training. Claim string: `claim["claim"]` directly; evidence text from `corpus.jsonl` via `doc_id`.
+
+```python
+from sklearn.model_selection import train_test_split
+annotated = [c for c in all_claims if c.get("evidence")]
+labels = [consensus_label(c) for c in annotated]  # SUPPORT or CONTRADICT
+_, test_claims = train_test_split(annotated, test_size=0.2, stratify=labels, random_state=42)
+# ~41 claims: ~20 SUPPORT, ~21 CONTRADICT
+```
+
 **SIGNOR\*:** No pre-built corpus. Strategy:
+- Path: `/hps/nobackup/saezrodriguez/shared_datasets/signor*/ground_truth.csv`
 - For BM25 baselines: build a corpus from (a) PubMed abstracts of the PMIDs in the `PMID` column of ground_truth.csv, plus (b) 1-hop citation neighbors of those PMIDs. This gives a ~5K–10K abstract pool.
 - For agentic baselines: use live PubMed API search (same as our evidence programming system).
-- **Size concern:** 66 claims (34/24/9 split) gives wide confidence intervals. Macro F1 on the 9-sample UNCERTAIN class is unreliable. Options: (1) expand using the `data/signor/` ground truth (100 TP + 100 TN = 200 edges); (2) collapse to 2-class (SUPPORTED vs. WRONG, dropping 9 UNCERTAIN); (3) report as qualitative case study, not primary benchmark.
+- **Corrected class distribution:** 66 edges — SUPPORTED (34), WRONG (28), UNCERTAIN (4). Only 4 UNCERTAIN edges make the 3-class macro F1 unreliable for that class. Recommended: report 2-class macro F1 (SUPPORTED vs. WRONG) as the primary metric; treat UNCERTAIN edges as a secondary analysis.
+- **Flip logic — 110 variants:** Evaluate all 66 forward claims **plus** negated variants for the 44 `up-regulates*` edges. Only `EFFECT ∈ {up-regulates, up-regulates activity, up-regulates quantity, up-regulates quantity by expression}` is flipped (activation → inhibition direction). Down-regulates and non-directional effects are left as-is. Label inversion on flip: SUPPORTED → WRONG, WRONG → SUPPORTED, UNCERTAIN → UNCERTAIN. **Always use `construct_signor_claim()` from `experiments/run_signor_eval.py`** — do not construct claim strings manually.
+
+```python
+from experiments.run_signor_eval import construct_signor_claim, get_flipped_label
+claims = []
+for _, row in df.iterrows():
+    for flip in [False, True]:
+        claim_str = construct_signor_claim(row["ENTITYA"], row["ENTITYB"], row["EFFECT"], flip=flip)
+        if claim_str is None:  # non-flippable effect — skip duplicate
+            continue
+        label = get_flipped_label(row["Label"], flip=flip)
+        claims.append({"id": row["SIGNOR_ID"], "flip": flip, "claim": claim_str, "label": label})
+# 110 variants total: 66 forward + 44 flipped
+```
 
 **CIViC-Fact:** No pre-built abstract corpus. Strategy:
-- Each CIViC evidence item references a source PMID. Fetch those abstracts via PubMed E-utilities to build an abstract corpus.
-- For BM25 baselines: index these abstracts.
+- Path: `/hps/nobackup/saezrodriguez/shared_datasets/civicfact/data_builder/builds/civicfact-2025.03.25/data.jsonl.gz`
+- **Evaluation subset:** `partition == "test"` and `flagged != True` → **2,055 rows** (SUPPORTS: 689, REFUTES: 666, NEI: 700). `train` + `dev` partitions reserved for fine-tuning or few-shot sampling.
+- **3-class labels:** `gold_label_name` field contains `SUPPORTS` / `REFUTES` / `NEI`. NEI has ~34% prevalence — it is a real class, not an artifact. Report 3-class macro F1; binary F1 (SUPPORTS vs. REFUTES, excluding NEI) as secondary metric.
+- **Claim string:** `row["claim.flat"]` directly — already a natural-language claim; no verbalization needed. Evidence text: `row["evidence.flat"]`. Source PMID: `row["document.pmid"]`.
+- For BM25 baselines: fetch abstracts of the referenced PMIDs via PubMed E-utilities to build the corpus.
 - For agentic baselines: use live PubMed API.
-- **Claim verbalization required:** CIViC-Fact entries are structured tuples `(molecularProfile, evidenceType, significance, therapies, diseases)`, not natural-language claims. Build a `CIViCFactAdapter` that verbalizes each tuple into a natural-language claim, e.g.: *"NT5C2 K359Q confers resistance to Arabinosylguanine or Nelarabine in T-cell Acute Lymphoblastic Leukemia."*
-- **Subsampling:** 23K claims is large for expensive agentic baselines. Subsample to ~500 stratified claims for agentic systems; run full 23K only for cheap baselines (Random, LLM-only, Fixed-k RAG).
+- **Subsampling:** ~2K test claims is manageable for static baselines; subsample to ~500 stratified claims for expensive agentic systems.
 
-**ConnectomeDB2025:** A rigorously curated database of peptide-based ligand–receptor interactions spanning 14 vertebrate species (Liu et al. 2025, [doi:10.1093/nar/gkaf1108](https://doi.org/10.1093/nar/gkaf1108)). Data downloaded from https://connectomedb.org/downloads/Current-Release/CSV/. Strategy:
-- **Use the human subset** (`ConnectomeDB2025_human.csv`) as the primary evaluation set. Each row is a ligand–receptor pair with an `Evidence` column (`Direct` = experimentally verified, `Inferred` = orthology-based) and an `AI summary` field.
-- **Claim construction:** Each entry is a structured (ligand, receptor) pair, not a natural-language claim. Build a `ConnectomeDBAdapter` that verbalizes each pair into a claim, e.g.: *"TGFB1 is a ligand for the receptor TGFBR1, and this interaction is supported by primary experimental evidence."* The adapter should also generate matched negatives by pairing ligands with non-interacting receptors (sampled from the same dataset).
-- **Gold evidence:** Each interaction links to supporting PMIDs from the 2,803 research articles used during curation. This enables evidence recall evaluation (did the system retrieve the correct supporting paper?).
-- **Corpus for BM25:** Fetch abstracts of the ~2,803 supporting publications via PubMed E-utilities. This gives a focused biomedical corpus for Fixed-k RAG.
-- **Negative generation:** ConnectomeDB only contains positive interactions. Generate negatives by: (1) random ligand–receptor pairings not in the database (corrupted pairs); (2) interactions removed during curation (the paper reports >2,900 misclassified or unsupported interactions removed from predecessor databases — extract these if available). Label positives as `SUPPORT`, negatives as `REFUTE`.
-- **Subsampling for agentic systems:** ~1.4K human interactions may be feasible for cheap baselines. Subsample to ~300–500 for agentic systems.
-- **Key value:** ConnectomeDB2025 is complementary to SIGNOR\* (both are molecular interaction databases, but ConnectomeDB focuses on ligand–receptor pairs while SIGNOR covers broader signaling). It provides a larger sample with gold PMIDs for evidence recall, and the availability of removed interactions from predecessor databases enables a natural negative set.
+**ConnectomeDB:** Curated ligand–receptor interaction database (Liu et al. 2025, [doi:10.1093/nar/gkaf1108](https://doi.org/10.1093/nar/gkaf1108)). Data already available at `/hps/nobackup/saezrodriguez/shared_datasets/connectomedb/` — **no download or synthetic negative generation needed**.
+
+- **Evaluation files (use directly):**
+  - `cdb25_direct_multipub_unique.csv` (184 rows) — positives: CDB25 Direct pairs with ≥2 publications, deduplicated. Key columns: `LR Pair`, `Ligand Symbols`, `Receptor Symbols`, `AI summary` (Perplexity URL embedding PMIDs), `Species`.
+  - `ConnectomeDB2020_rejected_labeled.csv` (363 rows) — negatives/NEI: CDB2020 pairs rejected by CDB25 curators. Key columns: `LR_pair`, `Ligand`, `Receptor`, `Label` (`REFUTED` / `NEI`), `Rejection_reason`, `Curator comments`.
+- **Claim string:** form from LR pair columns, e.g. `"{Ligand} directly binds to and activates {Receptor} as a ligand–receptor pair."` for positives; equivalently negated for REFUTED entries.
+- **Gold evidence:** the `AI summary` field in the positive file embeds supporting PMIDs (Perplexity URL format). Extract PMIDs for evidence recall evaluation.
+- **Corpus for BM25:** fetch abstracts of the PMIDs extracted from `AI summary` via PubMed E-utilities.
+- **No subsampling needed:** total 547 claims (184 + 363) is manageable for all baseline types.
+- **Key value:** complements SIGNOR\* — larger sample, gold PMIDs, pre-curated negatives from a real rejection process (not synthetic corruption).
 
 ### Primary vs. Secondary Datasets
 
 | Role | Datasets | Rationale |
 |------|----------|-----------|
-| **Primary** | SciFact-Open, CIViC-Fact | Established benchmarks, sufficient size, 3-class / 2-class |
-| **Primary** | ConnectomeDB2025 | Rigorously curated molecular interactions, gold PMIDs, natural negatives from removed interactions |
-| **Secondary** | SIGNOR\* | Domain-specific (GRN edges), small sample, qualitative |
+| **Primary** | SciFact-Open, CIViC-Fact | Established benchmarks, sufficient size, 3-class |
+| **Primary** | ConnectomeDB | Rigorously curated molecular interactions, gold PMIDs, pre-curated negatives |
+| **Secondary** | SIGNOR\* | Domain-specific (GRN edges), small sample (66 edges / 110 variants), qualitative |
 
 ---
 
@@ -466,71 +648,7 @@ class ReActBaseline:
 
 ---
 
-## 6. Self-RAG
-
-**What it tests:** Whether learned retrieval decisions (via special tokens) outperform your explicit sufficiency classifier. Self-RAG trains the LLM itself to decide when to retrieve.
-
-**Public framework:** Use the official Self-RAG codebase and released models.
-- Repository: https://github.com/AkariAsai/self-rag
-- Models: `selfrag/selfrag_llama2_7b` and `selfrag/selfrag_llama2_13b` on HuggingFace
-- The repo includes inference scripts with vLLM integration and Contriever-based retrieval
-
-**Recommended approach:** Run the released Self-RAG model via their inference pipeline, adapting only the input/output format.
-
-```python
-# src/baselines/self_rag.py
-# Wraps the official Self-RAG inference pipeline from:
-#   https://github.com/AkariAsai/self-rag
-
-class SelfRAGBaseline:
-    """Uses the released Self-RAG pipeline.
-    
-    Steps:
-    1. Format claims as Self-RAG prompts
-    2. Run their run_short_form.py or run_long_form.py script
-    3. Parse the output (with reflection tokens) into Verdict
-    """
-    
-    def __init__(self, model_name: str = "selfrag/selfrag_llama2_13b",
-                 retrieval: RetrievalBackend = None,
-                 use_official_retriever: bool = True):
-        # Option 1 (default): Use their Contriever retriever with our corpus
-        # Option 2: Plug in our RetrievalBackend for BM25
-        self.model_name = model_name
-        self.retrieval = retrieval
-        self.use_official_retriever = use_official_retriever
-    
-    def verify(self, claim: str, corpus: str) -> Verdict:
-        prompt = self._format_claim_prompt(claim)
-        
-        # Self-RAG generates text with reflection tokens:
-        # [Retrieve] = yes/no → decides whether to retrieve
-        # [IsREL] = relevant/irrelevant → judges retrieved passage
-        # [IsSUP] = fully/partially/no support → checks support
-        # [IsUse] = 1-5 → utility rating
-        
-        # Run via their inference script (vLLM backend)
-        result = self._run_selfrag_inference(prompt, corpus)
-        return self._parse_output(result)
-```
-
-**Setup:**
-1. Clone https://github.com/AkariAsai/self-rag into `external/self-rag/`
-2. Download model weights: `selfrag/selfrag_llama2_13b` from HuggingFace
-3. Index our dataset corpuses using their Contriever pipeline, OR substitute our `RetrievalBackend.bm25_search`
-4. Run their `run_short_form.py` with `--mode always_retrieve` for maximal retrieval (comparable to our system), or `--mode adaptive_retrieval` for their learned retrieve-or-not decision
-
-**Key distinction from our system:** Self-RAG's retrieval decision is binary ("retrieve or don't") with no structured gap feedback. Our classifier provides gap types telling the agent *what* to retrieve.
-
-**Caveat:** Different model family (Llama-2 13B vs. our backbone). Report model size explicitly. This tests the *architecture*, not the LLM backbone.
-
-**Cost:** Variable (1-5 retrieval rounds per claim, model inference is local/GPU).
-
-**Implementation time:** 4-6 hours (model download, vLLM setup, corpus indexing with Contriever).
-
----
-
-## 7. SAFE (Search Augmented Factuality Evaluator)
+## 6. SAFE (Search Augmented Factuality Evaluator)
 
 **What it tests:** Per-fact independent verification vs. your shared evidence state across subclaims. SAFE decomposes claims into atomic facts and verifies each independently — no cross-fact evidence aggregation.
 
@@ -615,7 +733,7 @@ class SAFEBaseline:
 
 ---
 
-## 8. FIRE (Fact-checking with Iterative Retrieval and Verification)
+## 7. FIRE (Fact-checking with Iterative Retrieval and Verification)
 
 **What it tests:** Our learned MLP sufficiency classifier vs. FIRE's LLM-internal confidence gating. FIRE uses the LLM's own confidence to decide whether to search or stop.
 
@@ -732,7 +850,7 @@ identified in the previous assessment. Output only the query.""",
 
 ---
 
-## 9. OpenScholar
+## 8. OpenScholar
 
 **What it tests:** Whether a specialised scientific literature synthesis system — with a curated datastore of 45M papers, trained retrievers, and self-feedback — outperforms our evidence programming approach on claim verification (a task OpenScholar was not specifically designed for).
 
@@ -837,7 +955,6 @@ python run.py --input_file claims.jsonl --model_name "gpt-4o" --api "openai" \
 
 | System | Effort | Notes |
 |--------|--------|-------|
-| Self-RAG (released 13B model) | 2-3 days | Different model family; tests learned retrieval tokens |
 | OpenScholar (OS-8B or OS-GPT4o) | 3-4 days | Heavy setup (datastore download); synthesis→verification framing mismatch |
 
 ---
@@ -847,7 +964,7 @@ python run.py --input_file claims.jsonl --model_name "gpt-4o" --api "openai" \
 Before running experiments, verify these consistency conditions:
 
 - [ ] **Label normalization** applied to both predictions and gold labels via `normalize_label()` before any metric computation (see Label Taxonomy section above)
-- [ ] **Same LLM backbone** for all non-specialised baselines (except Self-RAG 13B and OpenScholar-8B — report model sizes)
+- [ ] **Same LLM backbone** for all non-specialised baselines (except OpenScholar-8B — report model size)
 - [ ] **Same verification prompt** for verdict extraction across Fixed-k RAG, LLM+Search, and final-step verdict in agentic systems
 - [ ] **Same corpus** for BM25 retrieval (Fixed-k) and PubMed API search (agentic systems operate on the same underlying literature)
 - [ ] **Same output schema** (Verdict dataclass) parsed the same way for all systems, including our evidence programming system via `verdict_from_verification()` adapter
@@ -855,6 +972,7 @@ Before running experiments, verify these consistency conditions:
 - [ ] **Same max compute budget** — ensure no system gets dramatically more tokens than others without this being visible in the Cost column
 - [ ] **Deterministic runs:** At temperature=0, a single run suffices (repeated runs are identical). For agentic systems (ReAct, FIRE, our system) where PubMed API results may vary, run 3 times with **varied claim order** (not just random seeds) to capture variance from API result ordering and rate limits
 - [ ] **Cost tracking** captures ALL LLM calls including intermediate reasoning, query generation, relevance judgments — not just the final verdict call
-- [ ] **CIViC-Fact claim verbalization** validated: manually check ~50 verbalized claims against original structured tuples for semantic fidelity
-- [ ] **ConnectomeDB2025 negatives** validated: confirm that generated negative pairs do not accidentally overlap with true interactions in the database
-- [ ] **Public framework fidelity**: for systems using official codebases (Self-RAG, SAFE, OpenScholar), document all modifications from the original (search backend swap, prompt changes, output parsing) in a reproducibility appendix
+- [ ] **CIViC-Fact label field** confirmed: use `gold_label_name` (SUPPORTS/REFUTES/NEI); filter `flagged == True` rows; use test partition only
+- [ ] **ConnectomeDB eval files** confirmed: load from curated CSVs at `/hps/nobackup/saezrodriguez/shared_datasets/connectomedb/`; verify `Label` column in rejected file contains only `REFUTED`/`NEI`
+- [ ] **SIGNOR flip logic** validated: 110 variants generated via `construct_signor_claim()` + `get_flipped_label()` from `experiments/run_signor_eval.py`; no manual claim strings
+- [ ] **Public framework fidelity**: for systems using official codebases (SAFE, OpenScholar), document all modifications from the original (search backend swap, prompt changes, output parsing) in a reproducibility appendix

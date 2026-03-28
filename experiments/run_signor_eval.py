@@ -54,45 +54,44 @@ logger = logging.getLogger("signor_eval")
 # Claim Generation Logic
 # ---------------------------------------------------------------------------
 
-def construct_signor_claim(source: str, target: str, interaction: str, flip: bool = False) -> Tuple[str, str]:
+def construct_signor_claim(source: str, target: str, interaction: str, flip: bool = False) -> str:
     """
     Constructs the natural language claim from the entities and interaction.
-    Also returns the expected flipped label mapping.
+
+    Flip logic:
+    - Only positive edges (activation) are flipped to negative (inhibition)
+    - Negative edges are NOT flipped
+    - Non-directional edges (e.g., binding) are NOT flipped
     """
     # Group definitions based on signor_utils.py
     is_positive = interaction in [
-        'up-regulates', 
-        'up-regulates activity', 
-        'up-regulates quantity', 
+        'up-regulates',
+        'up-regulates activity',
+        'up-regulates quantity',
         'up-regulates quantity by expression'
     ]
     is_negative = interaction in [
-        'down-regulates', 
-        'down-regulates activity', 
+        'down-regulates',
+        'down-regulates activity',
         'down-regulates quantity by destabilization'
     ]
-    
-    # Apply flip logic to the interaction type
-    if flip:
-        if is_positive:
-            is_positive = False
-            is_negative = True
-        elif is_negative:
-            is_negative = False
-            is_positive = True
-            
+
+    # Apply flip logic: ONLY flip positive edges
+    if flip and is_positive:
+        # Flip positive to negative
+        is_positive = False
+        is_negative = True
+
     # Formulate claim sentence
     if is_positive:
-        claim_str = f"{source} directly activates {target} (either through activation or increase of expression)."
+        claim_str = f"{source} directly activates {target} (either through post-translational modification, complex formation, stabilization, or regulation of expression)."
     elif is_negative:
-        claim_str = f"{source} directly inhibits {target} (either through inhibition or destabilization)."
+        claim_str = f"{source} directly inhibits {target} (either through post-translational modification, complex formation, destabilization, or regulation of expression)."
     else:
-        # Complex, unknown, or other interactions
-        if flip:
-            claim_str = f"{source} does not physically interact with {target}."
-        else:
-            claim_str = f"{source} physically interacts with {target}."
-            
+        # Non-directional interactions (e.g., binding, complex formation)
+        # These are never flipped
+        claim_str = f"{source} directly interacts with {target} (e.g., physical binding)."
+
     return claim_str
 
 def get_flipped_label(original_label: str, flip: bool) -> str:
