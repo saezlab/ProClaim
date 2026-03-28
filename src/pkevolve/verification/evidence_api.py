@@ -564,6 +564,271 @@ def find_related_articles(
     return added_pmids
 
 
+# ---------------------------------------------------------------------------
+# Semantic Scholar discovery helpers
+# ---------------------------------------------------------------------------
+
+# DOI pattern used for citation chaining (matches all standard DOI prefixes).
+_DOI_RE = re.compile(r"\b10\.\d{4,}/[^\s,;)\]\"\'<>]+")
+
+
+def _s2_paper_to_record(data: dict, state: EvidenceState) -> "PaperRecord | None":
+    """Convert a Semantic Scholar API response dict to a PaperRecord.
+
+    Returns ``None`` if the paper is already present in *state* (dedup by
+    PMID or DOI).
+
+    ID resolution:
+    - If ``externalIds.PubMed`` is set → use that as the PMID string.
+    - Otherwise → ``S2:{paperId}``.
+
+    The open-access PDF URL is logged but not stored on PaperRecord
+    (a ``pdf_url`` field would be needed).  ``get_full_text_article`` can
+    still retrieve the PDF via its Unpaywall fallback.
+    """
+    s2_id = data.get("paperId", "")
+    external = data.get("externalIds") or {}
+    pmid = external.get("PubMed") or f"S2:{s2_id}"
+
+    # Check dedup by PMID
+    if pmid in state.papers:
+        return None
+
+    # Check dedup by DOI (cross-source: same paper may have a PubMed PMID in
+    # the state already but arrive here with an S2: id).
+    doi_raw = (external.get("DOI") or "").strip().lower() or None
+    if doi_raw:
+        for existing in state.papers.values():
+            if existing.doi and existing.doi.lower() == doi_raw:
+                return None
+
+    authors: list[str] = []
+    for a in data.get("authors") or []:
+        name = a.get("name", "")
+        if name:
+            authors.append(name)
+
+    oa = data.get("openAccessPdf") or {}
+    oa_url = oa.get("url") or None
+    if oa_url:
+        logger.debug("S2 OA PDF available for %s: %s", pmid, oa_url)
+
+    return PaperRecord(
+        pmid=pmid,
+        title=data.get("title") or "",
+        abstract=data.get("abstract") or "",
+        authors=authors,
+        doi=doi_raw,
+        source="semantic_scholar",
+    )
+
+
+def _add_s2_records(
+    results: list[dict], state: EvidenceState,
+) -> list[str]:
+    """Convert S2 result dicts, dedup, add to state, return added IDs."""
+    added: list[str] = []
+    for item in results:
+        record = _s2_paper_to_record(item, state)
+        if record is None:
+            continue
+        state.add_paper(record)
+        added.append(record.pmid)
+    if added:
+        state.token_estimate = state.token_count()
+    return added
+
+
+def search_semantic_scholar(
+    query: str,
+    state: EvidenceState,
+    max_results: int = 10,
+) -> list[str]:
+    """Search Semantic Scholar and add papers to state.
+
+    Complements ``search_pubmed_llm`` by covering preprints (bioRxiv) and
+    non-MEDLINE sources.  Use the same query string as the PubMed search.
+
+    Args:
+        query: Free-text query (PubMed-style Boolean queries also work).
+        state: EvidenceState to add papers to.
+        max_results: Maximum papers to retrieve (S2 cap: 100).
+
+    Returns:
+        List of added paper IDs (PMID strings or ``S2:<id>``).
+    """
+    from pkevolve.search.semantic_scholar import S2Client
+
+    client = S2Client()
+    results = client.search(query, limit=max_results)
+    added = _add_s2_records(results, state)
+    print(
+        f"S2 Search: found {len(results)}, added {len(added)} new. "
+        f"IDs: {', '.join(added) if added else 'none'}"
+    )
+    return added
+
+
+def search_semantic_scholar_recommendations(
+    state: EvidenceState,
+    seed_pmids: list[str] | None = None,
+    max_results: int = 20,
+) -> list[str]:
+    """Expand paper pool via S2 Recommendations using confirmed-relevant seeds.
+
+    Seeds are auto-derived from papers that produced at least one SUPPORT fact
+    when ``seed_pmids`` is ``None``.  Papers with only REFUTE facts are used as
+    negative seeds to steer results away from irrelevant directions.
+
+    Requires at least one positive seed; returns ``[]`` with a warning if none
+    are available.  Call this at iteration ≥ 1, after facts have been extracted
+    from initial PubMed papers.
+
+    Args:
+        state: EvidenceState with papers and facts populated.
+        seed_pmids: Explicit positive seeds (PMID strings).  Overrides
+            auto-selection when provided.
+        max_results: Maximum papers to add (S2 cap: 500).
+
+    Returns:
+        List of added paper IDs.
+    """
+    from pkevolve.search.semantic_scholar import S2Client
+    from pkevolve.verification.data_models import Stance
+
+    if seed_pmids is not None:
+        positive_pmids = list(seed_pmids)
+        negative_pmids: list[str] = []
+    else:
+        # Auto-derive: positive = papers with ≥1 SUPPORT fact
+        positive_pmids = [
+            pmid for pmid in state.papers
+            if any(
+                f.source_pmid == pmid and f.stance == Stance.SUPPORT
+                for f in state.facts
+            )
+        ]
+        # Negative = papers whose facts are exclusively REFUTE
+        positive_set = set(positive_pmids)
+        negative_pmids = [
+            pmid for pmid in state.papers
+            if pmid not in positive_set
+            and state.facts  # only when there are facts at all
+            and all(
+                f.stance == Stance.REFUTE
+                for f in state.facts
+                if f.source_pmid == pmid
+            )
+            and any(f.source_pmid == pmid for f in state.facts)
+        ]
+
+    if not positive_pmids:
+        print(
+            "S2 Recommendations: no positive seeds available yet "
+            "(call after extracting facts from initial papers)."
+        )
+        return []
+
+    # S2 accepts "PMID:<id>" for PubMed papers; S2-origin papers use the
+    # bare 40-char S2 paper ID (strip our internal "S2:" prefix).
+    def _fmt(pmid: str) -> str:
+        if pmid.startswith("S2:"):
+            return pmid[3:]  # bare S2 paper ID
+        return f"PMID:{pmid}"
+
+    pos_ids = [_fmt(p) for p in positive_pmids]
+    neg_ids = [_fmt(p) for p in negative_pmids]
+
+    client = S2Client()
+    results = client.recommendations(pos_ids, neg_ids or None, limit=max_results)
+    added = _add_s2_records(results, state)
+    print(
+        f"S2 Recommendations: {len(positive_pmids)} positive seeds, "
+        f"{len(negative_pmids)} negative seeds → added {len(added)} papers."
+    )
+    return added
+
+
+def expand_via_citations(
+    state: EvidenceState,
+    max_per_paper: int = 5,
+) -> list[str]:
+    """Expand evidence pool by mining DOIs from full-text reference sections.
+
+    For each paper in *state* that has ``full_text`` set, extracts cited DOIs
+    via regex, looks them up via the Semantic Scholar API, and adds new papers
+    to state.  No LLM call is required.
+
+    This implements backward citation chaining: it finds seminal works *cited*
+    by the papers already retrieved, which keyword searches systematically miss.
+
+    Call this after ``get_full_text_article`` has been called for the initial
+    papers so that ``full_text`` fields are populated.
+
+    Args:
+        state: EvidenceState; only papers with ``full_text`` are processed.
+        max_per_paper: Maximum new DOIs to resolve per source paper.
+
+    Returns:
+        List of added paper IDs.
+    """
+    from pkevolve.search.semantic_scholar import S2Client
+
+    # Collect existing DOIs so we can skip already-known papers
+    existing_dois: set[str] = {
+        p.doi.lower()
+        for p in state.papers.values()
+        if p.doi
+    }
+
+    papers_with_text = [
+        p for p in state.papers.values() if p.full_text
+    ]
+    if not papers_with_text:
+        print("Citation chaining: no full texts available yet.")
+        return []
+
+    client = S2Client()
+    all_added: list[str] = []
+
+    for paper in papers_with_text:
+        raw_dois = _DOI_RE.findall(paper.full_text or "")
+
+        # Normalise: lowercase, strip trailing punctuation
+        candidate_dois: list[str] = []
+        seen: set[str] = set()
+        for doi in raw_dois:
+            doi = doi.lower().rstrip(".,;:)")
+            if doi not in seen and doi not in existing_dois:
+                seen.add(doi)
+                candidate_dois.append(doi)
+
+        candidate_dois = candidate_dois[:max_per_paper]
+
+        for doi in candidate_dois:
+            data = client.lookup_doi(doi)
+            if data is None:
+                continue
+            record = _s2_paper_to_record(data, state)
+            if record is None:
+                # Already in state (dedup inside _s2_paper_to_record)
+                continue
+            state.add_paper(record)
+            all_added.append(record.pmid)
+            # Track the newly added DOI so subsequent papers don't re-fetch
+            if record.doi:
+                existing_dois.add(record.doi.lower())
+
+    if all_added:
+        state.token_estimate = state.token_count()
+
+    print(
+        f"Citation chaining: {len(papers_with_text)} papers scanned, "
+        f"added {len(all_added)} new papers."
+    )
+    return all_added
+
+
 def get_full_text_article(pmid: str, state: EvidenceState) -> str:
     """Retrieve full text through a layered fallback chain.
 

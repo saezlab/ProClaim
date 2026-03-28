@@ -51,23 +51,29 @@ The `pkevolve.verification` package implements a **Metacognitive Evidence Verifi
 
 | Module | Purpose | Key Functions |
 |--------|---------|---------------|
-| `evidence_api.py` | Pure Python evidence manipulation API — **the main interface** | `search_pubmed()`, `search_pubmed_progressive()`, `search_pubmed_llm()`, `get_full_text_article()`, `extract_and_add_facts()`, `extract_and_add_facts_batch()`, `populate_paper_features()`, `filter_papers_by_stance()`, `check_sufficiency()`, `emit_verdict()` |
+| `evidence_api.py` | Pure Python evidence manipulation API — **the main interface** | `search_pubmed()`, `search_pubmed_progressive()`, `search_pubmed_llm()`, `search_semantic_scholar()`, `search_semantic_scholar_recommendations()`, `expand_via_citations()`, `get_full_text_article()`, `extract_and_add_facts()`, `extract_and_add_facts_batch()`, `populate_paper_features()`, `filter_papers_by_stance()`, `check_sufficiency()`, `emit_verdict()` |
 | `subagents.py` | LLM subagent prompts for fact extraction, synthesis, conflict detection, gap queries | `extract_facts()`, `synthesize_subclaim()`, `detect_conflicts()`, `identify_gaps()`, `formulate_gap_queries()` |
 | `llm_factory.py` | Factory for thread-safe `llm(prompt) -> str` callables with retry + streaming | `make_llm()` |
 
 #### Search Method Comparison
 
-| Function | Query source | LLM cost | Best for |
-|---|---|---|---|
-| `search_pubmed(query, state)` | Caller-supplied string | None | Known query, manual control |
-| `search_pubmed_progressive(claim, state)` | Regex on claim (gene symbols + bio-verb map) | None | Gene symbol PPI claims |
-| `search_pubmed_llm(claim, state, llm)` | LLM-generated | 1 call | Diverse/complex claims |
-| `search_for_gap(gap_description, state)` | Gap description string | None | Mid-loop gap filling |
+| Function | Corpus | Query source | LLM cost | Best call point |
+|---|---|---|---|---|
+| `search_pubmed(query, state)` | PubMed/MEDLINE | Caller-supplied string | None | Any — manual control |
+| `search_pubmed_progressive(claim, state)` | PubMed/MEDLINE | Regex on claim (gene symbols + bio-verb map) | None | Iteration 0, PPI claims |
+| `search_pubmed_llm(claim, state, llm)` | PubMed/MEDLINE | LLM-generated | 1 call | Iteration 0, diverse claims |
+| `search_for_gap(gap_description, state)` | PubMed/MEDLINE | Gap description string | None | Iteration ≥1, gap filling |
+| `search_semantic_scholar(query, state)` | S2 (incl. preprints) | Caller-supplied string | None | Iteration 0, alongside PubMed |
+| `search_semantic_scholar_recommendations(state)` | S2 graph | Auto-derived from SUPPORT facts | None | Iteration ≥1, graph expansion |
+| `expand_via_citations(state)` | S2 (via DOI lookup) | DOI regex on full texts | None | Iteration ≥1, after full texts fetched |
 
 - **`search_pubmed`** — takes a pre-formed query string and runs it as-is. Use when you already have a well-formed PubMed query.
 - **`search_pubmed_progressive`** — generates a cascade of queries from most-specific to broadest via regex entity extraction (uppercase gene symbols) and a biological verb→noun mapping (e.g. "activates" → "activation"). Stops early once enough papers are found. Fails gracefully on non-gene claims by falling back to bag-of-words.
 - **`search_pubmed_llm`** — passes the claim to an LLM to produce a single comprehensive PubMed query. No tiering — one shot. Better than progressive search for diverse claim types (drug resistance, diagnosis, disease mechanisms) where regex entity extraction is unreliable.
 - **`search_for_gap`** — thin wrapper around `search_pubmed()` for use mid-loop when the sufficiency classifier identifies missing evidence.
+- **`search_semantic_scholar`** — keyword search over the full Semantic Scholar corpus, covering bioRxiv preprints and non-MEDLINE journals that PubMed misses. Use the same query string as the PubMed search. Requires no API key (rate-limited to 1 req/s); set `S2_API_KEY` env var for higher throughput.
+- **`search_semantic_scholar_recommendations`** — graph-expansion from papers that already yielded SUPPORT facts. Auto-selects positive seeds (papers with ≥1 SUPPORT fact) and negative seeds (papers with only REFUTE facts). Call at iteration ≥1 once facts have been extracted. Returns up to 500 candidate papers from the S2 recommendation model.
+- **`expand_via_citations`** — backward citation chaining: extracts DOIs from full-text reference sections via regex, looks each up via S2, and adds the cited papers to state. No LLM cost. Call after `get_full_text_article` has been run on initial papers.
 
 ### Retrieval
 
