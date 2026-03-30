@@ -44,7 +44,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import Field, model_validator
+from datetime import datetime
+from uuid import uuid4
+
+from pydantic import Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 try:
@@ -179,6 +182,10 @@ class VerificationSettings(BaseSettings):
     This is the single settings object that scripts and library code should use.
     """
 
+    _auto_timestamp: str = PrivateAttr(
+        default_factory=lambda: f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
+    )
+
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),
         env_file_encoding="utf-8",
@@ -252,10 +259,10 @@ class VerificationSettings(BaseSettings):
 
     @property
     def resolved_output_dir(self) -> Path:
-        """Return output_dir or the default."""
+        """Return output_dir or an auto-generated timestamped directory."""
         if self.output_dir is not None:
             return self.output_dir
-        return PROJECT_ROOT / "results" / "verification" / "notebook_demo"
+        return PROJECT_ROOT / "results" / "verification" / self._auto_timestamp
 
     @property
     def resolved_workspace(self) -> Path:

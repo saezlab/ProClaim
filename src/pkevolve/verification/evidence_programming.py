@@ -81,8 +81,10 @@ them directly via nb_execute.
 
 1. Call nb_init, then nb_execute with the setup code above.
 2. Decompose the claim: state.subclaims = ["subclaim A", ...]
-3. Search: call search_pubmed_llm(state.claim, state, llm) via nb_execute.
-   This uses LLM-driven query generation for diverse claim types (PPI, diagnosis, drug resistance).
+3. Search (iteration 0):
+   a. call search_pubmed_llm(state.claim, state, llm) — LLM-generated PubMed query
+   b. call search_semantic_scholar(query, state) with the same query string — covers
+      bioRxiv preprints and non-MEDLINE journals that PubMed misses
 4. After searching: call nb_render_papers to show the papers table.
 5. Extract facts from papers. Use extract_and_add_facts(llm, pmids, state, max_workers=8) to process
    all newly retrieved papers in parallel. Do NOT write fact dicts manually.
@@ -99,7 +101,11 @@ them directly via nb_execute.
 11a. Call get_sufficiency_history(state) to monitor the confidence trend (improving / flat / declining).
      If trend shows 'declining' or 'flat' for multiple iterations, consider whether to emit verdict.
      Otherwise, continue searching to gather more evidence.
-12. If insufficient: read the gaps and do targeted retrieval using search_for_gap() or formulate_gap_queries().
+12. If insufficient: read the gaps and do targeted retrieval:
+    a. search_for_gap(gap_description, state) — PubMed gap-targeted search
+    b. search_semantic_scholar_recommendations(state) — S2 graph expansion from papers
+       with SUPPORT facts (call at iteration ≥1 once facts exist)
+    c. formulate_gap_queries(llm, state) — LLM-generated gap queries
 13. Use nb_markdown between steps to explain your reasoning.
 14. Repeat until confidence >= {sufficiency_threshold} or {max_iterations} iterations completed.
 15. Call emit_verdict via nb_execute.
