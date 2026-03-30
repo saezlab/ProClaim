@@ -185,6 +185,7 @@ def function_docs() -> str:
     # Functions from evidence_api
     _api_funcs = [
         search_pubmed, search_pubmed_llm, search_pubmed_progressive, find_related_articles,
+        search_semantic_scholar, search_semantic_scholar_recommendations,
         get_full_text_article, get_paper_text, extract_and_add_facts,
         extract_and_add_facts_batch,
         add_facts_from_dicts, update_synthesis, add_conflict,
@@ -753,20 +754,21 @@ def expand_via_citations(
     state: EvidenceState,
     max_per_paper: int = 5,
 ) -> list[str]:
-    """Expand evidence pool by mining DOIs from full-text reference sections.
+    """Expand evidence pool via reference DOIs stored on PaperRecords.
 
-    For each paper in *state* that has ``full_text`` set, extracts cited DOIs
-    via regex, looks them up via the Semantic Scholar API, and adds new papers
-    to state.  No LLM call is required.
+    For each paper in *state* that has ``reference_dois`` populated (set by
+    ``get_full_text_article`` when the JATS XML ``<back><ref-list>`` is
+    available), looks up DOIs via the Semantic Scholar API and adds new
+    papers to state.  No LLM call is required.
 
     This implements backward citation chaining: it finds seminal works *cited*
     by the papers already retrieved, which keyword searches systematically miss.
 
     Call this after ``get_full_text_article`` has been called for the initial
-    papers so that ``full_text`` fields are populated.
+    papers so that ``reference_dois`` fields are populated.
 
     Args:
-        state: EvidenceState; only papers with ``full_text`` are processed.
+        state: EvidenceState; only papers with ``reference_dois`` are processed.
         max_per_paper: Maximum new DOIs to resolve per source paper.
 
     Returns:
@@ -781,27 +783,24 @@ def expand_via_citations(
         if p.doi
     }
 
-    papers_with_text = [
-        p for p in state.papers.values() if p.full_text
+    papers_with_refs = [
+        p for p in state.papers.values() if p.reference_dois
     ]
-    if not papers_with_text:
-        print("Citation chaining: no full texts available yet.")
+    if not papers_with_refs:
+        print("Citation chaining: no papers have reference DOIs yet.")
         return []
 
     client = S2Client()
     all_added: list[str] = []
 
-    for paper in papers_with_text:
-        raw_dois = _DOI_RE.findall(paper.full_text or "")
-
-        # Normalise: lowercase, strip trailing punctuation
+    for paper in papers_with_refs:
         candidate_dois: list[str] = []
         seen: set[str] = set()
-        for doi in raw_dois:
-            doi = doi.lower().rstrip(".,;:)")
-            if doi not in seen and doi not in existing_dois:
-                seen.add(doi)
-                candidate_dois.append(doi)
+        for doi in paper.reference_dois:
+            doi_lower = doi.lower().rstrip(".,;:)")
+            if doi_lower not in seen and doi_lower not in existing_dois:
+                seen.add(doi_lower)
+                candidate_dois.append(doi_lower)
 
         candidate_dois = candidate_dois[:max_per_paper]
 
@@ -823,7 +822,7 @@ def expand_via_citations(
         state.token_estimate = state.token_count()
 
     print(
-        f"Citation chaining: {len(papers_with_text)} papers scanned, "
+        f"Citation chaining: {len(papers_with_refs)} papers scanned, "
         f"added {len(all_added)} new papers."
     )
     return all_added
@@ -857,7 +856,7 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
     if paper.full_text:
         return paper.full_text
 
-    full_text = fetch_full_text(
+    full_text, ref_dois = fetch_full_text(
         pmid,
         doi=getattr(paper, "doi", None),
         title=paper.title,
@@ -865,6 +864,8 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
 
     if full_text:
         paper.full_text = full_text
+        if ref_dois:
+            paper.reference_dois = ref_dois
         state.token_estimate = state.token_count()
         print(f"Full text retrieved for PMID {pmid}: {len(full_text)} chars")
         return full_text
