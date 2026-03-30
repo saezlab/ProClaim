@@ -1,15 +1,20 @@
 """
 Layered full-text retrieval for scientific papers.
 
-Provides ``fetch_full_text(pmid, doi=None) -> str | None`` with three
+Provides ``fetch_full_text(pmid, doi=None) -> str | None`` with five
 fallback tiers::
 
-    Layer 1 — PMC Open Access XML  (NCBI E-utilities)
-    Layer 2 — INDRA literature      (PMC + Elsevier + REACH readers)
-    Layer 3 — Unpaywall + PDF       (OA PDF → pymupdf text extraction)
+    Layer 1   — PMC Open Access XML       (NCBI E-utilities)
+    Layer 1b  — Europe PMC REST API       (broader OA coverage)
+    Layer 1.5 — Semantic Scholar OA PDF   (S2 openAccessPdf endpoint)
+    Layer 2   — INDRA literature          (PMC + Elsevier + REACH readers)
+    Layer 3   — Unpaywall + PDF           (OA PDF → pymupdf text extraction)
+    Layer 4   — PubMed structured abstract (last-resort; always returns text)
 
 Each layer is tried in order.  If a layer succeeds (returns ≥200 chars of
-body text), the remaining layers are skipped.
+body text), the remaining layers are skipped.  Layer 4 (structured abstract)
+is always attempted if all full-text layers fail and ensures the function
+returns usable text rather than None for fact extraction.
 
 Usage::
 
@@ -283,6 +288,93 @@ def _resolve_doi(pmid: str) -> Optional[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Layer 1.5:  Semantic Scholar OA PDF  (openAccessPdf endpoint)
+# ──────────────────────────────────────────────────────────────────────
+
+_S2_GRAPH_BASE = "https://api.semanticscholar.org/graph/v1"
+
+
+def _fetch_semantic_scholar(pmid: str, title: str = "") -> Optional[str]:
+    """Fetch full text via Semantic Scholar's ``openAccessPdf`` metadata.
+
+    Looks up the paper by PMID, retrieves the OA PDF URL from the S2
+    metadata response, downloads the PDF, and extracts body text with
+    pymupdf.  Covers papers where S2 links to publisher OA PDFs,
+    PubMed Central PDFs, or repository copies not indexed by NCBI PMC.
+
+    Rate-limit note: the public S2 API allows ~100 req/5 min without an
+    API key.  A 429 response is treated as a soft failure — the layer is
+    skipped silently rather than raising.
+    """
+    try:
+        resp = requests.get(
+            f"{_S2_GRAPH_BASE}/paper/PMID:{pmid}",
+            params={"fields": "openAccessPdf,title"},
+            timeout=15,
+        )
+        if resp.status_code == 429:
+            logger.debug("S2 rate limit hit for PMID %s — skipping Layer 1.5", pmid)
+            return None
+        if resp.status_code != 200:
+            logger.debug("S2 returned %d for PMID %s", resp.status_code, pmid)
+            return None
+
+        data = resp.json()
+        oa_pdf = data.get("openAccessPdf") or {}
+        pdf_url = oa_pdf.get("url")
+        if not pdf_url:
+            logger.debug("No S2 openAccessPdf for PMID %s", pmid)
+            return None
+
+        # Download the OA PDF
+        pdf_resp = requests.get(
+            pdf_url,
+            timeout=60,
+            headers={"User-Agent": "pkevolve/0.1 (scientific research tool)"},
+        )
+        if pdf_resp.status_code != 200:
+            logger.debug(
+                "S2 PDF download failed (%d) for PMID %s url=%s",
+                pdf_resp.status_code, pmid, pdf_url,
+            )
+            return None
+
+        # Extract text with pymupdf
+        try:
+            import pymupdf  # noqa: F401
+        except ImportError:
+            import fitz as pymupdf  # type: ignore[no-redef]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
+            tmp.write(pdf_resp.content)
+            tmp.flush()
+            doc = pymupdf.open(tmp.name)
+            pages_text: list[str] = [page.get_text() for page in doc]
+            doc.close()
+
+        full_text = "\n\n".join(pages_text)
+        if len(full_text) < _MIN_TEXT_LEN:
+            logger.debug("S2 PDF text too short (%d chars) for PMID %s", len(full_text), pmid)
+            return None
+
+        if not _title_overlap(title, full_text):
+            logger.warning(
+                "S2 PDF for PMID %s failed title cross-validation; discarding.", pmid
+            )
+            return None
+
+        logger.info(
+            "Layer 1.5 (Semantic Scholar): retrieved %d chars for PMID %s",
+            len(full_text), pmid,
+        )
+        return full_text
+
+    except Exception as exc:
+        logger.debug("Layer 1.5 (Semantic Scholar) failed for PMID %s: %s", pmid, exc)
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Layer 2:  INDRA literature  (pmc_client + elsevier_client)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -479,6 +571,69 @@ def _fetch_unpaywall_pdf(doi: str, title: str = "") -> Optional[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Layer 4:  PubMed structured abstract  (last-resort fallback)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _fetch_pubmed_structured_abstract(pmid: str) -> Optional[str]:
+    """Fetch the PubMed structured abstract as a last-resort text source.
+
+    Returns the abstract with section labels (BACKGROUND, METHODS,
+    RESULTS, CONCLUSIONS, etc.) when the journal uses IMRAD structure,
+    or plain abstract text otherwise.  Also prepends the article title
+    so the LLM has maximum context for fact extraction.
+
+    This layer never does network I/O beyond a single lightweight efetch
+    call.  It is always attempted when all full-text layers fail so that
+    ``fetch_full_text`` returns usable text rather than ``None``.
+    """
+    try:
+        resp = requests.get(
+            f"{_EUTILS_BASE}/efetch.fcgi",
+            params={"db": "pubmed", "id": pmid, "retmode": "xml"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+
+        parts: list[str] = []
+
+        # Article title
+        title_el = root.find(".//ArticleTitle")
+        if title_el is not None:
+            title_text = "".join(title_el.itertext()).strip()
+            if title_text:
+                parts.append(f"Title: {title_text}")
+
+        # Abstract — may have multiple <AbstractText> with Label attributes
+        abstract_texts = root.findall(".//AbstractText")
+        for ab in abstract_texts:
+            label = ab.get("Label", "").strip()
+            text = "".join(ab.itertext()).strip()
+            if not text:
+                continue
+            if label:
+                parts.append(f"{label}: {text}")
+            else:
+                parts.append(text)
+
+        if not parts or (len(parts) == 1 and parts[0].startswith("Title:")):
+            # No abstract found
+            return None
+
+        structured = "[Abstract only — full text unavailable]\n\n" + "\n\n".join(parts)
+        logger.info(
+            "Layer 4 (PubMed abstract): retrieved %d chars for PMID %s",
+            len(structured), pmid,
+        )
+        return structured
+
+    except Exception as exc:
+        logger.debug("Layer 4 (PubMed abstract) failed for PMID %s: %s", pmid, exc)
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────
 
@@ -492,17 +647,22 @@ def fetch_full_text(
     """Retrieve full text for a paper through a layered fallback chain.
 
     Tries in order:
-        1.  PMC Open Access XML  (NCBI E-utilities, free)
-        1b. Europe PMC REST API  (broader OA coverage incl. author manuscripts)
-        2.  INDRA literature     (broader publisher coverage incl. Elsevier)
-        3.  Unpaywall + PDF      (last resort — OA PDF download & text extraction)
+        1.   PMC Open Access XML       (NCBI E-utilities, free)
+        1b.  Europe PMC REST API       (broader OA coverage incl. author manuscripts)
+        1.5. Semantic Scholar OA PDF   (S2 openAccessPdf endpoint)
+        2.   INDRA literature          (broader publisher coverage incl. Elsevier)
+        3.   Unpaywall + PDF           (OA PDF download & text extraction)
+        4.   PubMed structured abstract (last resort — always returns text)
 
     If *doi* is not provided and layers 1–2 fail, attempts DOI resolution
     via NCBI/Europe PMC before trying Unpaywall (which requires a DOI).
 
-    Returns the extracted text (truncated to *max_chars*), or ``None`` if
-    all layers fail.  Never returns the abstract — the caller should handle
-    abstract fallback.
+    Returns the extracted text (truncated to *max_chars*).  Layer 4 ensures
+    the function returns the structured PubMed abstract rather than ``None``
+    when all full-text layers fail, so downstream fact extraction always
+    has some text to work with.  The returned text is prefixed with
+    ``[Abstract only — full text unavailable]`` when only abstract-level
+    content is available.
 
     Args:
         pmid: PubMed identifier.
@@ -517,6 +677,11 @@ def fetch_full_text(
 
     # Layer 1b: Europe PMC (often has OA full text NCBI doesn't)
     text = _fetch_europepmc(pmid, title=title)
+    if text and len(text) >= _MIN_TEXT_LEN:
+        return text[:max_chars]
+
+    # Layer 1.5: Semantic Scholar OA PDF
+    text = _fetch_semantic_scholar(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
         return text[:max_chars]
 
@@ -536,5 +701,15 @@ def fetch_full_text(
     if text and len(text) >= _MIN_TEXT_LEN:
         return text[:max_chars]
 
-    logger.info("All full-text layers failed for PMID %s (DOI: %s)", pmid, doi)
+    # Layer 4: PubMed structured abstract (last resort — ensures we never
+    # return None and silently discard a paper from fact extraction)
+    logger.info(
+        "Full-text layers 1–3 failed for PMID %s (DOI: %s); falling back to abstract",
+        pmid, doi,
+    )
+    text = _fetch_pubmed_structured_abstract(pmid)
+    if text:
+        return text[:max_chars]
+
+    logger.warning("All layers including abstract failed for PMID %s", pmid)
     return None
