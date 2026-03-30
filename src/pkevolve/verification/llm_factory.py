@@ -39,7 +39,7 @@ def make_llm(
     model: str,
     *,
     max_tokens: int = 8000,
-    temperature: float = 0.1,
+    temperature: float = 0.7,
     retries: int = 3,
     retry_base_delay: float = 1.0,
     stream: bool = True,

@@ -66,12 +66,34 @@ def _title_overlap(title: str, text: str, threshold: float = 0.25) -> bool:
     return (matches / len(title_words)) >= threshold
 
 
+def _extract_reference_dois(root: ET.Element) -> list[str]:
+    """Extract DOIs from JATS ``<back><ref-list>``.
+
+    In JATS XML, references live outside ``<body>`` — they are in
+    ``<back><ref-list><ref>...``.  DOIs appear as
+    ``<pub-id pub-id-type="doi">10.xxxx/...</pub-id>``.
+
+    Returns a list of DOI strings (e.g. ``["10.1234/foo", ...]``).
+    """
+    ref_list = root.find(".//back/ref-list")
+    if ref_list is None:
+        return []
+    dois: list[str] = []
+    for pub_id in ref_list.iter("pub-id"):
+        if pub_id.get("pub-id-type") == "doi" and pub_id.text:
+            dois.append(pub_id.text.strip())
+    return dois
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Layer 1:  PMC Open-Access XML  (NCBI E-utilities)
 # ──────────────────────────────────────────────────────────────────────
 
-def _fetch_pmc(pmid: str, title: str = "") -> Optional[str]:
-    """Convert PMID → PMCID via elink, then fetch + parse PMC XML."""
+def _fetch_pmc(pmid: str, title: str = "") -> tuple[Optional[str], list[str]]:
+    """Convert PMID → PMCID via elink, then fetch + parse PMC XML.
+
+    Returns ``(body_text, reference_dois)``.
+    """
     try:
         # PMID → PMCID
         link_resp = requests.get(
@@ -125,7 +147,7 @@ def _fetch_pmc(pmid: str, title: str = "") -> Optional[str]:
         full_text = "\n\n".join(parts) if parts else ""
         if len(full_text) < _MIN_TEXT_LEN:
             logger.debug("PMC body empty/too short for PMID %s", pmid)
-            return None
+            return None, []
 
         # Cross-validate title overlap
         if not _title_overlap(title, full_text):
@@ -133,14 +155,16 @@ def _fetch_pmc(pmid: str, title: str = "") -> Optional[str]:
                 "PMC text for PMID %s (PMC%s) failed title cross-validation; discarding.",
                 pmid, pmcid,
             )
-            return None
+            return None, []
+
+        ref_dois = _extract_reference_dois(fetch_root)
 
         logger.info("Layer 1 (PMC): retrieved %d chars for PMID %s", len(full_text), pmid)
-        return full_text
+        return full_text, ref_dois
 
     except Exception as exc:
         logger.debug("Layer 1 (PMC) failed for PMID %s: %s", pmid, exc)
-        return None
+        return None, []
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -150,12 +174,12 @@ def _fetch_pmc(pmid: str, title: str = "") -> Optional[str]:
 _EUROPEPMC_API = "https://www.ebi.ac.uk/europepmc/webservices/rest"
 
 
-def _fetch_europepmc(pmid: str, title: str = "") -> Optional[str]:
+def _fetch_europepmc(pmid: str, title: str = "") -> tuple[Optional[str], list[str]]:
     """Fetch full text from Europe PMC REST API.
 
     Europe PMC often has OA full text for articles that NCBI PMC does not
     index under the Open Access subset (e.g. author manuscripts, EuropePMC
-    grants).  Returns the full text body, or None.
+    grants).  Returns ``(body_text, reference_dois)``.
     """
     try:
         # Step 1: search by PMID to get PMCID and check OA status
@@ -174,7 +198,7 @@ def _fetch_europepmc(pmid: str, title: str = "") -> Optional[str]:
 
         if not results:
             logger.debug("Europe PMC: no result for PMID %s", pmid)
-            return None
+            return None, []
 
         hit = results[0]
         pmcid = hit.get("pmcid")
@@ -182,11 +206,11 @@ def _fetch_europepmc(pmid: str, title: str = "") -> Optional[str]:
 
         if not pmcid:
             logger.debug("Europe PMC: no PMCID for PMID %s", pmid)
-            return None
+            return None, []
 
         if not is_oa:
             logger.debug("Europe PMC: PMID %s (PMC%s) not open access", pmid, pmcid)
-            return None
+            return None, []
 
         # Step 2: fetch full text XML
         ft_resp = requests.get(
@@ -198,7 +222,7 @@ def _fetch_europepmc(pmid: str, title: str = "") -> Optional[str]:
                 "Europe PMC: fullTextXML returned %d for %s",
                 ft_resp.status_code, pmcid,
             )
-            return None
+            return None, []
 
         root = ET.fromstring(ft_resp.content)
 
@@ -215,24 +239,26 @@ def _fetch_europepmc(pmid: str, title: str = "") -> Optional[str]:
         full_text = "\n\n".join(parts) if parts else ""
         if len(full_text) < _MIN_TEXT_LEN:
             logger.debug("Europe PMC: body too short for PMID %s", pmid)
-            return None
+            return None, []
 
         if not _title_overlap(title, full_text):
             logger.warning(
                 "Europe PMC text for PMID %s failed title cross-validation; discarding.",
                 pmid,
             )
-            return None
+            return None, []
+
+        ref_dois = _extract_reference_dois(root)
 
         logger.info(
             "Layer 1b (Europe PMC): retrieved %d chars for PMID %s",
             len(full_text), pmid,
         )
-        return full_text
+        return full_text, ref_dois
 
     except Exception as exc:
         logger.debug("Layer 1b (Europe PMC) failed for PMID %s: %s", pmid, exc)
-        return None
+        return None, []
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -643,7 +669,7 @@ def fetch_full_text(
     doi: Optional[str] = None,
     title: str = "",
     max_chars: int = DEFAULT_MAX_CHARS,
-) -> Optional[str]:
+) -> tuple[Optional[str], list[str]]:
     """Retrieve full text for a paper through a layered fallback chain.
 
     Tries in order:
@@ -657,38 +683,48 @@ def fetch_full_text(
     If *doi* is not provided and layers 1–2 fail, attempts DOI resolution
     via NCBI/Europe PMC before trying Unpaywall (which requires a DOI).
 
-    Returns the extracted text (truncated to *max_chars*).  Layer 4 ensures
-    the function returns the structured PubMed abstract rather than ``None``
-    when all full-text layers fail, so downstream fact extraction always
-    has some text to work with.  The returned text is prefixed with
-    ``[Abstract only — full text unavailable]`` when only abstract-level
-    content is available.
+    Returns ``(text, reference_dois)`` where *text* is the extracted body
+    (truncated to *max_chars*) and *reference_dois* is a list of DOI
+    strings from the JATS ``<back><ref-list>`` (populated only by
+    Layers 1 and 1b which parse JATS XML).
 
     Args:
         pmid: PubMed identifier.
         doi:  Digital Object Identifier (needed for Unpaywall, Layer 3).
         title: Paper title for cross-validation against retrieved text.
-        max_chars: Maximum characters to return.
+        max_chars: If the retrieved text exceeds this length a warning is
+            logged, but the full untruncated text is still returned.
     """
+    def _maybe_warn_and_return(
+        text: str, ref_dois: list[str]
+    ) -> tuple[str, list[str]]:
+        if len(text) > max_chars:
+            logger.warning(
+                "Full text for PMID %s is %d chars, exceeding max_chars=%d; "
+                "returning untruncated.",
+                pmid, len(text), max_chars,
+            )
+        return text, ref_dois
+
     # Layer 1: NCBI PMC
-    text = _fetch_pmc(pmid, title=title)
+    text, ref_dois = _fetch_pmc(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
-        return text[:max_chars]
+        return _maybe_warn_and_return(text, ref_dois)
 
     # Layer 1b: Europe PMC (often has OA full text NCBI doesn't)
-    text = _fetch_europepmc(pmid, title=title)
+    text, ref_dois = _fetch_europepmc(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
-        return text[:max_chars]
+        return _maybe_warn_and_return(text, ref_dois)
 
     # Layer 1.5: Semantic Scholar OA PDF
     text = _fetch_semantic_scholar(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
-        return text[:max_chars]
+        return _maybe_warn_and_return(text, [])
 
     # Layer 2: INDRA
     text = _fetch_indra(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
-        return text[:max_chars]
+        return _maybe_warn_and_return(text, [])
 
     # Resolve DOI if missing (needed for Unpaywall)
     if not doi:
@@ -699,7 +735,7 @@ def fetch_full_text(
     # Layer 3: Unpaywall + PDF
     text = _fetch_unpaywall_pdf(doi or "", title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
-        return text[:max_chars]
+        return _maybe_warn_and_return(text, [])
 
     # Layer 4: PubMed structured abstract (last resort — ensures we never
     # return None and silently discard a paper from fact extraction)
@@ -709,7 +745,7 @@ def fetch_full_text(
     )
     text = _fetch_pubmed_structured_abstract(pmid)
     if text:
-        return text[:max_chars]
+        return _maybe_warn_and_return(text, [])
 
     logger.warning("All layers including abstract failed for PMID %s", pmid)
-    return None
+    return None, []

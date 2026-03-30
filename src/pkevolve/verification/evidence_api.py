@@ -155,12 +155,14 @@ def schema_docs() -> str:
         "  - state.facts is a list, NOT a dict. Use `for f in state.facts:` (not .values())\n"
         "  - state.iteration is a top-level int, NOT `state.metadata.iteration`\n"
         "  - source_pmid must reference a paper in state.papers. Facts with unknown PMIDs are REJECTED.\n"
-        "  - Do NOT write fact dicts by hand. Use extract_and_add_facts(llm, pmid, state) instead.\n"
+        "  - Do NOT write fact dicts by hand. Use extract_and_add_facts(llm, pmids, state) instead.\n"
         "  - When creating a PaperRecord manually, `authors` must be a list[str], e.g. [\"Author Name\"].\n"
-        "  - If extract_and_add_facts returns 0 for a paper, import extract_facts from subagents:\n"
-        "      from pkevolve.verification.subagents import extract_facts\n"
-        "    Then: text = get_full_text_article(pmid, state)\n"
-        "    And: facts = extract_facts(llm, text, state.claim, state.subclaims, pmid)\n"
+        "  - extract_and_add_facts(llm, pmids, state) accepts a list of PMIDs and returns dict[pmid, count].\n"
+        "  - If extract_and_add_facts returns 0 for multiple PMIDs, use refine_search_for_failed_papers:\n"
+        "      failed_pmids = [pmid for pmid, count in results.items() if count == 0]\n"
+        "      new_pmids = refine_search_for_failed_papers(failed_pmids, state, llm, max_new_papers=5)\n"
+        "      results2 = extract_and_add_facts(llm, new_pmids, state)\n"
+        "    This generates more precise queries instead of retrying the same irrelevant papers.\n"
     )
 
 
@@ -184,12 +186,12 @@ def function_docs() -> str:
 
     # Functions from evidence_api
     _api_funcs = [
-        search_pubmed, search_pubmed_llm, search_pubmed_progressive, find_related_articles,
+        search_pubmed, search_pubmed_llm, find_related_articles,
+        search_semantic_scholar, search_semantic_scholar_recommendations,
         get_full_text_article, get_paper_text, extract_and_add_facts,
-        extract_and_add_facts_batch,
         add_facts_from_dicts, update_synthesis, add_conflict,
         get_evidence_summary, check_sufficiency, get_sufficiency_history, compress_evidence,
-        emit_verdict, formulate_pubmed_query, search_for_gap,
+        emit_verdict, formulate_pubmed_query, search_for_gap, refine_search_for_failed_papers,
         populate_paper_features, populate_paper_features_parallel, filter_papers_by_stance,
     ]
 
@@ -199,10 +201,10 @@ def function_docs() -> str:
     # Functions from subagents
     from pkevolve.verification.subagents import (
         extract_facts, synthesize_subclaim, detect_conflicts,
-        formulate_gap_queries,
+        formulate_gap_queries, refine_search_query,
     )
     _sub_funcs = [extract_facts, synthesize_subclaim, detect_conflicts,
-                  formulate_gap_queries]
+                  formulate_gap_queries, refine_search_query]
 
     lines = ["## Available functions (after setup)\n"]
     lines.append("### evidence_api\n")
@@ -409,58 +411,6 @@ def search_pubmed_llm(
     return added_pmids
 
 
-def search_pubmed_progressive(
-    claim: str,
-    state: EvidenceState,
-    max_results_per_tier: int = 5,
-) -> list[str]:
-    """Progressive PubMed search with automatic query broadening.
-
-    Tries queries from most specific to broadest, stopping once enough
-    papers are found. Returns list of all added PMIDs.
-    """
-    symbols = re.findall(r"\b[A-Z][A-Z0-9](?:[A-Z0-9\-]{0,8})\b", claim)
-
-    claim_lower = claim.lower().rstrip(".")
-    bio_terms: list[str] = []
-    for verb, noun in _BIO_VERB_TO_NOUN.items():
-        if verb in claim_lower:
-            bio_terms.append(noun)
-
-    if not symbols:
-        words = re.findall(r"\b\w+\b", claim)
-        symbols = [w for w in words if w.lower() not in _STOP_WORDS and len(w) > 1]
-
-    tiers = _generate_tiered_queries(symbols, bio_terms)
-
-    total_added = 0
-    all_added_pmids: list[str] = []
-    tier_results: list[str] = []
-
-    for idx, (tier_name, query) in enumerate(tiers):
-        if idx > 0:
-            time.sleep(0.4)
-
-        found, added, added_pmids = _search_and_add(
-            query, state, max_results=max_results_per_tier,
-        )
-        total_added += added
-        all_added_pmids.extend(added_pmids)
-        tier_results.append(
-            f"  [{tier_name}] {query} → found {found}, added {added}"
-        )
-
-        if total_added >= max_results_per_tier and tier_name not in (
-            "strict_pair_mechanism", "strict_pair",
-        ):
-            break
-
-    print(f"Progressive search for: {claim}")
-    for line in tier_results:
-        print(line)
-    print(f"Total papers added: {total_added}")
-
-    return all_added_pmids
 
 
 def search_for_gap(
@@ -470,6 +420,84 @@ def search_for_gap(
 ) -> list[str]:
     """Search for papers targeting a specific evidence gap."""
     return search_pubmed(gap_description, state, max_results)
+
+
+def refine_search_for_failed_papers(
+    failed_pmids: list[str],
+    state: EvidenceState,
+    llm,
+    max_new_papers: int = 5,
+) -> list[str]:
+    """Generate refined search queries and search for better papers when extraction fails.
+
+    When extract_and_add_facts returns 0 facts for certain papers, this function
+    analyzes why those papers were irrelevant and generates more precise search
+    queries to find better papers. This is a smarter fallback than retrying the
+    same papers with full text.
+
+    Args:
+        failed_pmids: List of PMIDs that yielded 0 facts.
+        state: EvidenceState containing the papers.
+        llm: LLM callable for query generation.
+        max_new_papers: Maximum number of new papers to retrieve per query (default: 5).
+
+    Returns:
+        List of newly added PMIDs from the refined search.
+
+    Example:
+        >>> results = extract_and_add_facts(llm, pmids, state)
+        >>> failed = [pmid for pmid, count in results.items() if count == 0]
+        >>> if failed:
+        >>>     new_pmids = refine_search_for_failed_papers(failed, state, llm)
+        >>>     results2 = extract_and_add_facts(llm, new_pmids, state)
+    """
+    from pkevolve.verification.subagents import refine_search_query
+
+    if not failed_pmids:
+        return []
+
+    # Collect metadata from failed papers
+    failed_papers = []
+    for pmid in failed_pmids[:5]:  # Limit to 5 to avoid token overflow
+        paper = state.papers.get(pmid)
+        if paper:
+            failed_papers.append({
+                "pmid": pmid,
+                "title": paper.title,
+                "abstract": paper.abstract,
+            })
+
+    if not failed_papers:
+        return []
+
+    # Generate refined queries using LLM subagent
+    refined_queries = refine_search_query(
+        llm=llm,
+        claim=state.claim,
+        subclaims=state.subclaims,
+        failed_papers=failed_papers,
+    )
+
+    if not refined_queries:
+        print("refine_search_for_failed_papers: no refined queries generated.")
+        return []
+
+    print(f"Refined queries: {', '.join(refined_queries)}")
+
+    # Execute searches with refined queries
+    all_new_pmids: list[str] = []
+    for query in refined_queries:
+        try:
+            new_pmids = search_pubmed(query, state, max_results=max_new_papers)
+            all_new_pmids.extend(new_pmids)
+        except Exception as e:
+            logger.warning(f"Search failed for refined query '{query}': {e}")
+
+    # Deduplicate
+    unique_new_pmids = list(dict.fromkeys(all_new_pmids))
+
+    print(f"Refined search: found {len(unique_new_pmids)} new papers.")
+    return unique_new_pmids
 
 
 def find_related_articles(
@@ -753,20 +781,21 @@ def expand_via_citations(
     state: EvidenceState,
     max_per_paper: int = 5,
 ) -> list[str]:
-    """Expand evidence pool by mining DOIs from full-text reference sections.
+    """Expand evidence pool via reference DOIs stored on PaperRecords.
 
-    For each paper in *state* that has ``full_text`` set, extracts cited DOIs
-    via regex, looks them up via the Semantic Scholar API, and adds new papers
-    to state.  No LLM call is required.
+    For each paper in *state* that has ``reference_dois`` populated (set by
+    ``get_full_text_article`` when the JATS XML ``<back><ref-list>`` is
+    available), looks up DOIs via the Semantic Scholar API and adds new
+    papers to state.  No LLM call is required.
 
     This implements backward citation chaining: it finds seminal works *cited*
     by the papers already retrieved, which keyword searches systematically miss.
 
     Call this after ``get_full_text_article`` has been called for the initial
-    papers so that ``full_text`` fields are populated.
+    papers so that ``reference_dois`` fields are populated.
 
     Args:
-        state: EvidenceState; only papers with ``full_text`` are processed.
+        state: EvidenceState; only papers with ``reference_dois`` are processed.
         max_per_paper: Maximum new DOIs to resolve per source paper.
 
     Returns:
@@ -781,27 +810,24 @@ def expand_via_citations(
         if p.doi
     }
 
-    papers_with_text = [
-        p for p in state.papers.values() if p.full_text
+    papers_with_refs = [
+        p for p in state.papers.values() if p.reference_dois
     ]
-    if not papers_with_text:
-        print("Citation chaining: no full texts available yet.")
+    if not papers_with_refs:
+        print("Citation chaining: no papers have reference DOIs yet.")
         return []
 
     client = S2Client()
     all_added: list[str] = []
 
-    for paper in papers_with_text:
-        raw_dois = _DOI_RE.findall(paper.full_text or "")
-
-        # Normalise: lowercase, strip trailing punctuation
+    for paper in papers_with_refs:
         candidate_dois: list[str] = []
         seen: set[str] = set()
-        for doi in raw_dois:
-            doi = doi.lower().rstrip(".,;:)")
-            if doi not in seen and doi not in existing_dois:
-                seen.add(doi)
-                candidate_dois.append(doi)
+        for doi in paper.reference_dois:
+            doi_lower = doi.lower().rstrip(".,;:)")
+            if doi_lower not in seen and doi_lower not in existing_dois:
+                seen.add(doi_lower)
+                candidate_dois.append(doi_lower)
 
         candidate_dois = candidate_dois[:max_per_paper]
 
@@ -823,7 +849,7 @@ def expand_via_citations(
         state.token_estimate = state.token_count()
 
     print(
-        f"Citation chaining: {len(papers_with_text)} papers scanned, "
+        f"Citation chaining: {len(papers_with_refs)} papers scanned, "
         f"added {len(all_added)} new papers."
     )
     return all_added
@@ -857,7 +883,7 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
     if paper.full_text:
         return paper.full_text
 
-    full_text = fetch_full_text(
+    full_text, ref_dois = fetch_full_text(
         pmid,
         doi=getattr(paper, "doi", None),
         title=paper.title,
@@ -865,6 +891,8 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
 
     if full_text:
         paper.full_text = full_text
+        if ref_dois:
+            paper.reference_dois = ref_dois
         state.token_estimate = state.token_count()
         print(f"Full text retrieved for PMID {pmid}: {len(full_text)} chars")
         return full_text
@@ -1075,16 +1103,15 @@ def add_conflict(
 # ---------------------------------------------------------------------------
 
 
-def extract_and_add_facts(
+def _extract_and_add_facts_single(
     llm,
     pmid: str,
     state: EvidenceState,
 ) -> int:
-    """Read a paper, extract facts via the LLM subagent, and add to state.
+    """Read a single paper, extract facts via the LLM subagent, and add to state.
 
-    This is the recommended way to add facts — it guarantees that facts
-    are grounded in the actual paper text (abstract or full text) rather
-    than LLM parametric knowledge.
+    Private helper — call extract_and_add_facts(llm, pmids, state) instead,
+    which processes a list of PMIDs in parallel for better GPU utilization.
 
     Tries full text via PMC first (``get_full_text_article``).  Falls
     back to abstract-level metadata (``get_paper_text``) only when full
@@ -1109,11 +1136,11 @@ def extract_and_add_facts(
         paper_text = get_paper_text(pmid, state)
 
     if not paper_text:
-        print(f"extract_and_add_facts: no text available for PMID {pmid}.")
+        print(f"_extract_and_add_facts_single: no text available for PMID {pmid}.")
         return 0
 
     text_kind = "full text" if len(paper_text) > 2000 else "abstract"
-    print(f"extract_and_add_facts: using {text_kind} ({len(paper_text)} chars) for PMID {pmid}.")
+    print(f"_extract_and_add_facts_single: using {text_kind} ({len(paper_text)} chars) for PMID {pmid}.")
 
     facts = extract_facts(
         llm=llm,
@@ -1124,7 +1151,7 @@ def extract_and_add_facts(
     )
 
     if not facts:
-        print(f"extract_and_add_facts: subagent returned 0 facts for PMID {pmid}.")
+        print(f"_extract_and_add_facts_single: subagent returned 0 facts for PMID {pmid}.")
         return 0
 
     # Convert Fact objects to dicts and add through the validated path
@@ -1147,7 +1174,7 @@ def extract_and_add_facts(
     return added
 
 
-def extract_and_add_facts_batch(
+def extract_and_add_facts(
     llm,
     pmids: list[str],
     state: EvidenceState,
@@ -1155,11 +1182,10 @@ def extract_and_add_facts_batch(
 ) -> dict[str, int]:
     """Extract facts from multiple papers in parallel using ThreadPoolExecutor.
 
-    This function enables parallel fact extraction to maximize vLLM throughput
-    via continuous batching. Instead of processing papers sequentially (which
-    leaves the GPU idle between requests), this sends multiple extraction
-    requests concurrently. vLLM's continuous batching automatically schedules
-    them efficiently, inserting new requests as soon as previous ones complete.
+    This is the primary fact extraction function. It processes a list of PMIDs
+    concurrently to maximize vLLM throughput via continuous batching. Instead
+    of processing papers sequentially (which leaves the GPU idle between
+    requests), this sends multiple extraction requests concurrently.
 
     Performance impact:
     - Sequential: 10 papers × 10s = 100s
@@ -1176,8 +1202,8 @@ def extract_and_add_facts_batch(
         dict mapping pmid -> number of facts extracted.
 
     Example:
-        >>> pmids = list(state.papers.keys())[:8]
-        >>> results = extract_and_add_facts_batch(llm, pmids, state, max_workers=8)
+        >>> pmids = list(state.papers.keys())
+        >>> results = extract_and_add_facts(llm, pmids, state, max_workers=8)
         >>> print(f"Total facts: {sum(results.values())}")
 
     Note:
@@ -1190,11 +1216,11 @@ def extract_and_add_facts_batch(
     def _process_one(pmid: str) -> tuple[str, int]:
         """Process a single paper, catching exceptions gracefully."""
         try:
-            count = extract_and_add_facts(llm, pmid, state)
+            count = _extract_and_add_facts_single(llm, pmid, state)
             return pmid, count
         except Exception as e:
             logger.error(f"Error extracting facts from PMID {pmid}: {e}")
-            print(f"⚠ extract_and_add_facts_batch: error processing PMID {pmid}: {e}")
+            print(f"⚠ extract_and_add_facts: error processing PMID {pmid}: {e}")
             return pmid, 0
 
     if not pmids:
@@ -1204,10 +1230,10 @@ def extract_and_add_facts_batch(
     pmids_to_process = [p for p in pmids if p not in state.extracted_pmids]
 
     if not pmids_to_process:
-        print(f"extract_and_add_facts_batch: all {len(pmids)} papers already extracted.")
+        print(f"extract_and_add_facts: all {len(pmids)} papers already extracted.")
         return {p: 0 for p in pmids}
 
-    print(f"extract_and_add_facts_batch: processing {len(pmids_to_process)} papers with {max_workers} workers...")
+    print(f"extract_and_add_facts: processing {len(pmids_to_process)} papers with {max_workers} workers...")
 
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1230,7 +1256,7 @@ def extract_and_add_facts_batch(
             results[pmid] = 0
 
     total_facts = sum(results.values())
-    print(f"extract_and_add_facts_batch: completed. Total facts extracted: {total_facts}")
+    print(f"extract_and_add_facts: completed. Total facts extracted: {total_facts}")
 
     return results
 
@@ -1248,7 +1274,7 @@ def populate_paper_features(
 ) -> str:
     """Populate NLP and metadata features for papers.
 
-    MUST be called after extract_and_add_facts() and before check_sufficiency()
+    MUST be called after extract_and_add_facts(llm, pmids, state) and before check_sufficiency()
     to ensure the MLP classifier has access to all required features.
 
     This function extracts:
@@ -1611,7 +1637,7 @@ def check_sufficiency(
     state: EvidenceState,
     llm,
     threshold: float = 0.5,
-    min_papers_per_iteration: int = 3,
+    min_total_papers: int = 3,
 ) -> SufficiencyResult:
     """Run the trained MLP sufficiency classifier on the current evidence state.
 
@@ -1632,11 +1658,11 @@ def check_sufficiency(
         state: Evidence state to check
         llm: LLM instance for gap identification
         threshold: MLP probability threshold for sufficiency (default: 0.5)
-        min_papers_per_iteration: Minimum number of NEW papers required per iteration
-                                  before allowing SUFFICIENT result. If fewer papers
-                                  were added this iteration, force INSUFFICIENT to
-                                  encourage more retrieval. Set to 0 to disable.
-                                  (default: 3)
+        min_total_papers: Minimum total number of papers required in the state
+                          before allowing SUFFICIENT result. If fewer papers
+                          are present in total, force INSUFFICIENT to
+                          encourage more retrieval. Set to 0 to disable.
+                          (default: 3)
 
     Appends result to state.sufficiency_history and increments iteration.
     Raises MaxIterationsExceeded if the iteration limit is reached.
@@ -1708,19 +1734,19 @@ def check_sufficiency(
     override_reason = None
     if (
         mlp_label == "sufficient"
-        and min_papers_per_iteration > 0
-        and papers_added_this_iteration < min_papers_per_iteration
+        and min_total_papers > 0
+        and current_paper_count < min_total_papers
         and state.iteration < state.MAX_ITERATIONS  # Don't force on last iteration
     ):
         override_reason = (
-            f"Minimum paper requirement not met: only {papers_added_this_iteration} "
-            f"new papers this iteration (need {min_papers_per_iteration}). "
+            f"Minimum paper requirement not met: only {current_paper_count} "
+            f"total papers gathered (need at least {min_total_papers}). "
             f"Continue searching to gather more evidence."
         )
         label = "insufficient"
         logger.info(
-            "Overriding sufficient → insufficient: %d papers added (need %d)",
-            papers_added_this_iteration, min_papers_per_iteration
+            "Overriding sufficient → insufficient: %d total papers gathered (need at least %d)",
+            current_paper_count, min_total_papers
         )
     else:
         label = mlp_label
@@ -1760,7 +1786,7 @@ def check_sufficiency(
     print(f"MLP Prediction: {mlp_label} (confidence: {prob:.6f})")
     if override_reason:
         print(f"⚠️  Override: sufficient → insufficient")
-        print(f"Reason: Need {min_papers_per_iteration} new papers, only {papers_added_this_iteration} added")
+        print(f"Reason: Need at least {min_total_papers} total papers, currently have {current_paper_count} papers")
     print(f"Final Label: {label}")
     print(f"Threshold: {threshold}")
     print(f"Decision: {'PASS — evidence is sufficient' if label == 'sufficient' else 'FAIL — more evidence needed'}")
@@ -2095,7 +2121,14 @@ def setup_kernel(
 
     from pkevolve.verification.llm_factory import make_llm
 
-    llm = make_llm(base_url=base_url, api_key=api_key, model=model)
+    # Read disable_thinking config from environment (set by build_sdk_env)
+    disable_thinking = os.environ.get("LLM_DISABLE_THINKING", "0") == "1"
+    extra_body = None
+    if disable_thinking:
+        extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
+
+    temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+    llm = make_llm(base_url=base_url, api_key=api_key, model=model, temperature=temperature, extra_body=extra_body)
 
     print(f"Kernel ready. state=<{len(state.papers)} papers>, llm={model!r}, max_iterations={state.MAX_ITERATIONS}")
     return state, llm, ws

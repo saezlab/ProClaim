@@ -6,6 +6,8 @@ This script iterates through the SIGNOR ground truth CSV, generates both
 forward and flipped claims, and sequentially runs `evidence_programming.py`
 for multiple repetitions per claim. Results are appended incrementally to an
 output CSV. Token usage and cost estimates are parsed from the verdict artifacts.
+
+time uv run python -m pkevolve.verification.evidence_programming --config experiments/example_config.yaml --claim "AURKA directly activates AR (either through post-translational modification, complex formation, stabilization, or regulation of expression)." --output-dir results/test_signor_with_workflow_1 --notebook-path results/test_signor_with_workflow_1/evidence_report.ipynb
 """
 
 import argparse
@@ -59,8 +61,9 @@ def construct_signor_claim(source: str, target: str, interaction: str, flip: boo
     Constructs the natural language claim from the entities and interaction.
 
     Flip logic:
-    - Only positive edges (activation) are flipped to negative (inhibition)
-    - Negative edges are NOT flipped
+    - Only called with flip=True for edges whose original label is SUPPORTED
+    - Positive (activation) edges are flipped to negative (inhibition)
+    - Negative (inhibition) edges are flipped to positive (activation)
     - Non-directional edges (e.g., binding) are NOT flipped
     """
     # Group definitions based on signor_utils.py
@@ -76,11 +79,13 @@ def construct_signor_claim(source: str, target: str, interaction: str, flip: boo
         'down-regulates quantity by destabilization'
     ]
 
-    # Apply flip logic: ONLY flip positive edges
+    # Apply flip logic: flip both positive and negative directional edges
     if flip and is_positive:
-        # Flip positive to negative
         is_positive = False
         is_negative = True
+    elif flip and is_negative:
+        is_negative = False
+        is_positive = True
 
     # Formulate claim sentence
     if is_positive:
@@ -366,7 +371,8 @@ def main():
         
         logger.info(f"--- Processing [{idx+1}/{total_rows}] {sid} : {entity_a} -> {entity_b} ---")
         
-        for flip in [False, True]:
+        flip_variants = [False, True] if orig_label.upper() == "SUPPORTED" else [False]
+        for flip in flip_variants:
              # Create string formats and labels
              claim_str = construct_signor_claim(entity_a, entity_b, effect, flip=flip)
              expected_label = get_flipped_label(orig_label, flip=flip)

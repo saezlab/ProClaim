@@ -49,6 +49,7 @@ class PaperRecord(BaseModel):
     authors: list[str] = Field(default_factory=list)
     doi: Optional[str] = None
     source: str = "pubmed"  # pubmed | semantic_scholar
+    reference_dois: list[str] = Field(default_factory=list)
     metadata: Optional["PaperFeatureVector"] = None
     nlp: Optional["NLPFeatureVector"] = None
 
