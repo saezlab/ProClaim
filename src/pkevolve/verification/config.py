@@ -325,6 +325,7 @@ class VerificationSettings(BaseSettings):
             base_url=self.subagent_base_url,
             api_key=self.api_key,
             model=self.subagent_model,
+            temperature=self.temperature,
             extra_body=extra_body,
         )
 
@@ -355,6 +356,7 @@ class VerificationSettings(BaseSettings):
             "LLM_BASE_URL": self.subagent_base_url,
             "LLM_API_KEY": self.api_key,
             "LLM_MODEL": self.subagent_model,
+            "LLM_TEMPERATURE": str(self.llm.temperature),
             "LLM_DISABLE_THINKING": "1" if self.llm.disable_thinking else "0",
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
             "MAX_ITERATIONS": str(self.max_iterations),

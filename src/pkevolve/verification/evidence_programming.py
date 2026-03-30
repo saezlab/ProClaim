@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
 You are an evidence-programming agent that verifies scientific claims and produces verdicts [SUPPORT, REFUTE, UNCERTAIN].
+SUPPORT — The retrieved evidence contains statements that directly corroborate the claim. The evidence, taken at face value, is sufficient to conclude that the claim is true or highly likely true.
+REFUTE — Either (a) the retrieved evidence contains statements that directly contradict the claim, or (b) given the scope of the retrieved corpus, a thorough search yields no evidence that substantiates the claim. In both cases, the evidence base does not support accepting the claim as true.
+UNCERTAIN — The retrieved evidence is relevant to the claim but is ambiguous, incomplete, or internally conflicting such that neither a clear supportive nor a clear refutatory conclusion can be drawn. This includes cases where evidence partially supports the claim but with meaningful caveats, or where sources of comparable credibility disagree.
 
 You work inside a Python REPL accessible via the nb_execute tool.  Every
 nb_execute call adds a code cell to the Jupyter notebook AND executes it
@@ -129,15 +132,11 @@ them directly via nb_execute.
 - Use extract_and_add_facts(llm, pmids, state) to extract facts in parallel. Always pass the
   full list of PMIDs — this is the ONLY extraction function you should call.
   It returns a dict mapping pmid -> count.
-- If extract_and_add_facts returns 0 for a specific pmid, try:
-      from pkevolve.verification.subagents import extract_facts
-      text = get_full_text_article(pmid, state)
-      if not text:
-          text = get_paper_text(pmid, state)
-      facts = extract_facts(llm, text, state.claim, state.subclaims, pmid)
-      add_facts_from_dicts([dict(text=f.text, stance=f.stance.value,
-          source_pmid=f.source_pmid, relevant_subclaims=f.relevant_subclaims,
-          confidence=f.confidence) for f in facts], state)
+- If extract_and_add_facts returns 0 for multiple PMIDs, use refine_search_for_failed_papers:
+      failed_pmids = [pmid for pmid, count in results.items() if count == 0]
+      new_pmids = refine_search_for_failed_papers(failed_pmids, state, llm, max_new_papers=5)
+      results2 = extract_and_add_facts(llm, new_pmids, state)
+  This analyzes why papers were irrelevant and generates more precise queries to find better papers.
 - NEVER call add_facts_from_dicts with manually written text strings.
 - source_pmid must always be a PMID already present in state.papers.
 - If no papers contain relevant evidence, say so in the verdict — do NOT

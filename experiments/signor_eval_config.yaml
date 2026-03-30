@@ -39,7 +39,7 @@ llm:
   temperature: 0.7
 
 # Output paths (will be overridden by run_signor_eval.py for each claim)
-output_dir: results/signor_eval
+output_dir: results/signor_eval_prompt
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
 # Logging

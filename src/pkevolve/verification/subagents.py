@@ -134,7 +134,7 @@ def extract_facts(
     prompt = f"""\
 You are a scientific fact extraction specialist.
 
-Given a paper and a claim with subclaims, extract every atomic fact relevant to the claim.
+Given a paper and a claim with subclaims, extract every atomic fact that addresses the claim, accounting for varying terminology, synonyms, or aliases used in the text.
 
 For each fact provide a JSON object with:
 - "text": factual statement (one sentence, self-contained)
@@ -144,9 +144,10 @@ For each fact provide a JSON object with:
 - "confidence": 0.0-1.0, how clearly the paper states this
 
 Rules:
-- Be precise. Do not infer beyond what the paper states.
+- Base facts strictly on the provided text. Recognize equivalent terms, but do not hallucinate logical leaps not present in the paper.
 - If a paper does not address a subclaim, do not manufacture facts.
 - Each fact must be independently verifiable from the source paper.
+Now extract facts for the following:
 
 Claim: {claim}
 
@@ -154,13 +155,13 @@ Subclaims:
 {subclaims_str}
 
 Paper (PMID: {source_pmid}):
-{paper_text[:16000]}
+{paper_text[:50000]}
 
 Output ONLY a JSON array of fact objects. No other text."""
 
     response = llm(prompt)
-    if not response:
-        print(f"extract_facts: LLM returned empty response for PMID {source_pmid}")
+    if not response or response.strip() == "[]":
+        print(f"extract_facts: No facts found for PMID {source_pmid}")
         return []
     return _parse_facts_response(response, source_pmid)
 
@@ -494,6 +495,99 @@ Output ONLY a JSON array of query strings. Example: ["MAPK1 phosphorylation mech
 
     response = llm(prompt).strip()
 
+    text = response
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+
+    try:
+        queries = json.loads(text)
+        if isinstance(queries, list):
+            return [str(q) for q in queries if isinstance(q, str)]
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: try line-by-line
+    return [line.strip().strip('"').strip("'")
+            for line in response.split("\n")
+            if line.strip() and not line.strip().startswith(("#", "-", "["))]
+
+
+def refine_search_query(
+    llm: LLMCallable,
+    claim: str,
+    subclaims: list[str],
+    failed_papers: list[dict],
+) -> list[str]:
+    """Analyze why certain papers yielded no facts and generate refined search queries.
+
+    This function is used when extract_and_add_facts returns 0 facts for some papers.
+    Instead of retrying the same papers, we analyze why they were irrelevant and
+    generate more precise PubMed queries to find better papers.
+
+    Args:
+        llm: LLM callable.
+        claim: The claim being verified.
+        subclaims: List of subclaims.
+        failed_papers: List of dicts with keys: pmid, title, abstract.
+
+    Returns:
+        List of refined PubMed query strings (3-8 words each).
+    """
+    if not failed_papers:
+        return []
+
+    subclaims_str = "\n".join(f"  - {sc}" for sc in subclaims)
+
+    papers_str = "\n".join(
+        f"  PMID:{p.get('pmid', 'unknown')}\n"
+        f"  Title: {p.get('title', 'N/A')}\n"
+        f"  Abstract: {p.get('abstract', 'N/A')[:200]}...\n"
+        for p in failed_papers[:5]  # Limit to first 5 to avoid token overflow
+    )
+
+    prompt = f"""\
+You are an evidence retrieval specialist for scientific claim verification.
+
+The system attempted to extract facts from the following papers but found NO relevant evidence.
+Your task: analyze why these papers are irrelevant to the claim, then generate MORE PRECISE
+PubMed search queries to find papers that actually contain relevant evidence.
+
+Claim: {claim}
+
+Subclaims:
+{subclaims_str}
+
+Papers that yielded 0 facts:
+{papers_str}
+
+Common reasons for irrelevance:
+- Papers discuss similar topics but in different contexts or domains
+- Papers mention the subject matter only indirectly or as background
+- Papers study related but distinct phenomena or mechanisms
+- Initial query was too broad and retrieved tangentially related papers
+- Papers lack the specific type of evidence needed for verification
+
+Your task:
+1. Analyze why the above papers were irrelevant to the claim
+2. Generate 5-10 MORE SPECIFIC PubMed queries that:
+   - Keep queries SHORT (2-4 key terms max) to maximize recall
+   - Add ONE contextual constraint that distinguishes relevant papers
+   - Use OR operators for synonyms rather than long AND chains
+   - Avoid overly specific methodology terms (e.g., "co-immunoprecipitation")
+   - Use proper PubMed Boolean operators sparingly
+
+CRITICAL: PubMed interprets space-separated terms as AND. Keep queries SHORT.
+Too specific = 0 results. Balance precision with recall.
+
+Output ONLY a JSON array of query strings (2-4 words each).
+Example for a PPI claim: ["MAPK1 H3F3A phosphorylation", "ERK2 histone H3.3"]
+Example for a clinical claim: ["JAK2 V617F lymphoid leukemia", "JAK2 mutation B-ALL"]"""
+
+    response = llm(prompt).strip()
+
+    # Parse JSON response (same logic as formulate_gap_queries)
     text = response
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()

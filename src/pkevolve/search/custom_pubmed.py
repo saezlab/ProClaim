@@ -4,28 +4,52 @@ from xml.etree import ElementTree as ET
 from datetime import datetime
 from paper_search_mcp.paper import Paper
 from paper_search_mcp.academic_platforms.pubmed import PubMedSearcher
+import os
 
 class RelevancePubMedSearcher(PubMedSearcher):
     """
     Custom PubMed searcher that sorts results by relevance (Best Match).
+    Supports NCBI API key for higher rate limits (10 req/s instead of 3 req/s).
     """
+    def __init__(self, api_key: str = None, email: str = None):
+        """
+        Initialize searcher with optional API key and email.
+
+        Args:
+            api_key: NCBI API key (or reads from PUBMED_API_KEY env var)
+            email: Email for NCBI (or reads from PUBMED_EMAIL env var)
+        """
+        super().__init__()
+        self.api_key = api_key or os.environ.get('PUBMED_API_KEY')
+        self.email = email or os.environ.get('PUBMED_EMAIL')
+
     def search(self, query: str, max_results: int = 10) -> List[Paper]:
-        # Add 'sort': 'relevance' to the search parameters
+        # Use usehistory=y + sort=relevance to get relevance-sorted results
+        # Note: sort=relevance alone causes API bug (returns 0 results for some queries)
+        # but usehistory=y + sort=relevance works correctly
+        # See: https://www.ncbi.nlm.nih.gov/books/NBK25499/#chapter4.ESearch
         search_params = {
             'db': 'pubmed',
             'term': query,
             'retmax': max_results,
             'retmode': 'xml',
-            'sort': 'relevance'  # <--- Added this line
+            'usehistory': 'y',  # <--- Required to make sort=relevance work
+            'sort': 'relevance',  # <--- Sort by Best Match (relevance)
         }
-        
+
+        # Add API key and email if available (increases rate limit to 10 req/s)
+        if self.api_key:
+            search_params['api_key'] = self.api_key
+        if self.email:
+            search_params['email'] = self.email
+
         # We need to re-implement the rest because the original method
         # does not allow injecting extra params easily without rewriting.
-        
-        search_response = requests.get(self.SEARCH_URL, params=search_params)
+
+        search_response = requests.get(self.SEARCH_URL, params=search_params, timeout=30)
         search_root = ET.fromstring(search_response.content)
         ids = [id.text for id in search_root.findall('.//Id')]
-        
+
         if not ids:
             return []
 
@@ -34,7 +58,14 @@ class RelevancePubMedSearcher(PubMedSearcher):
             'id': ','.join(ids),
             'retmode': 'xml'
         }
-        fetch_response = requests.get(self.FETCH_URL, params=fetch_params)
+
+        # Add API key and email to fetch request too
+        if self.api_key:
+            fetch_params['api_key'] = self.api_key
+        if self.email:
+            fetch_params['email'] = self.email
+
+        fetch_response = requests.get(self.FETCH_URL, params=fetch_params, timeout=30)
         fetch_root = ET.fromstring(fetch_response.content)
         
         papers = []

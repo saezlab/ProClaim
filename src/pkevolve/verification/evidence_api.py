@@ -158,10 +158,11 @@ def schema_docs() -> str:
         "  - Do NOT write fact dicts by hand. Use extract_and_add_facts(llm, pmids, state) instead.\n"
         "  - When creating a PaperRecord manually, `authors` must be a list[str], e.g. [\"Author Name\"].\n"
         "  - extract_and_add_facts(llm, pmids, state) accepts a list of PMIDs and returns dict[pmid, count].\n"
-        "  - If extract_and_add_facts returns 0 for a specific pmid, use the fallback:\n"
-        "      from pkevolve.verification.subagents import extract_facts\n"
-        "    Then: text = get_full_text_article(pmid, state)\n"
-        "    And: facts = extract_facts(llm, text, state.claim, state.subclaims, pmid)\n"
+        "  - If extract_and_add_facts returns 0 for multiple PMIDs, use refine_search_for_failed_papers:\n"
+        "      failed_pmids = [pmid for pmid, count in results.items() if count == 0]\n"
+        "      new_pmids = refine_search_for_failed_papers(failed_pmids, state, llm, max_new_papers=5)\n"
+        "      results2 = extract_and_add_facts(llm, new_pmids, state)\n"
+        "    This generates more precise queries instead of retrying the same irrelevant papers.\n"
     )
 
 
@@ -185,12 +186,12 @@ def function_docs() -> str:
 
     # Functions from evidence_api
     _api_funcs = [
-        search_pubmed, search_pubmed_llm, search_pubmed_progressive, find_related_articles,
+        search_pubmed, search_pubmed_llm, find_related_articles,
         search_semantic_scholar, search_semantic_scholar_recommendations,
         get_full_text_article, get_paper_text, extract_and_add_facts,
         add_facts_from_dicts, update_synthesis, add_conflict,
         get_evidence_summary, check_sufficiency, get_sufficiency_history, compress_evidence,
-        emit_verdict, formulate_pubmed_query, search_for_gap,
+        emit_verdict, formulate_pubmed_query, search_for_gap, refine_search_for_failed_papers,
         populate_paper_features, populate_paper_features_parallel, filter_papers_by_stance,
     ]
 
@@ -200,10 +201,10 @@ def function_docs() -> str:
     # Functions from subagents
     from pkevolve.verification.subagents import (
         extract_facts, synthesize_subclaim, detect_conflicts,
-        formulate_gap_queries,
+        formulate_gap_queries, refine_search_query,
     )
     _sub_funcs = [extract_facts, synthesize_subclaim, detect_conflicts,
-                  formulate_gap_queries]
+                  formulate_gap_queries, refine_search_query]
 
     lines = ["## Available functions (after setup)\n"]
     lines.append("### evidence_api\n")
@@ -410,58 +411,6 @@ def search_pubmed_llm(
     return added_pmids
 
 
-def search_pubmed_progressive(
-    claim: str,
-    state: EvidenceState,
-    max_results_per_tier: int = 5,
-) -> list[str]:
-    """Progressive PubMed search with automatic query broadening.
-
-    Tries queries from most specific to broadest, stopping once enough
-    papers are found. Returns list of all added PMIDs.
-    """
-    symbols = re.findall(r"\b[A-Z][A-Z0-9](?:[A-Z0-9\-]{0,8})\b", claim)
-
-    claim_lower = claim.lower().rstrip(".")
-    bio_terms: list[str] = []
-    for verb, noun in _BIO_VERB_TO_NOUN.items():
-        if verb in claim_lower:
-            bio_terms.append(noun)
-
-    if not symbols:
-        words = re.findall(r"\b\w+\b", claim)
-        symbols = [w for w in words if w.lower() not in _STOP_WORDS and len(w) > 1]
-
-    tiers = _generate_tiered_queries(symbols, bio_terms)
-
-    total_added = 0
-    all_added_pmids: list[str] = []
-    tier_results: list[str] = []
-
-    for idx, (tier_name, query) in enumerate(tiers):
-        if idx > 0:
-            time.sleep(0.4)
-
-        found, added, added_pmids = _search_and_add(
-            query, state, max_results=max_results_per_tier,
-        )
-        total_added += added
-        all_added_pmids.extend(added_pmids)
-        tier_results.append(
-            f"  [{tier_name}] {query} → found {found}, added {added}"
-        )
-
-        if total_added >= max_results_per_tier and tier_name not in (
-            "strict_pair_mechanism", "strict_pair",
-        ):
-            break
-
-    print(f"Progressive search for: {claim}")
-    for line in tier_results:
-        print(line)
-    print(f"Total papers added: {total_added}")
-
-    return all_added_pmids
 
 
 def search_for_gap(
@@ -471,6 +420,84 @@ def search_for_gap(
 ) -> list[str]:
     """Search for papers targeting a specific evidence gap."""
     return search_pubmed(gap_description, state, max_results)
+
+
+def refine_search_for_failed_papers(
+    failed_pmids: list[str],
+    state: EvidenceState,
+    llm,
+    max_new_papers: int = 5,
+) -> list[str]:
+    """Generate refined search queries and search for better papers when extraction fails.
+
+    When extract_and_add_facts returns 0 facts for certain papers, this function
+    analyzes why those papers were irrelevant and generates more precise search
+    queries to find better papers. This is a smarter fallback than retrying the
+    same papers with full text.
+
+    Args:
+        failed_pmids: List of PMIDs that yielded 0 facts.
+        state: EvidenceState containing the papers.
+        llm: LLM callable for query generation.
+        max_new_papers: Maximum number of new papers to retrieve per query (default: 5).
+
+    Returns:
+        List of newly added PMIDs from the refined search.
+
+    Example:
+        >>> results = extract_and_add_facts(llm, pmids, state)
+        >>> failed = [pmid for pmid, count in results.items() if count == 0]
+        >>> if failed:
+        >>>     new_pmids = refine_search_for_failed_papers(failed, state, llm)
+        >>>     results2 = extract_and_add_facts(llm, new_pmids, state)
+    """
+    from pkevolve.verification.subagents import refine_search_query
+
+    if not failed_pmids:
+        return []
+
+    # Collect metadata from failed papers
+    failed_papers = []
+    for pmid in failed_pmids[:5]:  # Limit to 5 to avoid token overflow
+        paper = state.papers.get(pmid)
+        if paper:
+            failed_papers.append({
+                "pmid": pmid,
+                "title": paper.title,
+                "abstract": paper.abstract,
+            })
+
+    if not failed_papers:
+        return []
+
+    # Generate refined queries using LLM subagent
+    refined_queries = refine_search_query(
+        llm=llm,
+        claim=state.claim,
+        subclaims=state.subclaims,
+        failed_papers=failed_papers,
+    )
+
+    if not refined_queries:
+        print("refine_search_for_failed_papers: no refined queries generated.")
+        return []
+
+    print(f"Refined queries: {', '.join(refined_queries)}")
+
+    # Execute searches with refined queries
+    all_new_pmids: list[str] = []
+    for query in refined_queries:
+        try:
+            new_pmids = search_pubmed(query, state, max_results=max_new_papers)
+            all_new_pmids.extend(new_pmids)
+        except Exception as e:
+            logger.warning(f"Search failed for refined query '{query}': {e}")
+
+    # Deduplicate
+    unique_new_pmids = list(dict.fromkeys(all_new_pmids))
+
+    print(f"Refined search: found {len(unique_new_pmids)} new papers.")
+    return unique_new_pmids
 
 
 def find_related_articles(
@@ -2100,7 +2127,8 @@ def setup_kernel(
     if disable_thinking:
         extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
-    llm = make_llm(base_url=base_url, api_key=api_key, model=model, extra_body=extra_body)
+    temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+    llm = make_llm(base_url=base_url, api_key=api_key, model=model, temperature=temperature, extra_body=extra_body)
 
     print(f"Kernel ready. state=<{len(state.papers)} papers>, llm={model!r}, max_iterations={state.MAX_ITERATIONS}")
     return state, llm, ws

@@ -20,7 +20,7 @@
 mode: sdk
 
 # Verification workflow parameters
-max_iterations: 2
+max_iterations: 4
 sufficiency_threshold: 0.80
 
 # LLM configuration
@@ -35,7 +35,7 @@ llm:
 
   # Subagent configuration (shared by both Claude and GLM)
   subagent_model: qwen3.5-9b  # Must match vLLM model ID exactly
-  subagent_base_url: "http://codon-gpu-010.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
+  subagent_base_url: "http://codon-gpu-009.ebi.ac.uk:8001/v1/" # vLLM endpoint for subagent
   temperature: 0.7
   disable_thinking: true  # Disable Qwen thinking mode to save tokens
 

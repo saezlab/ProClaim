@@ -34,7 +34,7 @@ LOGIN_HOST="ihpc.ebi.ac.uk"
 LOGIN_NODE="${EBI_USER}@${LOGIN_HOST}"
 
 # SLURM job settings
-JOB_NAME="signor-eval"
+JOB_NAME="signor-eval-prompt-test"
 TIME_LIMIT="80:00:00"
 CPUS=8
 MEM="64G"
