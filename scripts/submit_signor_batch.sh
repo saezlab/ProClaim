@@ -263,6 +263,32 @@ fi
 echo "[2/2] Submitting SIGNOR evaluation job..."
 echo ""
 
+# # Verify vLLM server connectivity before submitting job
+# echo "Verifying vLLM server connectivity..."
+# VLLM_INFO=$(ssh_login "cat ${PROJECT_ROOT}/.vllm_server_info 2>/dev/null || echo ''")
+
+# if [[ -n "$VLLM_INFO" ]]; then
+#     COMPUTE_HOST=$(echo "$VLLM_INFO" | cut -d: -f1)
+#     REMOTE_PORT=$(echo "$VLLM_INFO" | cut -d: -f2)
+
+#     # Test if vLLM API is responding
+#     API_CHECK=$(ssh_login "curl -s --max-time 10 http://${COMPUTE_HOST}:${REMOTE_PORT}/v1/models 2>/dev/null | grep -o '\"object\":\"list\"' || echo ''")
+
+#     if [[ -z "$API_CHECK" ]]; then
+#         echo "  ✗ ERROR: vLLM server not responding at ${COMPUTE_HOST}:${REMOTE_PORT}"
+#         echo "  Please check vLLM logs or restart the server with:"
+#         echo "    bash scripts/start_vllm_ihpc.sh --stop"
+#         echo "    bash scripts/start_vllm_ihpc.sh --time ${VLLM_TIME} --gpus ${VLLM_GPUS} --model ${VLLM_MODEL} --detach"
+#         exit 1
+#     fi
+
+#     echo "  ✓ vLLM server is responding at ${COMPUTE_HOST}:${REMOTE_PORT}"
+# else
+#     echo "  ⚠ Warning: No vLLM server info found (.vllm_server_info missing)"
+#     echo "  If you're using an external vLLM server, make sure it's configured in example_config.yaml"
+# fi
+# echo ""
+
 # Create log directory on HPC
 ssh_login "mkdir -p ${LOG_DIR}"
 

@@ -14,7 +14,7 @@
 mode: sdk
 
 # Verification workflow parameters
-max_iterations: 10
+max_iterations: 4
 sufficiency_threshold: 0.80
 
 # LLM configuration

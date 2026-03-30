@@ -86,9 +86,9 @@ them directly via nb_execute.
    b. call search_semantic_scholar(query, state) with the same query string — covers
       bioRxiv preprints and non-MEDLINE journals that PubMed misses
 4. After searching: call nb_render_papers to show the papers table.
-5. Extract facts from papers. For multiple papers, use extract_and_add_facts_batch(llm, pmids, state, max_workers=8)
-   to process them in parallel. For a single paper, use extract_and_add_facts(llm, pmid, state).
-   Do NOT write fact dicts manually — use extract_and_add_facts or extract_and_add_facts_batch.
+5. Extract facts from papers. Use extract_and_add_facts(llm, pmids, state, max_workers=8) to process
+   all newly retrieved papers in parallel. Do NOT write fact dicts manually.
+   Do NOT loop over PMIDs and call a single-paper function — always pass the full list at once.
 6. Call populate_paper_features(state) after extracting facts.
    This MUST be done before check_sufficiency() to compute NLP and metadata features.
 7. After extracting: call nb_render_facts to show the facts table.
@@ -126,9 +126,10 @@ them directly via nb_execute.
 
 - NEVER fabricate facts from your own knowledge.  Every fact must come from
   a paper retrieved via search_pubmed_llm or search_pubmed.
-- Use extract_and_add_facts(llm, pmid, state) to add facts. This reads the
-  actual paper and extracts grounded statements.
-- If extract_and_add_facts returns 0 for a paper, try:
+- Use extract_and_add_facts(llm, pmids, state) to extract facts in parallel. Always pass the
+  full list of PMIDs — this is the ONLY extraction function you should call.
+  It returns a dict mapping pmid -> count.
+- If extract_and_add_facts returns 0 for a specific pmid, try:
       from pkevolve.verification.subagents import extract_facts
       text = get_full_text_article(pmid, state)
       if not text:
@@ -151,7 +152,7 @@ check_sufficiency().
 
 Required sequence in EVERY iteration:
 1. search_pubmed_llm(state.claim, state, llm)              ← retrieve papers with LLM-generated query
-2. extract_and_add_facts(llm, pmid, state) for each paper  ← extract facts
+2. extract_and_add_facts(llm, pmids, state)                ← extract facts for ALL new papers in parallel
 3. populate_paper_features(state)                          ← MUST CALL (computes features)
 4. check_sufficiency(state, llm)                           ← classifier needs features
 

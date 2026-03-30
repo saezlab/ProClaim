@@ -155,9 +155,10 @@ def schema_docs() -> str:
         "  - state.facts is a list, NOT a dict. Use `for f in state.facts:` (not .values())\n"
         "  - state.iteration is a top-level int, NOT `state.metadata.iteration`\n"
         "  - source_pmid must reference a paper in state.papers. Facts with unknown PMIDs are REJECTED.\n"
-        "  - Do NOT write fact dicts by hand. Use extract_and_add_facts(llm, pmid, state) instead.\n"
+        "  - Do NOT write fact dicts by hand. Use extract_and_add_facts(llm, pmids, state) instead.\n"
         "  - When creating a PaperRecord manually, `authors` must be a list[str], e.g. [\"Author Name\"].\n"
-        "  - If extract_and_add_facts returns 0 for a paper, import extract_facts from subagents:\n"
+        "  - extract_and_add_facts(llm, pmids, state) accepts a list of PMIDs and returns dict[pmid, count].\n"
+        "  - If extract_and_add_facts returns 0 for a specific pmid, use the fallback:\n"
         "      from pkevolve.verification.subagents import extract_facts\n"
         "    Then: text = get_full_text_article(pmid, state)\n"
         "    And: facts = extract_facts(llm, text, state.claim, state.subclaims, pmid)\n"
@@ -187,7 +188,6 @@ def function_docs() -> str:
         search_pubmed, search_pubmed_llm, search_pubmed_progressive, find_related_articles,
         search_semantic_scholar, search_semantic_scholar_recommendations,
         get_full_text_article, get_paper_text, extract_and_add_facts,
-        extract_and_add_facts_batch,
         add_facts_from_dicts, update_synthesis, add_conflict,
         get_evidence_summary, check_sufficiency, get_sufficiency_history, compress_evidence,
         emit_verdict, formulate_pubmed_query, search_for_gap,
@@ -1076,16 +1076,15 @@ def add_conflict(
 # ---------------------------------------------------------------------------
 
 
-def extract_and_add_facts(
+def _extract_and_add_facts_single(
     llm,
     pmid: str,
     state: EvidenceState,
 ) -> int:
-    """Read a paper, extract facts via the LLM subagent, and add to state.
+    """Read a single paper, extract facts via the LLM subagent, and add to state.
 
-    This is the recommended way to add facts — it guarantees that facts
-    are grounded in the actual paper text (abstract or full text) rather
-    than LLM parametric knowledge.
+    Private helper — call extract_and_add_facts(llm, pmids, state) instead,
+    which processes a list of PMIDs in parallel for better GPU utilization.
 
     Tries full text via PMC first (``get_full_text_article``).  Falls
     back to abstract-level metadata (``get_paper_text``) only when full
@@ -1110,11 +1109,11 @@ def extract_and_add_facts(
         paper_text = get_paper_text(pmid, state)
 
     if not paper_text:
-        print(f"extract_and_add_facts: no text available for PMID {pmid}.")
+        print(f"_extract_and_add_facts_single: no text available for PMID {pmid}.")
         return 0
 
     text_kind = "full text" if len(paper_text) > 2000 else "abstract"
-    print(f"extract_and_add_facts: using {text_kind} ({len(paper_text)} chars) for PMID {pmid}.")
+    print(f"_extract_and_add_facts_single: using {text_kind} ({len(paper_text)} chars) for PMID {pmid}.")
 
     facts = extract_facts(
         llm=llm,
@@ -1125,7 +1124,7 @@ def extract_and_add_facts(
     )
 
     if not facts:
-        print(f"extract_and_add_facts: subagent returned 0 facts for PMID {pmid}.")
+        print(f"_extract_and_add_facts_single: subagent returned 0 facts for PMID {pmid}.")
         return 0
 
     # Convert Fact objects to dicts and add through the validated path
@@ -1148,7 +1147,7 @@ def extract_and_add_facts(
     return added
 
 
-def extract_and_add_facts_batch(
+def extract_and_add_facts(
     llm,
     pmids: list[str],
     state: EvidenceState,
@@ -1156,11 +1155,10 @@ def extract_and_add_facts_batch(
 ) -> dict[str, int]:
     """Extract facts from multiple papers in parallel using ThreadPoolExecutor.
 
-    This function enables parallel fact extraction to maximize vLLM throughput
-    via continuous batching. Instead of processing papers sequentially (which
-    leaves the GPU idle between requests), this sends multiple extraction
-    requests concurrently. vLLM's continuous batching automatically schedules
-    them efficiently, inserting new requests as soon as previous ones complete.
+    This is the primary fact extraction function. It processes a list of PMIDs
+    concurrently to maximize vLLM throughput via continuous batching. Instead
+    of processing papers sequentially (which leaves the GPU idle between
+    requests), this sends multiple extraction requests concurrently.
 
     Performance impact:
     - Sequential: 10 papers × 10s = 100s
@@ -1177,8 +1175,8 @@ def extract_and_add_facts_batch(
         dict mapping pmid -> number of facts extracted.
 
     Example:
-        >>> pmids = list(state.papers.keys())[:8]
-        >>> results = extract_and_add_facts_batch(llm, pmids, state, max_workers=8)
+        >>> pmids = list(state.papers.keys())
+        >>> results = extract_and_add_facts(llm, pmids, state, max_workers=8)
         >>> print(f"Total facts: {sum(results.values())}")
 
     Note:
@@ -1191,11 +1189,11 @@ def extract_and_add_facts_batch(
     def _process_one(pmid: str) -> tuple[str, int]:
         """Process a single paper, catching exceptions gracefully."""
         try:
-            count = extract_and_add_facts(llm, pmid, state)
+            count = _extract_and_add_facts_single(llm, pmid, state)
             return pmid, count
         except Exception as e:
             logger.error(f"Error extracting facts from PMID {pmid}: {e}")
-            print(f"⚠ extract_and_add_facts_batch: error processing PMID {pmid}: {e}")
+            print(f"⚠ extract_and_add_facts: error processing PMID {pmid}: {e}")
             return pmid, 0
 
     if not pmids:
@@ -1205,10 +1203,10 @@ def extract_and_add_facts_batch(
     pmids_to_process = [p for p in pmids if p not in state.extracted_pmids]
 
     if not pmids_to_process:
-        print(f"extract_and_add_facts_batch: all {len(pmids)} papers already extracted.")
+        print(f"extract_and_add_facts: all {len(pmids)} papers already extracted.")
         return {p: 0 for p in pmids}
 
-    print(f"extract_and_add_facts_batch: processing {len(pmids_to_process)} papers with {max_workers} workers...")
+    print(f"extract_and_add_facts: processing {len(pmids_to_process)} papers with {max_workers} workers...")
 
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1231,7 +1229,7 @@ def extract_and_add_facts_batch(
             results[pmid] = 0
 
     total_facts = sum(results.values())
-    print(f"extract_and_add_facts_batch: completed. Total facts extracted: {total_facts}")
+    print(f"extract_and_add_facts: completed. Total facts extracted: {total_facts}")
 
     return results
 
@@ -1249,7 +1247,7 @@ def populate_paper_features(
 ) -> str:
     """Populate NLP and metadata features for papers.
 
-    MUST be called after extract_and_add_facts() and before check_sufficiency()
+    MUST be called after extract_and_add_facts(llm, pmids, state) and before check_sufficiency()
     to ensure the MLP classifier has access to all required features.
 
     This function extracts:
@@ -1612,7 +1610,7 @@ def check_sufficiency(
     state: EvidenceState,
     llm,
     threshold: float = 0.5,
-    min_papers_per_iteration: int = 3,
+    min_total_papers: int = 3,
 ) -> SufficiencyResult:
     """Run the trained MLP sufficiency classifier on the current evidence state.
 
@@ -1633,11 +1631,11 @@ def check_sufficiency(
         state: Evidence state to check
         llm: LLM instance for gap identification
         threshold: MLP probability threshold for sufficiency (default: 0.5)
-        min_papers_per_iteration: Minimum number of NEW papers required per iteration
-                                  before allowing SUFFICIENT result. If fewer papers
-                                  were added this iteration, force INSUFFICIENT to
-                                  encourage more retrieval. Set to 0 to disable.
-                                  (default: 3)
+        min_total_papers: Minimum total number of papers required in the state
+                          before allowing SUFFICIENT result. If fewer papers
+                          are present in total, force INSUFFICIENT to
+                          encourage more retrieval. Set to 0 to disable.
+                          (default: 3)
 
     Appends result to state.sufficiency_history and increments iteration.
     Raises MaxIterationsExceeded if the iteration limit is reached.
@@ -1709,19 +1707,19 @@ def check_sufficiency(
     override_reason = None
     if (
         mlp_label == "sufficient"
-        and min_papers_per_iteration > 0
-        and papers_added_this_iteration < min_papers_per_iteration
+        and min_total_papers > 0
+        and current_paper_count < min_total_papers
         and state.iteration < state.MAX_ITERATIONS  # Don't force on last iteration
     ):
         override_reason = (
-            f"Minimum paper requirement not met: only {papers_added_this_iteration} "
-            f"new papers this iteration (need {min_papers_per_iteration}). "
+            f"Minimum paper requirement not met: only {current_paper_count} "
+            f"total papers gathered (need at least {min_total_papers}). "
             f"Continue searching to gather more evidence."
         )
         label = "insufficient"
         logger.info(
-            "Overriding sufficient → insufficient: %d papers added (need %d)",
-            papers_added_this_iteration, min_papers_per_iteration
+            "Overriding sufficient → insufficient: %d total papers gathered (need at least %d)",
+            current_paper_count, min_total_papers
         )
     else:
         label = mlp_label
@@ -1761,7 +1759,7 @@ def check_sufficiency(
     print(f"MLP Prediction: {mlp_label} (confidence: {prob:.6f})")
     if override_reason:
         print(f"⚠️  Override: sufficient → insufficient")
-        print(f"Reason: Need {min_papers_per_iteration} new papers, only {papers_added_this_iteration} added")
+        print(f"Reason: Need at least {min_total_papers} total papers, currently have {current_paper_count} papers")
     print(f"Final Label: {label}")
     print(f"Threshold: {threshold}")
     print(f"Decision: {'PASS — evidence is sufficient' if label == 'sufficient' else 'FAIL — more evidence needed'}")
@@ -2096,7 +2094,13 @@ def setup_kernel(
 
     from pkevolve.verification.llm_factory import make_llm
 
-    llm = make_llm(base_url=base_url, api_key=api_key, model=model)
+    # Read disable_thinking config from environment (set by build_sdk_env)
+    disable_thinking = os.environ.get("LLM_DISABLE_THINKING", "0") == "1"
+    extra_body = None
+    if disable_thinking:
+        extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
+
+    llm = make_llm(base_url=base_url, api_key=api_key, model=model, extra_body=extra_body)
 
     print(f"Kernel ready. state=<{len(state.papers)} papers>, llm={model!r}, max_iterations={state.MAX_ITERATIONS}")
     return state, llm, ws

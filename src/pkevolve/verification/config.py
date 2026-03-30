@@ -165,6 +165,10 @@ class LLMSettings(BaseSettings):
         le=2.0,
         description="LLM sampling temperature.",
     )
+    disable_thinking: bool = Field(
+        default=True,
+        description="Disable Qwen thinking mode to save tokens.",
+    )
 
     @property
     def effective_subagent_model(self) -> str:
@@ -307,13 +311,21 @@ class VerificationSettings(BaseSettings):
 
         Uses ``subagent_base_url``, ``api_key``, and ``subagent_model``
         so callers don't need to pass any LLM parameters.
+
+        If ``disable_thinking`` is True, passes extra_body to disable Qwen's
+        built-in thinking mode (saves tokens).
         """
         from pkevolve.verification.llm_factory import make_llm
+
+        extra_body = None
+        if self.disable_thinking:
+            extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
         return make_llm(
             base_url=self.subagent_base_url,
             api_key=self.api_key,
             model=self.subagent_model,
+            extra_body=extra_body,
         )
 
     # ── Builders ──────────────────────────────────────────────────────
@@ -343,6 +355,7 @@ class VerificationSettings(BaseSettings):
             "LLM_BASE_URL": self.subagent_base_url,
             "LLM_API_KEY": self.api_key,
             "LLM_MODEL": self.subagent_model,
+            "LLM_DISABLE_THINKING": "1" if self.llm.disable_thinking else "0",
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
             "MAX_ITERATIONS": str(self.max_iterations),
             # Notebook MCP truncation limit
