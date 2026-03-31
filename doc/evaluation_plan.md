@@ -4,17 +4,33 @@
 
 The evaluation is split into two groups that test fundamentally different capabilities:
 
-**Group 1 — Constrained retrieval + verdict (existing benchmarks)**
-All systems retrieve from the same fixed corpus. Evaluation is at the (claim, evidence) pair level. Results are directly comparable to published numbers. Tests: retrieval precision + verdict reasoning within a controlled setting.
+**Group 2 — Open retrieval + claim-level verdict (primary benchmarks)**
+Systems search freely across PubMed, Semantic Scholar, or any available API. Evaluation is at the claim level against curated gold labels. Tests: the full evidence programming paradigm — iterative construction, gap-directed retrieval, sufficiency-aware stopping in an unconstrained search space. SIGNOR\* and connectomeDB\* are the **primary novel contribution** of this benchmark: no existing dataset provides claim-level labels for open-retrieval scientific verification.
 
-**Group 2 — Open retrieval + claim-level verdict (new benchmarks)**
-Systems search freely across PubMed, Semantic Scholar, or any available API. Evaluation is at the claim level against curated gold labels. Tests: the full evidence programming paradigm — iterative construction, gap-directed retrieval, sufficiency-aware stopping in an unconstrained search space.
+**Group 1 — Constrained retrieval + verdict (secondary benchmarks)**
+All systems retrieve from the same fixed corpus. Evaluation is at the (claim, evidence) pair level. Results are directly comparable to published numbers. Included as a secondary diagnostic: by holding retrieval fixed, failures can be attributed to reasoning rather than retrieval, establishing an upper bound on what a perfect retriever could achieve. SciFact-Open and CIViC-Fact are included for cross-system comparability and task decomposition, not as the primary evaluation target.
+
+**Relationship between groups:** Group 2 is the primary evaluation — it tests whether a system can find and synthesise evidence autonomously. Group 1 is a secondary diagnostic that tells us whether failures in Group 2 stem from poor reasoning or poor retrieval.
 
 ---
 
 ## 2. Datasets
 
-### Group 1: Constrained Retrieval
+### Group 2: Open Retrieval (Claim-Level) — Primary
+
+| Dataset | Retrieval Scope | Size | Label Schema | Eval Protocol |
+|---------|----------------|------|--------------|---------------|
+| **connectomeDB*** | Open (PubMed, Semantic Scholar, any API) | ~450 claims (sampled) | SUPPORTED / REFUTED | Predict claim-level verdict |
+| **SIGNOR*** | Open | 67 edges (34 SUPPORTED, 24 REFUTED, 9 UNCERTAIN) | SUPPORTED / REFUTED / UNCERTAIN | Predict claim-level verdict |
+| Matter-of-Fact (hard subset) | Open (Semantic Scholar) | ~1–2k claims (filtered from 4.4k) | FEASIBLE / INFEASIBLE → SUPPORT / REFUTE | Predict claim-level verdict |
+
+- No corpus constraint — systems search freely.
+- **Primary metric: Claim-level F1 against curated gold labels.**
+- connectomeDB\* is the primary benchmark (largest, cleanest labels, ligand-receptor cell communication domain).
+- SIGNOR\* is a secondary benchmark within this group (smaller, different domain: intracellular signaling regulation).
+- Matter-of-Fact is a supplementary benchmark for domain breadth (materials science) and scale; hard-claim filtering applied to remove trivially verifiable cases.
+
+### Group 1: Constrained Retrieval — Secondary
 
 | Dataset | Corpus | Size | Label Schema | Eval Protocol |
 |---------|--------|------|--------------|---------------|
@@ -22,21 +38,19 @@ Systems search freely across PubMed, Semantic Scholar, or any available API. Eva
 | **CIViC-Fact** | 554 annotated publications | 1,434 claim-evidence pairs (1,119 distinct claims) | SUPPORTS / DOES NOT SUPPORT / NEI / CONFLICTING | Retrieve paper + predict verdict per (claim, paper) pair |
 
 - All systems search the same corpus — this controls for retrieval source and isolates architectural differences.
-- Primary metric: Label F1 (and optionally Label+Retrieval F1, requiring both correct retrieval and correct verdict).
-- SciFact-Open is the primary benchmark for comparability with prior work (FIRE, SAFE, etc.).
-- CIViC-Fact tests full-text evidence handling in cancer genomics.
+- Secondary metric: Label F1 (and optionally Label+Retrieval F1, requiring both correct retrieval and correct verdict).
+- SciFact-Open is included for comparability with prior work (FIRE, SAFE, etc.) and to diagnose reasoning failures independently of retrieval.
+- CIViC-Fact is included for scale, statistical power, and domain breadth (precision oncology).
 
-### Group 2: Open Retrieval (Claim-Level)
+**Rationale for including Group 1 datasets as secondary:**
 
-| Dataset | Retrieval Scope | Size | Label Schema | Eval Protocol |
-|---------|----------------|------|--------------|---------------|
-| **connectomeDB*** | Open (PubMed, Semantic Scholar, any API) | ~450 claims (sampled) | SUPPORTED / REFUTED | Predict claim-level verdict |
-| **SIGNOR*** | Open | 67 edges (34 SUPPORTED, 24 REFUTED, 9 UNCERTAIN) | SUPPORTED / REFUTED / UNCERTAIN | Predict claim-level verdict |
+SciFact-Open and CIViC-Fact are included as secondary diagnostics, not as the primary evaluation target. The primary contribution of this benchmark is Group 2 (connectomeDB\*, SIGNOR\*), which is the first claim-level evaluation for open-retrieval scientific verification in these domains.
 
-- No corpus constraint — systems search freely.
-- Primary metric: Claim-level F1 against curated gold labels.
-- connectomeDB\* is the primary claim-level benchmark (largest, cleanest labels).
-- SIGNOR\* is a secondary benchmark / case study (small but different domain: gene regulatory interactions vs. ligand-receptor binding).
+1. **Task decomposition / verification upper bound.** Open-retrieval verification = retrieval + reasoning. Group 1 isolates the reasoning step with gold evidence, letting us separately diagnose whether Group 2 failures come from retrieval errors or reasoning errors. Without this decomposition, it is impossible to determine whether a system that fails in open retrieval does so because it cannot find the evidence or because it cannot reason over it.
+
+2. **Community comparability.** SciFact-Open is the established NLP benchmark for scientific claim verification. Reporting results on it anchors the evaluation in the prior literature and enables direct comparison with FIRE, SAFE, Factcheck-GPT, and OpenScholar — making the paper's contribution visible to the NLP community.
+
+3. **Domain breadth.** Together, the four datasets span general biomedical science (SciFact), precision oncology (CIViC), intracellular signaling regulation (SIGNOR), and ligand-receptor cell communication (ConnectomeDB).
 
 ### connectomeDB\* Construction
 
@@ -52,6 +66,27 @@ Target: ~200 SUPPORTED, ~200 REFUTED, ~50 hard negatives. Describe the sampling 
 ### SIGNOR\* Construction
 
 Source: SIGNOR database (LoSurdo et al., 2025). Ground-truth incorrect edges identified by comparing SIGNOR releases 2018-2025. Correct edges filtered from October 2025 release, ranked by reference counts, deduplicated, and filtered to remove easy cases. Expert adjudicated. 67 total edges.
+
+### Matter-of-Fact (Supplementary — Open Retrieval)
+
+**Source:** Jansen et al., EMNLP 2025 (arXiv:2506.04410). 4,446 test claims extracted from arXiv materials science papers (superconductors, semiconductors, batteries, aerospace materials), published January 2024–April 2025. Balanced 50/50 feasible/infeasible. Labels validated by domain expert (κ = 0.86; 99% agreement after resolution). CC-BY 4.0. Repository: https://github.com/cognitiveailab/matter-of-fact
+
+**Label mapping:** feasible → `SUPPORT`; infeasible → `REFUTE`. (Two-class only; no NEI.)
+
+**Label construction:** Positive claims extracted directly from full-text results reported in the source paper. Negative claims are LLM-generated matched counterparts instructed to be scientifically infeasible with neutral framing. Both are confirmed verifiable against the literature: oracle RAG (Sonnet 3.7) achieves 100% accuracy on the claim verification task (temporally unrestricted), and domain expert agrees with LLM-generated labels for 99% of claims after resolution.
+
+**Evaluation mode:** Use as a standard claim-level open-retrieval benchmark without temporal filtering (the temporally-unrestricted oracle mode). This avoids the per-claim date-cutoff complexity of their feasibility assessment task and is appropriate because Evidence Programming retrieves evidence to verify claims rather than predict future experimental results.
+
+**Subset construction — filtering to hard claims only:**
+
+The full 4,446-claim test set includes many claims that are trivially verifiable by any model (best published baseline = 72% accuracy on the feasibility task; oracle claim verification ≈ 100%). To focus evaluation on claims that genuinely require deep retrieval and reasoning:
+
+- **Primary approach:** Authors contacted (March 2026) to request per-claim baseline predictions from the paper. If received, exclude claims correctly classified by all published baselines (gpt-4o-mini CoT, o4-mini CoT, Claude Sonnet 3.7 CoT) and evaluate only on the remaining hard subset.
+- **Fallback if no response:** Run 2–3 small open-weight LLMs (e.g., Llama-3.1-8B, Mistral-7B) at temperature=0 on all 4,446 test claims with a minimal prompt (no retrieval). Remove claims unanimously and consistently correct across all SLMs across 3 runs. The surviving hard subset — claims that SLMs cannot resolve from parametric knowledge alone — becomes the evaluation target.
+
+Target hard subset: ~1,000–2,000 claims (estimated based on published ~50–55% SLM accuracy → ~45–50% of claims are SLM-errors, keeping only the intersection of SLM failures).
+
+**Rationale for inclusion:** Adds domain breadth (materials science) and scale (~1k hard claims vs. ~550 total biology claims) to the open-retrieval evaluation. Confirms generalization of Evidence Programming beyond biomedical domains. The systematic label construction and strong expert validation make it a credible addition despite the synthetic negative construction method.
 
 ---
 
@@ -356,8 +391,8 @@ Before running experiments, verify:
 ### Week 4: Full Evaluation Runs
 | Task | Effort | Dependencies |
 |------|--------|-------------|
-| Group 1 runs: all systems on SciFact-Open + CIViC-Fact (3 runs each) | 2-3 days | All baselines ready |
-| Group 2 runs: all systems on connectomeDB\* + SIGNOR\* (3 runs each) | 2-3 days | All baselines ready |
+| Group 2 runs (primary): all systems on connectomeDB\* + SIGNOR\* (3 runs each) | 2-3 days | All baselines ready |
+| Group 1 runs (secondary): all systems on SciFact-Open + CIViC-Fact (3 runs each) | 2-3 days | All baselines ready |
 | Results aggregation, tables, cost-accuracy Pareto curves | 1-2 days | All runs complete |
 
 **Total: ~4 weeks** from start to complete results tables.
@@ -366,23 +401,18 @@ Before running experiments, verify:
 
 ## 8. Expected Results Narrative
 
-The results should tell a progressive story:
+The results should tell a progressive story, led by the primary open-retrieval evaluation.
 
-**Group 1 (constrained retrieval):**
-- Random → LLM-only: the task is non-trivial, retrieval helps.
-- LLM-only → Fixed-k RAG: augmentation with retrieved evidence improves accuracy.
-- Fixed-5 → Fixed-10: diminishing returns from blindly adding more documents.
-- Fixed-k → ReAct: free-form agent reasoning adds value over static retrieval.
-- ReAct → Factcheck-GPT: structured decomposition helps over unstructured reasoning.
-- Factcheck-GPT → SAFE: iteration within each subclaim helps over single-pass checking.
-- SAFE → FIRE: confidence-gated stopping helps over fixed iteration budgets.
-- FIRE → Evidence Programming: learned external sufficiency signal + shared evidence state beats LLM-internal confidence + independent per-fact verification.
-- OpenScholar comparison: tests whether better architecture (ours) beats better retrieval infrastructure (45M paper datastore).
-
-**Group 2 (open retrieval, claim-level):**
-- Advantage of adaptive systems should grow — unconstrained search space rewards directed retrieval and penalises undirected approaches.
-- Evidence Programming's gap-directed retrieval should show largest gains here, because the system targets specific evidence types rather than issuing generic queries into a vast search space.
+**Group 2 (open retrieval, claim-level) — primary narrative:**
+- This is the primary evaluation. Advantage of adaptive systems should grow in an unconstrained search space — directed retrieval is rewarded, undirected approaches are penalised.
+- Evidence Programming's gap-directed retrieval should show the largest gains, because the system targets specific evidence types rather than issuing generic queries into a vast search space.
 - connectomeDB\* should show clear differentiation since claims require finding specific experimental evidence in primary research articles — exactly the multi-hop evidence gathering Evidence Programming is designed for.
+
+**Group 1 (constrained retrieval) — secondary diagnostic narrative:**
+- If a system performs well in Group 1 but poorly in Group 2, the bottleneck is retrieval — the system can reason correctly when evidence is provided but cannot find it autonomously.
+- If a system performs poorly in both groups, the bottleneck is reasoning — even perfect evidence does not help.
+- Evidence Programming should be the only system that maintains strong performance in both groups, validating that its gains in Group 2 come from both better retrieval (gap-directed queries) and better reasoning (structured evidence state), not from retrieval alone.
+- The step-wise progression (Random → LLM-only → Fixed-k RAG → ReAct → Factcheck-GPT → SAFE → FIRE → Evidence Programming) illustrates each component's contribution to reasoning quality in isolation from retrieval.
 
 ---
 
