@@ -104,41 +104,33 @@ def normalize_label(label: str) -> str:
 ```
 
 ### LLM Backend
-Use the same backbone LLM across all baselines. This isolates the architectural comparison.
+Use the same backbone LLM across all baselines (except LLM-only, which runs across multiple models). This isolates the architectural comparison.
 
-```python
-# src/baselines/shared/llm.py
-class LLMBackend:
-    def __init__(self, model: str = "claude-sonnet-4-5-20250929",
-                 tracker: CostTracker | None = None):
-        self.client = Anthropic()
-        self.model = model
-        self.tracker = tracker or CostTracker()
-    
-    def complete(self, system: str, user: str, temperature: float = 0.0) -> str:
-        """Single-turn completion. Tracks cost automatically."""
-        response = self.client.messages.create(
-            model=self.model, max_tokens=2048, temperature=temperature,
-            system=system, messages=[{"role": "user", "content": user}]
-        )
-        self.tracker.record_llm_call(
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-        )
-        return response.content[0].text
-    
-    def complete_with_tools(self, system: str, messages: list,
-                            tools: list, temperature: float = 0.0):
-        """Multi-turn completion with tool use. For ReAct, FIRE, SAFE."""
-        response = self.client.messages.create(
-            model=self.model, max_tokens=2048, temperature=temperature,
-            system=system, messages=messages, tools=tools
-        )
-        self.tracker.record_llm_call(
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-        )
-        return response
+Implementation: `experiments/baselines/shared/llm.py` — thin wrapper around OpenAI-compatible endpoints. Gemini models (`gemini-*`) are routed through the `google-genai` SDK automatically.
+
+#### LLM-only Model Choices
+
+The LLM-only baseline is the only baseline run across **multiple models**, since its purpose is to measure the parametric knowledge ceiling per model family:
+
+| Model | Parameters | Access | Rationale |
+|-------|-----------|--------|----------|
+| **Gemini-3** | — | Google API (`google-genai` SDK) | Frontier proprietary; strong biomedical pretraining |
+| **Claude Sonnet 4.6** | — | Anthropic API | Same backbone as Evidence Programming — cleanest comparison |
+| **GPT-OSS-120B** | 120B | Z.AI API (`https://api.z.ai/api/paas/v4/`) | Large open-source; already integrated |
+| *Qwen3-32B (optional)* | 32B | Self-hosted vLLM (2× RTX A6000, TP=2) | Open-weight size-scaling comparison; requires local GPU |
+
+**Authentication:**
+- Gemini: `GEMINI_API_KEY` (falls back to `GOOGLE_API_KEY`).
+- Claude: Anthropic API key.
+- GPT-OSS-120B: `GLM_API_KEY` / `ZAI_API_KEY`.
+- Qwen3-32B: `api_key="EMPTY"`, `base_url="http://localhost:8000/v1"`.
+
+```bash
+# Example: run LLM-only baseline with each model
+uv run python experiments/run_baselines_signor.py --baseline llm_only --model gemini-3
+uv run python experiments/run_baselines_signor.py --baseline llm_only --model claude-sonnet-4-6 --base-url https://api.anthropic.com
+uv run python experiments/run_baselines_signor.py --baseline llm_only --model gpt-oss-120b
+uv run python experiments/run_baselines_signor.py --baseline llm_only --model Qwen3-32B --base-url http://localhost:8000/v1
 ```
 
 ### Cost Tracker
@@ -407,7 +399,9 @@ class RandomBaseline:
 
 ## 2. LLM-only (No Retrieval)
 
-**What it tests:** How much the LLM knows from pretraining alone. Measures parametric knowledge ceiling and prior-dominated failure rate.
+**What it tests:** How much the LLM knows from pretraining alone. Measures parametric knowledge ceiling and prior-dominated failure rate. This is the only baseline run across **multiple models** to compare parametric knowledge across model families.
+
+**Models:** Gemini-3, Claude Sonnet 4.6, GPT-OSS-120B, and optionally Qwen3-32B (see LLM Backend § above for access details).
 
 **Implementation:**
 ```python
@@ -433,10 +427,11 @@ Respond in JSON: {"label": "...", "confidence": 0.0-1.0, "reasoning": "..."}""",
 - Do NOT mention retrieval or evidence — the LLM should answer purely from parametric knowledge.
 - Use temperature=0 for deterministic output (variance comes from the 3 runs with different random seeds if using sampling).
 - For biomedical claims (SciFact-Open, CIViC-Fact), this tests whether the LLM has seen the relevant papers during pretraining.
+- Run each of the 4 models on every dataset; report per-model results.
 
-**Cost:** 1 LLM call per claim, ~500-1000 tokens per claim.
+**Cost:** 1 LLM call per claim per model, ~500–1000 tokens per claim.
 
-**Implementation time:** 1 hour.
+**Implementation time:** 1 hour per model.
 
 ---
 

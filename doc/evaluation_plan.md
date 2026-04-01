@@ -115,15 +115,24 @@ Ours:                   Evidence Programming
 
 ### 3.2 LLM-only (No Retrieval)
 
-**What it tests:** Parametric knowledge ceiling. Measures how much the LLM knows from pretraining and quantifies prior-dominated failure rate.
+**What it tests:** Parametric knowledge ceiling. Measures how much the LLM knows from pretraining and quantifies prior-dominated failure rate. This is the only baseline run across **multiple models** — all other baselines use a single backbone LLM to isolate architectural differences.
+
+**Models:**
+
+| Model | Parameters | Access | Rationale |
+|-------|-----------|--------|----------|
+| **Gemini-3** | — | Google API (`google-genai` SDK) | Frontier proprietary; strong biomedical pretraining |
+| **Claude Sonnet 4.6** | — | Anthropic API | Same backbone as Evidence Programming — cleanest architecture comparison |
+| **GPT-OSS-120B** | 120B | Z.AI API (`https://api.z.ai/api/paas/v4/`) | Large open-source; already integrated in codebase |
+| *Qwen3-32B (optional)* | 32B | Self-hosted vLLM (2× RTX A6000, TP=2) | Open-weight size-scaling comparison; requires local GPU |
 
 **Implementation:**
 - Single LLM call per claim with no retrieved context.
 - Prompt asks the LLM to classify based solely on its knowledge.
 - Use temperature=0 for deterministic output.
-- Same backbone LLM as all other non-specialised baselines.
-- Cost: 1 LLM call per claim, ~500-1000 tokens.
-- Implementation time: 1 hour.
+- Run each of the 4 models above on every dataset; report per-model results.
+- Cost: 1 LLM call per claim, ~500–1000 tokens per claim per model.
+- Implementation time: 1 hour per model.
 
 ### 3.3 LLM + 5 Search Results
 
@@ -293,8 +302,27 @@ Unified retrieval module used by all baselines:
 Same backbone LLM across all non-specialised baselines. Tracks cost automatically:
 - Call count, total tokens (input + output), wall-clock time per claim.
 - Use temperature=0 for deterministic output where applicable.
-- Non-specialised baselines: LLM-only, LLM+search, Fixed-k RAG, ReAct, Factcheck-GPT, SAFE, FIRE, Evidence Programming.
+- Non-specialised baselines: LLM+search, Fixed-k RAG, ReAct, Factcheck-GPT, SAFE, FIRE, Evidence Programming.
 - Specialised models (different family): OpenScholar-8B (Llama 3.1 8B) — report model size difference.
+
+#### LLM-only Model Choices
+
+The LLM-only baseline (§3.2) is the only baseline run across **multiple models**, since its purpose is to measure the parametric knowledge ceiling per model family.
+
+| Model | Parameters | Access | Rationale |
+|-------|-----------|--------|----------|
+| **Gemini-3** | — | Google API (`google-genai` SDK) | Frontier proprietary; strong biomedical pretraining coverage |
+| **Claude Sonnet 4.6** | — | Anthropic API | Matches Evidence Programming backbone — cleanest architecture comparison |
+| **GPT-OSS-120B** | 120B | Z.AI API (`https://api.z.ai/api/paas/v4/`) | Large open-source model; already integrated in codebase |
+| *Qwen3-32B (optional)* | 32B | Self-hosted vLLM (2× RTX A6000, TP=2) | Open-weight size-scaling comparison; requires local GPU |
+
+**Authentication:**
+- Gemini: `GEMINI_API_KEY` env var (falls back to `GOOGLE_API_KEY`).
+- Claude: Anthropic API key.
+- GPT-OSS-120B: `GLM_API_KEY` / `ZAI_API_KEY` (existing project convention).
+- Qwen3-32B: `api_key="EMPTY"`, `base_url="http://localhost:8000/v1"` (local vLLM).
+
+**Implementation note:** The shared `LLMBackend` (`experiments/baselines/shared/llm.py`) routes `gemini-*` models through the `google-genai` SDK; all others use the OpenAI-compatible client.
 
 ### 4.3 Evaluation Harness
 
