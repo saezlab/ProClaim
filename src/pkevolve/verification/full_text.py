@@ -115,7 +115,7 @@ def _fetch_pmc(pmid: str, title: str = "") -> tuple[Optional[str], list[str]]:
 
         if not pmcid:
             logger.debug("No PMCID for PMID %s", pmid)
-            return None
+            return None, []
 
         # Fetch PMC XML
         fetch_resp = requests.get(

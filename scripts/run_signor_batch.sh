@@ -21,20 +21,13 @@ echo "============================================================"
 echo "  Starting End-to-End SIGNOR Evaluation                     "
 echo "============================================================"
 
-# Read vLLM server info directly from the shared file
-if [[ -f "${PROJECT_ROOT}/.vllm_server_info" ]]; then
-    VLLM_INFO=$(cat "${PROJECT_ROOT}/.vllm_server_info")
-    # Extract hostname and port - hostname already includes full FQDN
-    COMPUTE_HOST=$(echo "$VLLM_INFO" | cut -d: -f1)
-    REMOTE_PORT=$(echo "$VLLM_INFO" | cut -d: -f2)
-    # Use hostname as-is (already has .ebi.ac.uk suffix from vllm_node_setup.sh)
-    export LLM_BASE_URL="http://${COMPUTE_HOST}:${REMOTE_PORT}/v1/"
-    echo "  Loaded vLLM server info from .vllm_server_info"
-    echo "  Located server at: $LLM_BASE_URL"
-else
-    # Fallback if no server info is found
+# Use LLM_BASE_URL from the environment (set by slurm_signor_job.sh).
+# Fall back to localhost:8000 for manual/interactive runs.
+if [[ -z "${LLM_BASE_URL:-}" ]]; then
     export LLM_BASE_URL="http://localhost:8000/v1/"
-    echo "  No .vllm_server_info found, using localhost:8000 fallback"
+    echo "  LLM_BASE_URL not set, using localhost:8000 fallback"
+else
+    echo "  Using LLM_BASE_URL=${LLM_BASE_URL}"
 fi
 
 # The LLM_BASE_URL environment variable will be used by the Python config system

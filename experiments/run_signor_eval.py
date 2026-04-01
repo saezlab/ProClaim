@@ -7,7 +7,7 @@ forward and flipped claims, and sequentially runs `evidence_programming.py`
 for multiple repetitions per claim. Results are appended incrementally to an
 output CSV. Token usage and cost estimates are parsed from the verdict artifacts.
 
-time uv run python -m pkevolve.verification.evidence_programming --config experiments/example_config.yaml --claim "AURKA directly activates AR (either through post-translational modification, complex formation, stabilization, or regulation of expression)." --output-dir results/test_signor_with_workflow_1 --notebook-path results/test_signor_with_workflow_1/evidence_report.ipynb
+time uv run python -m pkevolve.verification.evidence_programming --config experiments/test_config.yaml --claim "AURKA directly activates AR (either through post-translational modification, complex formation, stabilization, or regulation of expression)." --output-dir results/test_signor_with_workflow_1 --notebook-path results/test_signor_with_workflow_1/evidence_report.ipynb
 """
 
 import argparse
@@ -30,6 +30,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT_CSV = "/hps/nobackup/saezrodriguez/shared_datasets/signor*/ground_truth.csv"
 DEFAULT_OUTPUT_CSV = PROJECT_ROOT / "results" / "signor_eval_results.csv"
+DEFAULT_RESULTS_DIR = PROJECT_ROOT / "results" / "signor_eval"
 DEFAULT_CONFIG = PROJECT_ROOT / "experiments" / "example_config.yaml"
 
 # Token pricing per 1M tokens (input, output) in USD
@@ -89,9 +90,9 @@ def construct_signor_claim(source: str, target: str, interaction: str, flip: boo
 
     # Formulate claim sentence
     if is_positive:
-        claim_str = f"{source} directly activates {target} (either through post-translational modification, complex formation, stabilization, or regulation of expression)."
+        claim_str = f"{source} directly activates {target} (either through post-translational modification, complex formation, or direct regulation of expression)."
     elif is_negative:
-        claim_str = f"{source} directly inhibits {target} (either through post-translational modification, complex formation, destabilization, or regulation of expression)."
+        claim_str = f"{source} directly inhibits {target} (either through post-translational modification, complex formation, or direct regulation of expression)."
     else:
         # Non-directional interactions (e.g., binding, complex formation)
         # These are never flipped
@@ -294,11 +295,13 @@ def run_evaluation(
 def main():
     parser = argparse.ArgumentParser(description="End-to-End Evaluation of SIGNOR Dataset")
     parser.add_argument("--input-csv", type=str, help="Path to SIGNOR ground_truth.csv")
-    parser.add_argument("--output-csv", type=str, default=str(DEFAULT_OUTPUT_CSV), help="Path to write results.")
+    parser.add_argument("--run-tag", type=str, default=None, help="Run tag for namespaced output directory (e.g. 20260330_142500).")
+    parser.add_argument("--output-csv", type=str, default=None, help="Path to write results (derived from --run-tag if omitted).")
     parser.add_argument("--config", type=str, default=str(DEFAULT_CONFIG), help="Base VerificationSettings YAML.")
     parser.add_argument("--reps", type=int, default=3, help="Number of repetitions per claim variation.")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of input CSV rows to process (0=all).")
-    
+    parser.add_argument("--row-start", type=int, default=0, help="Start row index for parallel chunking (default: 0).")
+
     args = parser.parse_args()
     
     input_path = args.input_csv
@@ -309,8 +312,16 @@ def main():
             input_path = matches[0]
         else:
             raise FileNotFoundError(f"Could not find default target: {DEFAULT_INPUT_CSV}")
-            
-    output_path = Path(args.output_csv)
+
+    # Resolve output paths (namespaced by run-tag when provided)
+    if args.run_tag:
+        results_dir = PROJECT_ROOT / "results" / f"signor_eval_{args.run_tag}"
+        default_csv = results_dir / "results.csv"
+    else:
+        results_dir = DEFAULT_RESULTS_DIR
+        default_csv = DEFAULT_OUTPUT_CSV
+
+    output_path = Path(args.output_csv) if args.output_csv else default_csv
     config_path = Path(args.config)
     
     # Determine model and pricing
@@ -329,7 +340,9 @@ def main():
     df = pd.read_csv(input_path)
     
     if args.limit > 0:
-        df = df.head(args.limit)
+        df = df.iloc[args.row_start:args.row_start + args.limit]
+    elif args.row_start > 0:
+        df = df.iloc[args.row_start:]
     
     # Define columns for the output CSV
     out_cols = [
@@ -382,7 +395,7 @@ def main():
                      continue
                  
                  run_dir_name = f"{sid}/flip_{flip}/rep_{rep}"
-                 run_dir = PROJECT_ROOT / "results" / "signor_eval" / run_dir_name
+                 run_dir = results_dir / run_dir_name
                  
                  logger.info(f"Running Repetition {rep}/{args.reps} (Flipped: {flip})")
                  stats = run_evaluation(claim_str, run_dir, config_path, in_price, out_price, env_vars=env_vars)

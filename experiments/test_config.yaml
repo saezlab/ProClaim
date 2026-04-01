@@ -35,7 +35,7 @@ llm:
 
   # Subagent configuration (shared by both Claude and GLM)
   subagent_model: qwen3.5-9b  # Must match vLLM model ID exactly
-  subagent_base_url: "http://codon-gpu-009.ebi.ac.uk:8001/v1/" # vLLM endpoint for subagent
+  subagent_base_url: "http://codon-gpu-013.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
   temperature: 0.7
   disable_thinking: true  # Disable Qwen thinking mode to save tokens
 

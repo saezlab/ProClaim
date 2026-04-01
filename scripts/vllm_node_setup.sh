@@ -147,7 +147,7 @@ SERVE_ARGS=(
     --served-model-name "${MODEL_NAME}" "./${MODEL_NAME}" "${MODEL}"
     --tensor-parallel-size "$gpu_count"
     --port "$available_port"
-    --gpu-memory-utilization 0.8
+    --gpu-memory-utilization 0.9
     --trust-remote-code
     --max-num-seqs 8
 )
