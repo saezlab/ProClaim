@@ -81,7 +81,7 @@ class EvaluationHarness:
 
     @staticmethod
     def metrics(results: list[BaselineResult]) -> dict[str, Any]:
-        """Compute accuracy, macro-F1, binary-F1, FPR, and FNR from a result list."""
+        """Compute accuracy, macro-F1, macro/weighted FPR, and macro/weighted FNR from a result list."""
         from collections import defaultdict
 
         labels = ["SUPPORT", "REFUTE", "NEI"]
@@ -139,26 +139,11 @@ class EvaluationHarness:
         macro_fnr = sum(per_class[l]["fnr"] for l in labels) / len(labels)
         accuracy = correct / total if total > 0 else 0.0
 
-        # Binary F1 (SUPPORT vs. REFUTE, ignoring NEI gold rows)
-        binary_results = [r for r in results if normalize_label(r.gold_label) != "NEI"]
-        bin_tp = bin_fp = bin_fn = 0
-        for r in binary_results:
-            pred = normalize_label(r.predicted_label)
-            gold = normalize_label(r.gold_label)
-            if gold == "SUPPORT":
-                if pred == "SUPPORT":
-                    bin_tp += 1
-                else:
-                    bin_fn += 1
-            else:  # REFUTE
-                if pred == "REFUTE":
-                    bin_tp += 1
-                elif pred == "SUPPORT":
-                    bin_fp += 1
-
-        bin_prec = bin_tp / (bin_tp + bin_fp) if (bin_tp + bin_fp) > 0 else 0.0
-        bin_rec = bin_tp / (bin_tp + bin_fn) if (bin_tp + bin_fn) > 0 else 0.0
-        bin_f1 = 2 * bin_prec * bin_rec / (bin_prec + bin_rec) if (bin_prec + bin_rec) > 0 else 0.0
+        # Weighted FPR / FNR — weight each class by its true support (tp+fn),
+        # so rare classes like NEI/UNCERTAIN don't dominate the average.
+        total_support = total  # sum of (tp[l]+fn[l]) over all labels == total
+        weighted_fpr = sum((tp[l] + fn[l]) * per_class[l]["fpr"] for l in labels) / total_support if total_support > 0 else 0.0
+        weighted_fnr = sum((tp[l] + fn[l]) * per_class[l]["fnr"] for l in labels) / total_support if total_support > 0 else 0.0
 
         # Cost aggregates
         total_cost = sum(r.cost_usd for r in results)
@@ -171,9 +156,8 @@ class EvaluationHarness:
             "macro_f1": round(macro_f1, 4),
             "macro_fpr": round(macro_fpr, 4),
             "macro_fnr": round(macro_fnr, 4),
-            "binary_f1": round(bin_f1, 4),
-            "binary_precision": round(bin_prec, 4),
-            "binary_recall": round(bin_rec, 4),
+            "weighted_fpr": round(weighted_fpr, 4),
+            "weighted_fnr": round(weighted_fnr, 4),
             "per_class": per_class,
             "total_cost_usd": round(total_cost, 6),
             "total_input_tokens": total_input_tokens,

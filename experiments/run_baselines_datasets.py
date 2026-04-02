@@ -89,7 +89,7 @@ def _mean_std(values: list[float]) -> dict[str, float]:
 
 def aggregate_metrics(all_runs: list[dict]) -> dict:
     """Aggregate a list of per-repeat metric dicts into mean ± std."""
-    scalar_keys = ["accuracy", "macro_f1", "macro_fpr", "macro_fnr", "binary_f1", "binary_precision", "binary_recall"]
+    scalar_keys = ["accuracy", "macro_f1", "macro_fpr", "macro_fnr", "weighted_fpr", "weighted_fnr"]
     per_class_labels = ["SUPPORT", "REFUTE", "NEI"]
     per_class_subkeys = ["precision", "recall", "f1"]
 
@@ -180,9 +180,9 @@ def main() -> None:
             m = EvaluationHarness.metrics(results)
             repeat_metrics.append(m)
             logger.info(
-                "  [repeat %d/%d seed=%d]  accuracy=%.4f  macro_f1=%.4f  binary_f1=%.4f",
+                "  [repeat %d/%d seed=%d]  accuracy=%.4f  macro_f1=%.4f  w_fpr=%.4f  w_fnr=%.4f",
                 rep + 1, n_repeats, seed,
-                m["accuracy"], m["macro_f1"], m["binary_f1"],
+                m["accuracy"], m["macro_f1"], m["weighted_fpr"], m["weighted_fnr"],
             )
 
             # Save per-claim results for this repeat
@@ -198,11 +198,12 @@ def main() -> None:
             json.dump(agg, f, indent=2)
 
         logger.info(
-            "  AGGREGATED (%d repeats): accuracy=%.4f±%.4f  macro_f1=%.4f±%.4f  binary_f1=%.4f±%.4f",
+            "  AGGREGATED (%d repeats): accuracy=%.4f±%.4f  macro_f1=%.4f±%.4f  w_fpr=%.4f±%.4f  w_fnr=%.4f±%.4f",
             n_repeats,
             agg["accuracy"]["mean"], agg["accuracy"]["std"],
             agg["macro_f1"]["mean"], agg["macro_f1"]["std"],
-            agg["binary_f1"]["mean"], agg["binary_f1"]["std"],
+            agg["weighted_fpr"]["mean"], agg["weighted_fpr"]["std"],
+            agg["weighted_fnr"]["mean"], agg["weighted_fnr"]["std"],
         )
         logger.info("  Metrics saved to %s", metrics_path)
 
@@ -210,12 +211,12 @@ def main() -> None:
 
     # Print summary
     print("\n=== SUMMARY ===")
-    print(f"\n{'Dataset':<16} {'Macro F1':>12} {'FPR':>12} {'FNR':>12} {'Cost (USD)':>12}")
+    print(f"\n{'Dataset':<16} {'Macro F1':>12} {'W-FPR':>12} {'W-FNR':>12} {'Cost (USD)':>12}")
     print("-" * 64)
     for dataset_name, agg in all_metrics.items():
         mf1  = agg["macro_f1"]
-        fpr  = agg["macro_fpr"]
-        fnr  = agg["macro_fnr"]
+        fpr  = agg["weighted_fpr"]
+        fnr  = agg["weighted_fnr"]
         cost = agg["total_cost_usd"]
         print(
             f"{dataset_name.upper():<16}"
