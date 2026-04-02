@@ -21,7 +21,7 @@ All systems retrieve from the same fixed corpus. Evaluation is at the (claim, ev
 | Dataset | Retrieval Scope | Size | Label Schema | Eval Protocol |
 |---------|----------------|------|--------------|---------------|
 | **connectomeDB*** | Open (PubMed, Semantic Scholar, any API) | ~450 claims (sampled) | SUPPORTED / REFUTED | Predict claim-level verdict |
-| **SIGNOR*** | Open | 67 edges (34 SUPPORTED, 24 REFUTED, 9 UNCERTAIN) | SUPPORTED / REFUTED / UNCERTAIN | Predict claim-level verdict |
+| **SIGNOR*** | Open | 67 edges (34 SUPPORTED, 29 WRONG, 4 UNCERTAIN) | SUPPORTED / WRONG / UNCERTAIN | Predict claim-level verdict |
 | Matter-of-Fact (hard subset) | Open (Semantic Scholar) | ~1–2k claims (filtered from 4.4k) | FEASIBLE / INFEASIBLE → SUPPORT / REFUTE | Predict claim-level verdict |
 
 - No corpus constraint — systems search freely.
@@ -108,31 +108,22 @@ Ours:                   Evidence Programming
 **What it tests:** Chance-level floor.
 
 **Implementation:**
-- Randomly assign SUPPORT / REFUTE / NEI to each claim.
+- Randomly assign SUPPORT / REFUTE / UNCERTAIN to each claim.
 - Cost: 0 tokens, 0 LLM calls.
 - Expected: ~33% F1 for balanced 3-class.
 - Implementation time: 30 minutes.
 
 ### 3.2 LLM-only (No Retrieval)
 
-**What it tests:** Parametric knowledge ceiling. Measures how much the LLM knows from pretraining and quantifies prior-dominated failure rate. This is the only baseline run across **multiple models** — all other baselines use a single backbone LLM to isolate architectural differences.
-
-**Models:**
-
-| Model | Parameters | Access | Rationale |
-|-------|-----------|--------|----------|
-| **Gemini-3** | — | Google API (`google-genai` SDK) | Frontier proprietary; strong biomedical pretraining |
-| **Claude Sonnet 4.6** | — | Anthropic API | Same backbone as Evidence Programming — cleanest architecture comparison |
-| **GPT-OSS-120B** | 120B | OpenAI-compatible endpoint | Large open-source; already integrated in codebase |
-| *Qwen3-32B (optional)* | 32B | Self-hosted vLLM (2× RTX A6000, TP=2) | Open-weight size-scaling comparison; requires local GPU |
+**What it tests:** Parametric knowledge ceiling. Measures how much the LLM knows from pretraining and quantifies prior-dominated failure rate.
 
 **Implementation:**
 - Single LLM call per claim with no retrieved context.
 - Prompt asks the LLM to classify based solely on its knowledge.
 - Use temperature=0 for deterministic output.
-- Run each of the models above on every dataset; report per-model results.
-- Cost: 1 LLM call per claim, ~500–1000 tokens per claim per model.
-- Implementation time: 1 hour per model.
+- Same backbone LLM as all other non-specialised baselines.
+- Cost: 1 LLM call per claim, ~500-1000 tokens.
+- Implementation time: 1 hour.
 
 ### 3.3 LLM + 5 Search Results
 
@@ -302,27 +293,8 @@ Unified retrieval module used by all baselines:
 Same backbone LLM across all non-specialised baselines. Tracks cost automatically:
 - Call count, total tokens (input + output), wall-clock time per claim.
 - Use temperature=0 for deterministic output where applicable.
-- Non-specialised baselines: LLM+search, Fixed-k RAG, ReAct, Factcheck-GPT, SAFE, FIRE, Evidence Programming.
+- Non-specialised baselines: LLM-only, LLM+search, Fixed-k RAG, ReAct, Factcheck-GPT, SAFE, FIRE, Evidence Programming.
 - Specialised models (different family): OpenScholar-8B (Llama 3.1 8B) — report model size difference.
-
-#### LLM-only Model Choices
-
-The LLM-only baseline (§3.2) is the only baseline run across **multiple models**, since its purpose is to measure the parametric knowledge ceiling per model family.
-
-| Model | Parameters | Access | Rationale |
-|-------|-----------|--------|----------|
-| **Gemini-3** | — | Google API (`google-genai` SDK) | Frontier proprietary; strong biomedical pretraining coverage |
-| **Claude Sonnet 4.6** | — | Anthropic API | Matches Evidence Programming backbone — cleanest architecture comparison |
-| **GPT-OSS-120B** | 120B | OpenAI-compatible endpoint | Large open-source model; already integrated in codebase |
-| *Qwen3-32B (optional)* | 32B | Self-hosted vLLM (2× RTX A6000, TP=2) | Open-weight size-scaling comparison; requires local GPU |
-
-**Authentication:**
-- Gemini: `GEMINI_API_KEY` env var (falls back to `GOOGLE_API_KEY`).
-- Claude: Anthropic API key.
-- GPT-OSS-120B: `OPENAI_API_KEY`.
-- Qwen3-32B: `api_key="EMPTY"`, `base_url="http://localhost:8000/v1"` (local vLLM).
-
-**Implementation note:** `LLMBackend` (`experiments/baselines/shared/llm.py`) auto-resolves the correct API endpoint from the model name prefix via `_resolve_base_url()`. The `--base-url` CLI flag is only needed to override this. `response_format=json_object` is automatically skipped for `claude-*` models, which do not support it via the OpenAI-compatible proxy.
 
 ### 4.3 Evaluation Harness
 
@@ -336,7 +308,7 @@ Runs any baseline on any dataset, collects metrics:
 All baselines output the same structured format:
 ```
 Verdict:
-  label: SUPPORT | REFUTE | NEI
+  label: SUPPORT | REFUTE | UNCERTAIN
   confidence: float 0-1
   evidence: list of PMIDs or text snippets
   reasoning: free-text explanation

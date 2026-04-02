@@ -6,8 +6,10 @@
 # Gemini 3.1 Pro Preview) on SIGNOR and ConnectomeDB claim datasets.
 #
 # Usage:
-#   bash scripts/run_llm_baselines_slurm.sh             # Submit all jobs
-#   bash scripts/run_llm_baselines_slurm.sh --limit 5   # Limit claims per dataset
+#   bash scripts/run_llm_baselines_slurm.sh                         # Submit all jobs
+#   bash scripts/run_llm_baselines_slurm.sh --limit 5              # Limit claims per dataset
+#   bash scripts/run_llm_baselines_slurm.sh --repeats 2            # 2 repeats per model
+#   bash scripts/run_llm_baselines_slurm.sh --limit 5 --repeats 3  # Both options
 # =============================================================================
 set -euo pipefail
 
@@ -18,11 +20,13 @@ LOG_DIR="${PROJECT_ROOT}/results/slurm_logs/llm_baselines"
 GCP_CREDENTIALS="${PROJECT_ROOT}/prj-int-dev-saez-ai-pkc-734bae1cf581.json"
 
 LIMIT=0
+REPEATS=1
 while [[ $# -gt 0 ]]; do
     case $1 in
         --limit) LIMIT="$2"; shift 2 ;;
+        --repeats) REPEATS="$2"; shift 2 ;;
         -h|--help)
-            echo "Usage: $(basename "$0") [--limit N]"
+            echo "Usage: $(basename "$0") [--limit N] [--repeats N]"
             exit 0 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
@@ -73,6 +77,7 @@ submit_job() {
         echo "echo '  Model: ${model}'"
         echo "echo '  Datasets: signor connectomedb'"
         echo "echo '  Limit: ${LIMIT}'"
+        echo "echo '  Repeats: ${REPEATS}'"
         echo "echo \"  Start: \$(date)\""
         echo "echo '========================================'"
         echo ""
@@ -81,7 +86,7 @@ submit_job() {
         echo "    --datasets signor connectomedb \\"
         echo "    --baseline llm_only \\"
         echo "    --model \"${model}\" \\"
-        echo "    --repeats 1 \\"
+        echo "    --repeats ${REPEATS} \\"
         echo "    --limit ${LIMIT} \\"
         echo "    --output-dir \"${OUTPUT_DIR}\""
         echo ""

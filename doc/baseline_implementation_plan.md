@@ -286,7 +286,7 @@ All experiments run on shared datasets located at `/hps/nobackup/saezrodriguez/s
 | Dataset | Eval Subset | Classes | Corpus | Source |
 |---------|-------------|---------|--------|--------|
 | **SciFact-Open** | ~41 (20% test split of 206 annotated) | SUPPORT, CONTRADICT | 500K S2ORC abstracts (`data/corpus.jsonl`) | Wadden et al. 2022 |
-| **SIGNOR\*** | 66 edges / **110 variants** (incl. flipped) | SUPPORTED (34), WRONG (28), UNCERTAIN (4) | *No pre-built corpus — see below* | Custom annotation |
+| **SIGNOR\*** | 67 edges / **111 variants** (incl. flipped) | SUPPORTED (34), WRONG (29), UNCERTAIN (4) | *No pre-built corpus — see below* | Custom annotation |
 | **CIViC-Fact** | 2,055 (test partition, `flagged != True`) | SUPPORTS, REFUTES, NEI | *No pre-built corpus — see below* | CIViC database |
 | **ConnectomeDB** | 184 positive + 363 negative/NEI | SUPPORTED, REFUTED, NEI | *No pre-built corpus — see below* | Liu et al. 2025, [doi:10.1093/nar/gkaf1108](https://doi.org/10.1093/nar/gkaf1108) |
 
@@ -308,8 +308,8 @@ _, test_claims = train_test_split(annotated, test_size=0.2, stratify=labels, ran
 - Path: `/hps/nobackup/saezrodriguez/shared_datasets/signor*/ground_truth.csv`
 - For BM25 baselines: build a corpus from (a) PubMed abstracts of the PMIDs in the `PMID` column of ground_truth.csv, plus (b) 1-hop citation neighbors of those PMIDs. This gives a ~5K–10K abstract pool.
 - For agentic baselines: use live PubMed API search (same as our evidence programming system).
-- **Corrected class distribution:** 66 edges — SUPPORTED (34), WRONG (28), UNCERTAIN (4). Only 4 UNCERTAIN edges make the 3-class macro F1 unreliable for that class. Recommended: report 2-class macro F1 (SUPPORTED vs. WRONG) as the primary metric; treat UNCERTAIN edges as a secondary analysis.
-- **Flip logic — 110 variants:** Evaluate all 66 forward claims **plus** negated variants for the 44 `up-regulates*` edges. Only `EFFECT ∈ {up-regulates, up-regulates activity, up-regulates quantity, up-regulates quantity by expression}` is flipped (activation → inhibition direction). Down-regulates and non-directional effects are left as-is. Label inversion on flip: SUPPORTED → WRONG, WRONG → SUPPORTED, UNCERTAIN → UNCERTAIN. **Always use `construct_signor_claim()` from `experiments/run_signor_eval.py`** — do not construct claim strings manually.
+- **Corrected class distribution:** 67 edges — SUPPORTED (34), WRONG (29), UNCERTAIN (4). Only 4 UNCERTAIN edges make the 3-class macro F1 unreliable for that class. Recommended: report 2-class macro F1 (SUPPORTED vs. WRONG) as the primary metric; treat UNCERTAIN edges as a secondary analysis.
+- **Flip logic — 111 variants:** Evaluate all 67 forward claims **plus** negated variants for the 44 `up-regulates*` edges. Only `EFFECT ∈ {up-regulates, up-regulates activity, up-regulates quantity, up-regulates quantity by expression}` is flipped (activation → inhibition direction). Down-regulates and non-directional effects are left as-is. Label inversion on flip: SUPPORTED → WRONG, WRONG → SUPPORTED, UNCERTAIN → UNCERTAIN. **Always use `construct_signor_claim()` from `experiments/run_signor_eval.py`** — do not construct claim strings manually.
 
 ```python
 from experiments.run_signor_eval import construct_signor_claim, get_flipped_label
@@ -321,7 +321,7 @@ for _, row in df.iterrows():
             continue
         label = get_flipped_label(row["Label"], flip=flip)
         claims.append({"id": row["SIGNOR_ID"], "flip": flip, "claim": claim_str, "label": label})
-# 110 variants total: 66 forward + 44 flipped
+# 111 variants total: 67 forward + 44 flipped
 ```
 
 **CIViC-Fact:** No pre-built abstract corpus. Strategy:

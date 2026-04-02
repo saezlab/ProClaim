@@ -128,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--baseline", default="random", choices=["random", "llm_only"], help="Baseline to run.")
     p.add_argument("--seed", type=int, default=100, help="Base random seed. Each repeat i uses seed+i.")
-    p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats (for stochastic baselines). llm_only always uses 1.")
+    p.add_argument("--repeats", type=int, default=1, help="Number of independent repeats. For stochastic baselines use >1; llm_only defaults to 1 (deterministic at temperature=0).")
     p.add_argument("--model", default="zai/glm-4-plus", help="LiteLLM model string, e.g. 'zai/glm-4-plus' or 'openai/gpt-4o'.")
     p.add_argument("--limit", type=int, default=0, help="Limit number of claims per dataset (0 = all).")
     p.add_argument(
@@ -169,8 +169,7 @@ def main() -> None:
         else:
             logger.info("  Loaded %d claims", len(claims))
 
-        # llm_only is deterministic — a single repeat is sufficient
-        n_repeats = 1 if args.baseline == "llm_only" else args.repeats
+        n_repeats = args.repeats
         repeat_metrics: list[dict] = []
 
         for rep in range(n_repeats):

@@ -6,7 +6,7 @@ Four datasets used for evaluating the PKEvolve verification pipeline.
 
 **Secondary datasets (constrained retrieval, diagnostic):** SciFact-Open, CIViC-Fact — included for task decomposition (isolating retrieval from reasoning failures) and community comparability with prior work.
 
-**Label mapping across datasets:** SUPPORTED / SUPPORTS → `SUPPORT`; CONTRADICT / REFUTES / WRONG → `REFUTE`; NEI / UNCERTAIN → `NEI`.
+**Label mapping across datasets:** SUPPORTED / SUPPORTS → `SUPPORT`; CONTRADICT / REFUTES / WRONG → `REFUTE`; NEI / UNCERTAIN → `UNCERTAIN`.
 
 **Configuration:** All source paths are stored in `datasets/paths.yaml` (git-ignored, not committed). Copy `datasets/paths.yaml.template` to `datasets/paths.yaml` and fill in the paths for your environment before running any code below.
 
@@ -180,10 +180,10 @@ df_neg = pd.read_csv(base / "ConnectomeDB2020_rejected_labeled.csv")   # 363 row
 
 | Metric | Value |
 |--------|-------|
-| Total edges | 66 |
-| SUPPORTED | 34 (51.5 %) |
-| UNCERTAIN | 4 (6.1 %) |
-| WRONG | 28 (42.4 %) |
+| Total edges | 67 |
+| SUPPORTED | 34 (50.7 %) |
+| UNCERTAIN | 4 (6.0 %) |
+| WRONG | 29 (43.3 %) |
 
 **Key columns:** `SIGNOR_ID`, `ENTITYA`, `ENTITYB`, `EFFECT`, `Label` (`SUPPORTED` / `UNCERTAIN` / `WRONG`), `SENTENCE` (gold evidence sentence), `PMID`, `MECHANISM`, `DIRECT`.
 
@@ -202,21 +202,31 @@ df_neg = pd.read_csv(base / "ConnectomeDB2020_rejected_labeled.csv")   # 363 row
 
 ### Evaluation subset
 
-All 66 forward claims **plus** negated variants for the 44 up-regulates edges — **110 claim variants** per repetition. Flip logic: only `EFFECT ∈ {up-regulates, up-regulates activity, up-regulates quantity, up-regulates quantity by expression}` is flipped (activation → inhibition). Down-regulates and non-directional effects are left as-is.
+All 67 forward claims **plus** negated variants for the 44 up-regulates edges — **111 claim variants** per repetition.
+
+Flip logic in `construct_signor_claim()`:
+- `up-regulates` variants with `flip=True` → claim becomes inhibition; label inverted (SUPPORTED↔WRONG, UNCERTAIN unchanged).
+
+`build_datasets.py` only calls `flip=True` for `EFFECT ∈ {up-regulates, up-regulates activity, up-regulates quantity, up-regulates quantity by expression}`. Down-regulates and non-directional effects are **not** flipped — they are left as-is in the dataset.
 
 | Variant | Expected label |
 |---------|---------------|
 | `flip=False` | Original `Label` |
-| `flip=True` (up-regulates only) | SUPPORT → REFUTE; REFUTE → SUPPORT; NEI → NEI |
+| `flip=True` (up-regulates only) | SUPPORT → REFUTE; REFUTE → SUPPORT; UNCERTAIN → UNCERTAIN |
 
-**Claim construction:** always use `construct_signor_claim()` from `experiments/run_signor_eval.py`; do not construct strings manually.
+**Claim templates** (produced by `construct_signor_claim()` in `build_datasets.py`):
+- Activation: `"{source} directly activates {target} (either through post-translational modification, complex formation, or direct regulation of expression)."`
+- Inhibition: `"{source} directly inhibits {target} (either through post-translational modification, complex formation, or direct regulation of expression)."`
+- Binding: `"{source} directly interacts with {target} (e.g., physical binding)."`
+
+**Claim construction:** always use `construct_signor_claim()` from `build_datasets.py`; do not construct strings manually.
 
 ```python
 import glob
 import pandas as pd
 import yaml
 from pathlib import Path
-from experiments.run_signor_eval import construct_signor_claim, get_flipped_label
+from build_datasets import construct_signor_claim, get_flipped_label
 
 cfg = yaml.safe_load(open(Path(__file__).parent.parent / "datasets/paths.yaml"))
 gt_path = glob.glob(cfg["sources"]["signor_path"])[0]
@@ -225,9 +235,13 @@ df = pd.read_csv(gt_path)
 claims = []
 for _, row in df.iterrows():
     for flip in [False, True]:
-        claim_str = construct_signor_claim(row["ENTITYA"], row["ENTITYB"], row["EFFECT"], flip=flip)
-        if claim_str is None:   # non-flippable effects return same as flip=False; deduplicate
+        # Skip flip=True for non-flippable effects (would produce duplicate claim)
+        if flip and row["EFFECT"] not in {
+            "up-regulates", "up-regulates activity",
+            "up-regulates quantity", "up-regulates quantity by expression",
+        }:
             continue
+        claim_str = construct_signor_claim(row["ENTITYA"], row["ENTITYB"], row["EFFECT"], flip=flip)
         label = get_flipped_label(row["Label"], flip=flip)
         claims.append({"id": row["SIGNOR_ID"], "flip": flip, "claim": claim_str, "label": label})
 ```
@@ -238,7 +252,7 @@ for _, row in df.iterrows():
 
 | Dataset | Role | Evaluation subset | Size | Labels |
 |---------|------|-------------------|------|--------|
-| **ConnectomeDB** | **Primary** | `cdb25_direct_multipub_unique.csv` + `ConnectomeDB2020_rejected_labeled.csv` | 547 rows | SUPPORT / REFUTE / NEI |
-| **SIGNOR** | **Primary** | All 66 forward + 45 negated (up-regulates only) | 111 variants | SUPPORT / REFUTE / NEI |
+| **ConnectomeDB** | **Primary** | `cdb25_direct_multipub_unique.csv` + `ConnectomeDB2020_rejected_labeled.csv` | 547 rows | SUPPORT / REFUTE / UNCERTAIN |
+| **SIGNOR** | **Primary** | All 67 forward + 44 negated (up-regulates only) | 111 variants | SUPPORT / REFUTE / UNCERTAIN |
 | SciFact-Open | Secondary | 20 % stratified test split of annotated claims | ~42 claims | SUPPORT / REFUTE |
-| CIViC-Fact | Secondary | `partition == "test"`, `flagged != True` | ~2 014 rows | SUPPORT / REFUTE / NEI |
+| CIViC-Fact | Secondary | `partition == "test"`, `flagged != True` | ~2 014 rows | SUPPORT / REFUTE / UNCERTAIN |
