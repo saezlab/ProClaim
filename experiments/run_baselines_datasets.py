@@ -64,12 +64,20 @@ def load_claims(csv_path: Path) -> list[dict]:
     return claims
 
 
-def build_baseline(name: str, seed: int):
+def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None):
     if name == "random":
         from baselines.random_baseline import RandomBaseline
-        return RandomBaseline(seed=seed)
+        return RandomBaseline(seed=seed if seed is not None else args.seed)
+    elif name == "llm_only":
+        from baselines.llm_only import LLMOnly
+        from baselines.shared.llm import LLMBackend
+        llm = LLMBackend(
+            model=args.model,
+            temperature=0.0,  # deterministic
+        )
+        return LLMOnly(llm=llm)
     else:
-        raise ValueError(f"Unknown baseline: {name!r}")
+        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only")
 
 
 def _mean_std(values: list[float]) -> dict[str, float]:
@@ -81,7 +89,7 @@ def _mean_std(values: list[float]) -> dict[str, float]:
 
 def aggregate_metrics(all_runs: list[dict]) -> dict:
     """Aggregate a list of per-repeat metric dicts into mean ± std."""
-    scalar_keys = ["accuracy", "macro_f1", "binary_f1", "binary_precision", "binary_recall"]
+    scalar_keys = ["accuracy", "macro_f1", "macro_fpr", "macro_fnr", "binary_f1", "binary_precision", "binary_recall"]
     per_class_labels = ["SUPPORT", "REFUTE", "NEI"]
     per_class_subkeys = ["precision", "recall", "f1"]
 
@@ -101,7 +109,7 @@ def aggregate_metrics(all_runs: list[dict]) -> dict:
                 [r["per_class"][label][sub] for r in all_runs]
             )
 
-    agg["total_cost_usd"] = {"mean": 0.0, "std": 0.0}
+    agg["total_cost_usd"] = _mean_std([r["total_cost_usd"] for r in all_runs])
     return agg
 
 
@@ -118,9 +126,11 @@ def parse_args() -> argparse.Namespace:
         default=["signor", "connectomedb"],
         help="Dataset names (without .csv extension).",
     )
-    p.add_argument("--baseline", default="random", choices=["random"], help="Baseline to run.")
+    p.add_argument("--baseline", default="random", choices=["random", "llm_only"], help="Baseline to run.")
     p.add_argument("--seed", type=int, default=100, help="Base random seed. Each repeat i uses seed+i.")
-    p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats (for stochastic baselines).")
+    p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats (for stochastic baselines). llm_only always uses 1.")
+    p.add_argument("--model", default="zai/glm-4-plus", help="LiteLLM model string, e.g. 'zai/glm-4-plus' or 'openai/gpt-4o'.")
+    p.add_argument("--limit", type=int, default=0, help="Limit number of claims per dataset (0 = all).")
     p.add_argument(
         "--output-dir",
         default="results/baselines",
@@ -134,6 +144,13 @@ def main() -> None:
     datasets_dir = Path(args.datasets_dir)
     output_dir = PROJECT_ROOT / args.output_dir
 
+    # For llm_only, append a sanitised model name so runs for different models
+    # don't overwrite each other.
+    baseline_subdir = args.baseline
+    if args.baseline == "llm_only":
+        model_slug = args.model.replace("/", "--")
+        baseline_subdir = f"{args.baseline}/{model_slug}"
+
     logger.info("Baseline: %s  repeats=%d  base_seed=%d", args.baseline, args.repeats, args.seed)
 
     all_metrics: dict[str, dict] = {}
@@ -146,38 +163,44 @@ def main() -> None:
 
         logger.info("=== Dataset: %s ===", dataset_name)
         claims = load_claims(csv_path)
-        logger.info("  Loaded %d claims", len(claims))
+        if args.limit:
+            claims = claims[: args.limit]
+            logger.info("  Limited to %d claims", len(claims))
+        else:
+            logger.info("  Loaded %d claims", len(claims))
 
+        # llm_only is deterministic — a single repeat is sufficient
+        n_repeats = 1 if args.baseline == "llm_only" else args.repeats
         repeat_metrics: list[dict] = []
 
-        for rep in range(args.repeats):
+        for rep in range(n_repeats):
             seed = args.seed + rep
-            baseline = build_baseline(args.baseline, seed)
+            baseline = build_baseline(args.baseline, args, seed=seed)
             harness = EvaluationHarness(baseline, dataset_name=dataset_name)
             results = harness.run(claims)
             m = EvaluationHarness.metrics(results)
             repeat_metrics.append(m)
             logger.info(
                 "  [repeat %d/%d seed=%d]  accuracy=%.4f  macro_f1=%.4f  binary_f1=%.4f",
-                rep + 1, args.repeats, seed,
+                rep + 1, n_repeats, seed,
                 m["accuracy"], m["macro_f1"], m["binary_f1"],
             )
 
             # Save per-claim results for this repeat
-            out_path = output_dir / args.baseline / f"{dataset_name}_seed{seed}.jsonl"
+            out_path = output_dir / baseline_subdir / f"{dataset_name}_seed{seed}.jsonl"
             EvaluationHarness.save(results, out_path)
 
         agg = aggregate_metrics(repeat_metrics)
 
         # Save aggregated metrics
-        metrics_path = output_dir / args.baseline / f"{dataset_name}_metrics.json"
+        metrics_path = output_dir / baseline_subdir / f"{dataset_name}_metrics.json"
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         with open(metrics_path, "w") as f:
             json.dump(agg, f, indent=2)
 
         logger.info(
             "  AGGREGATED (%d repeats): accuracy=%.4f±%.4f  macro_f1=%.4f±%.4f  binary_f1=%.4f±%.4f",
-            args.repeats,
+            n_repeats,
             agg["accuracy"]["mean"], agg["accuracy"]["std"],
             agg["macro_f1"]["mean"], agg["macro_f1"]["std"],
             agg["binary_f1"]["mean"], agg["binary_f1"]["std"],
@@ -188,15 +211,20 @@ def main() -> None:
 
     # Print summary
     print("\n=== SUMMARY ===")
+    print(f"\n{'Dataset':<16} {'Macro F1':>12} {'FPR':>12} {'FNR':>12} {'Cost (USD)':>12}")
+    print("-" * 64)
     for dataset_name, agg in all_metrics.items():
-        print(f"\n[{dataset_name.upper()}]  n={agg['n']}  repeats={agg['n_repeats']}")
-        for key in ["accuracy", "macro_f1", "binary_f1"]:
-            m = agg[key]
-            print(f"  {key:20s}: {m['mean']:.4f} ± {m['std']:.4f}")
-        print("  Per-class (mean ± std):")
-        for label, prf in agg["per_class"].items():
-            p, r, f1 = prf["precision"], prf["recall"], prf["f1"]
-            print(f"    {label:8s}  P={p['mean']:.3f}±{p['std']:.3f}  R={r['mean']:.3f}±{r['std']:.3f}  F1={f1['mean']:.3f}±{f1['std']:.3f}")
+        mf1  = agg["macro_f1"]
+        fpr  = agg["macro_fpr"]
+        fnr  = agg["macro_fnr"]
+        cost = agg["total_cost_usd"]
+        print(
+            f"{dataset_name.upper():<16}"
+            f" {mf1['mean']:.3f}±{mf1['std']:.3f}"
+            f" {fpr['mean']:.3f}±{fpr['std']:.3f}"
+            f" {fnr['mean']:.3f}±{fnr['std']:.3f}"
+            f" {cost['mean']:.3f}±{cost['std']:.3f}"
+        )
 
 
 if __name__ == "__main__":

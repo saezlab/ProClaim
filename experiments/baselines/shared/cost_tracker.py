@@ -26,12 +26,18 @@ class TraceEntry:
 class CostTracker:
     """Accumulates token usage and cost across all operations in one claim run."""
 
-    # Pricing per 1M tokens (input, output) in USD
+    # Pricing per 1M tokens (input, output) in USD.
+    # Source: https://cloud.google.com/vertex-ai/generative-ai/pricing (2026-04-02)
+    # Keys are model IDs without provider prefix (e.g. "gemini-3.1-pro-preview",
+    # "claude-sonnet-4-6"). Provider prefix is stripped before lookup.
     DEFAULT_PRICING: dict[str, tuple[float, float]] = {
+        # --- Anthropic ---
         "claude-opus-4-6": (5.00, 25.00),
         "claude-sonnet-4-6": (3.00, 15.00),
         "claude-haiku-4-5": (1.00, 5.00),
-        "glm-4": (0.50, 2.00),
+        # --- Gemini 3 (standard tier, per 1M tokens) ---
+        "gemini-3.1-pro-preview": (2.00, 12.00),
+        "gemini-3-pro-preview": (2.00, 12.00),
     }
     FALLBACK_PRICING = (3.00, 15.00)
 
@@ -39,7 +45,9 @@ class CostTracker:
         self.model = model
         self._trace: list[TraceEntry] = []
         self._step = 0
-        in_price, out_price = self.DEFAULT_PRICING.get(model, self.FALLBACK_PRICING)
+        # Strip provider prefix (e.g. "vertex_ai/", "anthropic/") before lookup
+        model_key = model.split("/", 1)[-1] if "/" in model else model
+        in_price, out_price = self.DEFAULT_PRICING.get(model_key, self.FALLBACK_PRICING)
         self._in_price = in_price
         self._out_price = out_price
 

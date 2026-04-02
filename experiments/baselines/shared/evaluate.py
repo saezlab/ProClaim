@@ -81,15 +81,16 @@ class EvaluationHarness:
 
     @staticmethod
     def metrics(results: list[BaselineResult]) -> dict[str, Any]:
-        """Compute accuracy, macro-F1, and binary-F1 from a result list."""
+        """Compute accuracy, macro-F1, binary-F1, FPR, and FNR from a result list."""
         from collections import defaultdict
 
         labels = ["SUPPORT", "REFUTE", "NEI"]
 
-        # Count TP / FP / FN per class
+        # Count TP / FP / FN / TN per class
         tp: dict[str, int] = defaultdict(int)
         fp: dict[str, int] = defaultdict(int)
         fn: dict[str, int] = defaultdict(int)
+        tn: dict[str, int] = defaultdict(int)
 
         correct = 0
         total = len(results)
@@ -104,6 +105,10 @@ class EvaluationHarness:
                 fp[pred] += 1
                 fn[gold] += 1
 
+        # TN_k = N - TP_k - FP_k - FN_k
+        for label in labels:
+            tn[label] = total - tp[label] - fp[label] - fn[label]
+
         def prf(label: str) -> tuple[float, float, float]:
             prec = tp[label] / (tp[label] + fp[label]) if (tp[label] + fp[label]) > 0 else 0.0
             rec = tp[label] / (tp[label] + fn[label]) if (tp[label] + fn[label]) > 0 else 0.0
@@ -114,10 +119,24 @@ class EvaluationHarness:
         f1_scores: list[float] = []
         for label in labels:
             p, r, f = prf(label)
-            per_class[label] = {"precision": round(p, 4), "recall": round(r, 4), "f1": round(f, 4)}
+            fpr = fp[label] / (fp[label] + tn[label]) if (fp[label] + tn[label]) > 0 else 0.0
+            fnr = fn[label] / (fn[label] + tp[label]) if (fn[label] + tp[label]) > 0 else 0.0
+            per_class[label] = {
+                "precision": round(p, 4),
+                "recall": round(r, 4),
+                "f1": round(f, 4),
+                "fpr": round(fpr, 4),
+                "fnr": round(fnr, 4),
+                "tp": tp[label],
+                "fp": fp[label],
+                "fn": fn[label],
+                "tn": tn[label],
+            }
             f1_scores.append(f)
 
         macro_f1 = sum(f1_scores) / len(f1_scores)
+        macro_fpr = sum(per_class[l]["fpr"] for l in labels) / len(labels)
+        macro_fnr = sum(per_class[l]["fnr"] for l in labels) / len(labels)
         accuracy = correct / total if total > 0 else 0.0
 
         # Binary F1 (SUPPORT vs. REFUTE, ignoring NEI gold rows)
@@ -150,6 +169,8 @@ class EvaluationHarness:
             "n": total,
             "accuracy": round(accuracy, 4),
             "macro_f1": round(macro_f1, 4),
+            "macro_fpr": round(macro_fpr, 4),
+            "macro_fnr": round(macro_fnr, 4),
             "binary_f1": round(bin_f1, 4),
             "binary_precision": round(bin_prec, 4),
             "binary_recall": round(bin_rec, 4),

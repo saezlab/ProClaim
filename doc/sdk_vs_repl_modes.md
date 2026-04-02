@@ -53,7 +53,7 @@ Claude Agent SDK  →  calls nb_execute(code)  →  MCP server  →  Jupyter ker
 - **LLM protocol**: Anthropic Messages API
 - **Tool dispatch**: MCP tool calls (`nb_execute`, `nb_render_*`, etc.)
 - **Output**: Jupyter notebook (`.ipynb`) as audit trail
-- **Endpoint**: Anthropic-compatible (e.g. `api.z.ai/api/anthropic`)
+- **Endpoint**: Anthropic-compatible backend
 - **Error handling**: SDK/CLI manages retries, context, tool-error formatting
 
 ### Example usage
@@ -62,7 +62,7 @@ Claude Agent SDK  →  calls nb_execute(code)  →  MCP server  →  Jupyter ker
 # CLI
 uv run python -m pkevolve.verification.evidence_programming \
     --claim "Does MAPK1 directly activate H3-3A?" \
-    --mode sdk --model glm-5
+    --mode sdk --model <model-name>
 
 # With YAML config
 uv run python -m pkevolve.verification.evidence_programming \
@@ -94,7 +94,7 @@ Python script  →  LLM.chat.completions.create()  →  parse ```python``` block
 - **LLM protocol**: OpenAI Chat Completions API
 - **Tool dispatch**: regex-parsed ` ```python``` ` code blocks
 - **Output**: `conversation.json` + `verdict.json`
-- **Endpoint**: any OpenAI-compatible endpoint (vLLM, Z.AI, SGLang, etc.)
+- **Endpoint**: any OpenAI-compatible endpoint (vLLM, SGLang, etc.)
 - **Error handling**: explicit `max_turns` counter + forced verdict
 
 ### Example usage
@@ -103,7 +103,7 @@ Python script  →  LLM.chat.completions.create()  →  parse ```python``` block
 # CLI
 uv run python -m pkevolve.verification.evidence_programming \
     --claim "Does p53 activate BAX?" \
-    --mode repl --model glm-5
+    --mode repl --model <model-name>
 
 # With YAML config
 uv run python -m pkevolve.verification.evidence_programming \
@@ -161,8 +161,8 @@ binary is also open-source but has some protocol-level behaviors worth noting:
 3. **Streaming protocol**: The CLI uses Anthropic-specific SSE events
    (`message_start`, `content_block_delta`, `message_stop`).
 
-**Practical impact when using Z.AI's endpoint**: Z.AI's native
-Anthropic-compatible endpoint at `api.z.ai/api/anthropic` handles these
+**Practical impact when using a non-Anthropic endpoint**: A native
+Anthropic-compatible endpoint handles these
 injections gracefully — it ignores unrecognized headers and beta flags.
 The billing metadata in the system prompt is treated as inert text by the
 model and does not affect generation.  Our env configuration sets
@@ -190,7 +190,7 @@ transparency for academic reproducibility:
 | Agent loop auditable      | Yes — SDK source is open                     | Yes — plain Python loop            |
 | Conversation logged       | Yes — via `AssistantMessage`/`ResultMessage`  | Yes — `conversation.json` on disk  |
 | API calls inspectable     | Yes — SDK source shows exactly what is sent  | Yes — single `create()` per turn   |
-| CLI metadata injection    | Minor — inert text on Z.AI endpoint          | N/A                                |
+| CLI metadata injection    | Minor — inert text on Anthropic-compatible endpoint | N/A                                |
 | Version reproducible      | Pin SDK + CLI version                        | Pin `openai` package version       |
 
 ### Recommendations
@@ -243,10 +243,10 @@ max_iterations: 8
 sufficiency_threshold: 0.80
 
 llm:
-  model: glm-5
-  subagent_model: glm-4.6
+  model: <model-name>
+  subagent_model: <subagent-model-name>
   subagent_base_url: "http://localhost:8000/v1/"
-  agent_base_url: "https://api.z.ai/api/anthropic"
+  agent_base_url: "<anthropic_compatible_endpoint>"
   temperature: 0.2
 ```
 

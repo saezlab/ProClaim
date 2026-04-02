@@ -1,6 +1,6 @@
 # Making Claude CLI work with non-Anthropic API endpoints
 
-Claude Code's binary injects Anthropic-proprietary headers (`anthropic-beta`, `anthropic-version`), beta query parameters (`?beta=true`), and billing metadata into system prompts — all of which cause **400 errors, silent connection drops, or cascading failures** on non-Anthropic backends. The problem is well-documented across dozens of GitHub issues and has spawned an ecosystem of 10+ open-source proxy tools. The most practical solutions, in order of reliability: use a purpose-built translation proxy like **claude-code-router** or **anthropic-proxy**, or connect directly to providers that now expose Anthropic-compatible `/v1/messages` endpoints natively (OpenRouter, Ollama 0.15+, LM Studio, DeepSeek, GLM).
+Claude Code's binary injects Anthropic-proprietary headers (`anthropic-beta`, `anthropic-version`), beta query parameters (`?beta=true`), and billing metadata into system prompts — all of which cause **400 errors, silent connection drops, or cascading failures** on non-Anthropic backends. The problem is well-documented across dozens of GitHub issues and has spawned an ecosystem of 10+ open-source proxy tools. The most practical solutions, in order of reliability: use a purpose-built translation proxy like **claude-code-router** or **anthropic-proxy**, or connect directly to providers that now expose Anthropic-compatible `/v1/messages` endpoints natively (OpenRouter, Ollama 0.15+, LM Studio, DeepSeek).
 
 ## Exactly what the binary sends that breaks things
 
@@ -57,7 +57,7 @@ To bypass the Anthropic login prompt entirely when using a third-party backend, 
 
 The community has built **10+ open-source proxies** specifically for this problem. These sit between Claude Code and your actual backend, accepting Anthropic-format requests and translating them to OpenAI-compatible format (or stripping incompatible elements before forwarding).
 
-**claude-code-router** (musistudio, **27.8k GitHub stars**) is the most feature-rich option. It's a Node.js router with provider-specific transformers for DeepSeek, OpenRouter, Ollama, Gemini, and GLM. It strips `cache_control` fields, handles tool-call error tolerance, and manages model routing. Activation is a single command:
+**claude-code-router** (musistudio, **27.8k GitHub stars**) is the most feature-rich option. It's a Node.js router with provider-specific transformers for DeepSeek, OpenRouter, Ollama, and Gemini. It strips `cache_control` fields, handles tool-call error tolerance, and manages model routing. Activation is a single command:
 
 ```bash
 npm install -g claude-code-router
@@ -161,7 +161,7 @@ export ANTHROPIC_BASE_URL=http://localhost:1234
 export ANTHROPIC_AUTH_TOKEN=lmstudio
 ```
 
-Other providers with native Anthropic endpoints: **DeepSeek** (`https://api.deepseek.com/anthropic`), **GLM/Z.ai** (`https://api.z.ai/api/anthropic`), **MiniMax** (`https://api.minimax.io/anthropic`), **Alibaba DashScope** (`https://dashscope-intl.aliyuncs.com/apps/anthropic`), and **Moonshot/Kimi** (`https://api.moonshot.ai/anthropic/`). These still may not handle all Claude Code's beta headers gracefully — pairing them with `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` is recommended.
+Other providers with native Anthropic endpoints: **DeepSeek** (`https://api.deepseek.com/anthropic`), **MiniMax** (`https://api.minimax.io/anthropic`), **Alibaba DashScope** (`https://dashscope-intl.aliyuncs.com/apps/anthropic`), and **Moonshot/Kimi** (`https://api.moonshot.ai/anthropic/`). These still may not handle all Claude Code's beta headers gracefully — pairing them with `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` is recommended.
 
 ## Claude Agent SDK: `query()` vs `ClaudeSDKClient`
 
@@ -192,7 +192,7 @@ Key characteristics:
 
 ### Practical implications for non-Anthropic backends
 
-When using a non-Anthropic endpoint (e.g., GLM at `api.z.ai`), `query()` is strongly preferred for single-prompt agent workflows. The stdin-closing behavior provides a natural timeout mechanism — if the backend doesn't respond, the process exits rather than hanging indefinitely. `ClaudeSDKClient` should only be used when multi-turn conversation state is genuinely needed, and even then, explicit timeout handling and `disconnect()` calls are essential.
+When using a non-Anthropic endpoint, `query()` is strongly preferred for single-prompt agent workflows. The stdin-closing behavior provides a natural timeout mechanism — if the backend doesn't respond, the process exits rather than hanging indefinitely. `ClaudeSDKClient` should only be used when multi-turn conversation state is genuinely needed, and even then, explicit timeout handling and `disconnect()` calls are essential.
 
 ### `ANTHROPIC_API_KEY` vs `ANTHROPIC_AUTH_TOKEN` — a critical distinction
 
@@ -211,14 +211,14 @@ import os
 from claude_agent_sdk import query, ClaudeAgentOptions
 
 env = os.environ.copy()
-env["ANTHROPIC_BASE_URL"] = "https://api.z.ai/api/anthropic"
-env["ANTHROPIC_AUTH_TOKEN"] = os.getenv("GLM_API_KEY")
-env["ANTHROPIC_MODEL"] = "glm-4.6"
+env["ANTHROPIC_BASE_URL"] = os.getenv("ANTHROPIC_BASE_URL")
+env["ANTHROPIC_AUTH_TOKEN"] = os.getenv("ANTHROPIC_AUTH_TOKEN")
+env["ANTHROPIC_MODEL"] = os.getenv("ANTHROPIC_MODEL", "<model-name>")
 env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 env.pop("ANTHROPIC_API_KEY", None)  # MUST be absent, not empty
 
 options = ClaudeAgentOptions(
-    model="glm-4.6",
+    model=os.getenv("ANTHROPIC_MODEL", "<model-name>"),
     allowed_tools=["mcp__my_server__my_tool"],
     mcp_servers={
         "my-server": {

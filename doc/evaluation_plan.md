@@ -123,14 +123,14 @@ Ours:                   Evidence Programming
 |-------|-----------|--------|----------|
 | **Gemini-3** | — | Google API (`google-genai` SDK) | Frontier proprietary; strong biomedical pretraining |
 | **Claude Sonnet 4.6** | — | Anthropic API | Same backbone as Evidence Programming — cleanest architecture comparison |
-| **GPT-OSS-120B** | 120B | Z.AI API (`https://api.z.ai/api/paas/v4/`) | Large open-source; already integrated in codebase |
+| **GPT-OSS-120B** | 120B | OpenAI-compatible endpoint | Large open-source; already integrated in codebase |
 | *Qwen3-32B (optional)* | 32B | Self-hosted vLLM (2× RTX A6000, TP=2) | Open-weight size-scaling comparison; requires local GPU |
 
 **Implementation:**
 - Single LLM call per claim with no retrieved context.
 - Prompt asks the LLM to classify based solely on its knowledge.
 - Use temperature=0 for deterministic output.
-- Run each of the 4 models above on every dataset; report per-model results.
+- Run each of the models above on every dataset; report per-model results.
 - Cost: 1 LLM call per claim, ~500–1000 tokens per claim per model.
 - Implementation time: 1 hour per model.
 
@@ -313,16 +313,16 @@ The LLM-only baseline (§3.2) is the only baseline run across **multiple models*
 |-------|-----------|--------|----------|
 | **Gemini-3** | — | Google API (`google-genai` SDK) | Frontier proprietary; strong biomedical pretraining coverage |
 | **Claude Sonnet 4.6** | — | Anthropic API | Matches Evidence Programming backbone — cleanest architecture comparison |
-| **GPT-OSS-120B** | 120B | Z.AI API (`https://api.z.ai/api/paas/v4/`) | Large open-source model; already integrated in codebase |
+| **GPT-OSS-120B** | 120B | OpenAI-compatible endpoint | Large open-source model; already integrated in codebase |
 | *Qwen3-32B (optional)* | 32B | Self-hosted vLLM (2× RTX A6000, TP=2) | Open-weight size-scaling comparison; requires local GPU |
 
 **Authentication:**
 - Gemini: `GEMINI_API_KEY` env var (falls back to `GOOGLE_API_KEY`).
 - Claude: Anthropic API key.
-- GPT-OSS-120B: `GLM_API_KEY` / `ZAI_API_KEY` (existing project convention).
+- GPT-OSS-120B: `OPENAI_API_KEY`.
 - Qwen3-32B: `api_key="EMPTY"`, `base_url="http://localhost:8000/v1"` (local vLLM).
 
-**Implementation note:** The shared `LLMBackend` (`experiments/baselines/shared/llm.py`) routes `gemini-*` models through the `google-genai` SDK; all others use the OpenAI-compatible client.
+**Implementation note:** `LLMBackend` (`experiments/baselines/shared/llm.py`) auto-resolves the correct API endpoint from the model name prefix via `_resolve_base_url()`. The `--base-url` CLI flag is only needed to override this. `response_format=json_object` is automatically skipped for `claude-*` models, which do not support it via the OpenAI-compatible proxy.
 
 ### 4.3 Evaluation Harness
 

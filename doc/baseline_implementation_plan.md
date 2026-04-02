@@ -106,31 +106,38 @@ def normalize_label(label: str) -> str:
 ### LLM Backend
 Use the same backbone LLM across all baselines (except LLM-only, which runs across multiple models). This isolates the architectural comparison.
 
-Implementation: `experiments/baselines/shared/llm.py` — thin wrapper around OpenAI-compatible endpoints. Gemini models (`gemini-*`) are routed through the `google-genai` SDK automatically.
+Implementation: `experiments/baselines/shared/llm.py` — thin wrapper around OpenAI-compatible endpoints. The backend auto-detects the correct API endpoint from the model name prefix via `_resolve_base_url()` (no `--base-url` flag needed unless overriding). `response_format=json_object` is automatically skipped for models that do not support it (e.g. `claude-*`).
 
 #### LLM-only Model Choices
 
 The LLM-only baseline is the only baseline run across **multiple models**, since its purpose is to measure the parametric knowledge ceiling per model family:
 
-| Model | Parameters | Access | Rationale |
-|-------|-----------|--------|----------|
-| **Gemini-3** | — | Google API (`google-genai` SDK) | Frontier proprietary; strong biomedical pretraining |
-| **Claude Sonnet 4.6** | — | Anthropic API | Same backbone as Evidence Programming — cleanest comparison |
-| **GPT-OSS-120B** | 120B | Z.AI API (`https://api.z.ai/api/paas/v4/`) | Large open-source; already integrated |
-| *Qwen3-32B (optional)* | 32B | Self-hosted vLLM (2× RTX A6000, TP=2) | Open-weight size-scaling comparison; requires local GPU |
+| Model | Parameters | Access | API Key |
+|-------|-----------|--------|--------|
+| **Claude Sonnet 4.6** | — | OpenAI-compatible endpoint | `OPENAI_API_KEY` |
+| **GPT-OSS-120B** | 120B | OpenAI-compatible endpoint | `OPENAI_API_KEY` |
+| *Qwen3-32B (optional)* | 32B | Self-hosted vLLM (2× RTX A6000, TP=2) | `EMPTY` |
 
 **Authentication:**
-- Gemini: `GEMINI_API_KEY` (falls back to `GOOGLE_API_KEY`).
-- Claude: Anthropic API key.
-- GPT-OSS-120B: `GLM_API_KEY` / `ZAI_API_KEY`.
-- Qwen3-32B: `api_key="EMPTY"`, `base_url="http://localhost:8000/v1"`.
+- Claude Sonnet 4.6: `OPENAI_API_KEY` — cloud OpenAI-compatible endpoint.
+- GPT-OSS-120B: `OPENAI_API_KEY`.
+- Qwen3-32B: `api_key="EMPTY"`, local vLLM server.
+
+**Endpoint auto-resolution** (implemented in `_resolve_base_url()`):
+
+| Model prefix | Resolved base URL |
+|---|---|
+| `claude-*` | OpenAI-compatible cloud endpoint |
+| `gpt-*`, `o1-*`, `o3-*`, `o4-*` | `https://api.openai.com/v1/` |
+| anything else | `http://localhost:8000/v1` |
 
 ```bash
-# Example: run LLM-only baseline with each model
-uv run python experiments/run_baselines_signor.py --baseline llm_only --model gemini-3
-uv run python experiments/run_baselines_signor.py --baseline llm_only --model claude-sonnet-4-6 --base-url https://api.anthropic.com
+# Example: run LLM-only baseline with each model (--base-url auto-resolved)
+uv run python experiments/run_baselines_signor.py --baseline llm_only --model claude-sonnet-4-6
 uv run python experiments/run_baselines_signor.py --baseline llm_only --model gpt-oss-120b
-uv run python experiments/run_baselines_signor.py --baseline llm_only --model Qwen3-32B --base-url http://localhost:8000/v1
+uv run python experiments/run_baselines_signor.py --baseline llm_only --model Qwen3-32B
+# Override endpoint explicitly if needed:
+uv run python experiments/run_baselines_signor.py --baseline llm_only --model my-model --base-url http://my-server:8000/v1
 ```
 
 ### Cost Tracker

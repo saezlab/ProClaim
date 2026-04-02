@@ -7,7 +7,7 @@ Scripts and shared infrastructure for running and evaluating baselines against S
 | Script | Purpose |
 |--------|---------|
 | `run_baselines_signor.py` | Run a baseline on SIGNOR ground-truth edges, with optional edge flipping |
-| `run_baselines_datasets.py` | Run a baseline on pre-processed CSV datasets (SciFact-Open, CIViC-Fact, ConnectomeDB) |
+| `run_baselines_datasets.py` | Run a baseline on pre-processed CSV datasets (SIGNOR, ConnectomeDB, SciFact-Open, CIViC-Fact); prints a summary table of Macro F1 / FPR / FNR / Cost (mean ± std over repeats) |
 | `run_signor_eval.py` | End-to-end SIGNOR evaluation using the full evidence-programming pipeline |
 | `qwen_test.py` | Ad-hoc test of Qwen-3 fact extraction on paper text |
 | `signor_eval_config.yaml` | Config file consumed by `run_signor_eval.py` (model, mode, iteration budget) |
@@ -19,10 +19,17 @@ Scripts and shared infrastructure for running and evaluating baselines against S
 uv run python experiments/run_baselines_signor.py --baseline random
 
 # LLM-only baseline, with flipped edges, limited to 20 claims
-uv run python experiments/run_baselines_signor.py --baseline llm_only --flip --limit 20 --model glm-4-plus
+uv run python experiments/run_baselines_signor.py --baseline llm_only --flip --limit 20 --model <model-name>
 
-# Run on CSV datasets
+# Random baseline on CSV datasets (10 repeats, seed=100)
 uv run python experiments/run_baselines_datasets.py \
+    --datasets-dir /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets \
+    --datasets signor connectomedb \
+    --baseline random
+
+# LLM-only baseline on CSV datasets
+uv run python experiments/run_baselines_datasets.py \
+    --datasets-dir /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets \
     --datasets signor connectomedb \
     --baseline llm_only \
     --output-dir results/baselines
@@ -46,11 +53,11 @@ Installable baseline classes. All baselines share the same infrastructure from `
 
 | Module | Key export | Purpose |
 |--------|-----------|---------|
-| `llm.py` | `LLMBackend` | OpenAI-compatible client with retry logic and token tracking. Resolves API key from `GLM_API_KEY` → `ZAI_API_KEY` → `OPENAI_API_KEY`. |
-| `evaluate.py` | `EvaluationHarness` | Runs any baseline over a list of claims; computes accuracy, macro-F1, binary-F1, per-class P/R/F1. |
+| `llm.py` | `LLMBackend` | OpenAI-compatible client with retry logic and token tracking. Resolves API key from `OPENAI_API_KEY`. |
+| `evaluate.py` | `EvaluationHarness` | Runs any baseline over a list of claims; computes accuracy, macro-F1, macro-FPR, macro-FNR, binary-F1, and per-class P/R/F1/FPR/FNR with raw TP/FP/FN/TN counts. |
 | `verdict.py` | `Verdict`, `BaselineResult` | Pydantic schemas shared by all baselines. |
 | `label_utils.py` | `normalize_label()` | Maps dataset-specific labels to canonical `{SUPPORT, REFUTE, NEI}`. |
-| `cost_tracker.py` | `CostTracker` | Records LLM calls, token counts, and latency per claim. |
+| `cost_tracker.py` | `CostTracker` | Records LLM calls, token counts (exact, API-reported via `resp.usage`), and latency per claim. Cost in USD is a **proxy**: `(input_tokens / 1M × in_price) + (output_tokens / 1M × out_price)`. Prices are hardcoded in `DEFAULT_PRICING` (provider prefix stripped from model name before lookup; falls back to $3/$15 per 1M if model is unknown). Token counts are the durable ground truth saved in every `BaselineResult` — USD cost can be recomputed offline. |
 | `prompts.py` | `VERIFICATION_SYSTEM_PROMPT`, … | Shared prompt templates — all baselines use the same verification prompt so only the evidence varies. |
 
 ## Adding a new baseline

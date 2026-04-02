@@ -309,13 +309,13 @@ backoff and guards against `None`/empty API responses:
 ```python
 import time, os
 from openai import OpenAI
-client = OpenAI(base_url="https://api.z.ai/api/paas/v4/", api_key=os.environ["GLM_API_KEY"])
+client = OpenAI(base_url=os.environ["OPENAI_BASE_URL"], api_key=os.environ["OPENAI_API_KEY"])
 
 def llm(prompt: str, _retries: int = 3) -> str:
     for attempt in range(_retries):
         try:
             resp = client.chat.completions.create(
-                model="glm-4.6",
+                model=os.environ.get("OPENAI_MODEL", "<model-name>"),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
             )
@@ -353,7 +353,7 @@ a persistent Jupyter kernel.
 # src/pkevolve/verification/evidence_programming.py  (simplified)
 
 options = ClaudeAgentOptions(
-    model="glm-4.6",
+    model=os.environ.get("ANTHROPIC_MODEL", "<model-name>"),
     system_prompt=SYSTEM_PROMPT,  # instructs LLM to use nb_execute
     allowed_tools=[
         "Task", "Read",
@@ -987,8 +987,8 @@ sdk = ["claude-agent-sdk>=0.1.20"]  # Mode A only
 
 Environment variables:
 ```bash
-export GLM_API_KEY=...              # Required for both modes
-export ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic  # Mode A
+export OPENAI_API_KEY=...              # Required for LLM access
+export ANTHROPIC_BASE_URL=<anthropic_compatible_endpoint>  # Mode A
 ```
 
 ---

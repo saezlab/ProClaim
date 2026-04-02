@@ -1,9 +1,20 @@
 """
 Shared LLM backend for all baselines.
 
-Uses the OpenAI-compatible client pattern established throughout the project.
-All baselines share the same backbone LLM so that differences in accuracy
-reflect architecture, not model choice.
+Uses LiteLLM for provider-agnostic model access. Pass the model name with
+the LiteLLM provider prefix and set the matching API key in .env — no
+base_url required for cloud providers.
+
+Model name examples:
+    "zai/glm-4-plus"              → reads ZAI_API_KEY
+    "openai/gpt-4o"               → reads OPENAI_API_KEY
+    "anthropic/claude-..."        → reads ANTHROPIC_API_KEY
+    "vertex_ai/gemini-2.5-pro"    → reads GCP credentials (see below)
+
+Vertex AI credentials (.env):
+    VERTEXAI_PROJECT=your-gcp-project-id       # required
+    VERTEXAI_LOCATION=us-central1              # optional, defaults to us-central1
+    VERTEX_CREDENTIALS='{...}'                 # service account JSON as inline string
 """
 
 from __future__ import annotations
@@ -11,49 +22,38 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
-from typing import Any
+
+import litellm
+from dotenv import load_dotenv
+
+load_dotenv()
+litellm.set_verbose = False
 
 logger = logging.getLogger(__name__)
 
-# Resolve the API key following project priority: GLM_API_KEY > ZAI_API_KEY > OPENAI_API_KEY
-def _resolve_api_key() -> str:
-    for var in ("GLM_API_KEY", "ZAI_API_KEY", "OPENAI_API_KEY"):
-        val = os.getenv(var)
-        if val:
-            return val
-    return "EMPTY"
-
 
 class LLMBackend:
-    """Thin wrapper around an OpenAI-compatible chat completion endpoint.
+    """Thin wrapper around LiteLLM for provider-agnostic chat completion.
 
-    Returns structured (text, input_tokens, output_tokens) from every call so
-    the CostTracker can record usage accurately.
+    Returns (text, input_tokens, output_tokens) from every call so the
+    CostTracker can record usage accurately.
     """
 
     def __init__(
         self,
-        model: str = "glm-4-plus",
-        base_url: str = "https://api.z.ai/api/paas/v4/",
-        api_key: str | None = None,
+        model: str = "zai/glm-4-plus",
         temperature: float = 0.0,
         max_tokens: int = 2048,
         retries: int = 3,
         retry_base_delay: float = 1.0,
     ) -> None:
-        from openai import OpenAI  # lazy import to avoid hard dep at module level
-
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.retries = retries
         self.retry_base_delay = retry_base_delay
-
-        resolved_key = api_key or _resolve_api_key()
-        self._client = OpenAI(base_url=base_url, api_key=resolved_key)
-
-    # ------------------------------------------------------------------
 
     def complete(
         self,
@@ -62,22 +62,12 @@ class LLMBackend:
         *,
         response_format: str = "json_object",
     ) -> tuple[str, int, int]:
-        """Send a chat completion request and return (text, input_tokens, output_tokens).
-
-        Args:
-            system: System prompt.
-            user: User message.
-            response_format: ``"json_object"`` (default) or ``"text"``.
-
-        Returns:
-            Tuple of (response_text, input_token_count, output_token_count).
-        """
+        """Return (text, input_tokens, output_tokens) for a chat completion."""
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
-
-        kwargs: dict[str, Any] = {
+        kwargs: dict = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
@@ -88,7 +78,7 @@ class LLMBackend:
 
         for attempt in range(self.retries):
             try:
-                resp = self._client.chat.completions.create(**kwargs)
+                resp = litellm.completion(**kwargs)
                 text = resp.choices[0].message.content or ""
                 in_tok = resp.usage.prompt_tokens if resp.usage else 0
                 out_tok = resp.usage.completion_tokens if resp.usage else 0
@@ -97,10 +87,7 @@ class LLMBackend:
                 delay = self.retry_base_delay * (2**attempt)
                 logger.warning(
                     "LLM call attempt %d/%d failed: %s — retrying in %.1fs",
-                    attempt + 1,
-                    self.retries,
-                    exc,
-                    delay,
+                    attempt + 1, self.retries, exc, delay,
                 )
                 if attempt < self.retries - 1:
                     time.sleep(delay)
@@ -117,9 +104,6 @@ class LLMBackend:
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            # Try to extract a JSON block from the response
-            import re
-
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
                 try:

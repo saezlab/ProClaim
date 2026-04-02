@@ -41,7 +41,7 @@ experiments/       # Config files for eval runs
 Copy `.env.example` to `.env` and set:
 
 ```
-GLM_API_KEY=...          # or ZAI_API_KEY / OPENAI_API_KEY
+OPENAI_API_KEY=...       # for cloud LLM access
 UNPAYWALL_EMAIL=...      # optional, for full-text PDF retrieval
 ELSEVIER_API_KEY=...     # optional, for Elsevier full-text via INDRA
 ```

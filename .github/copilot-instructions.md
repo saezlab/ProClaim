@@ -31,20 +31,16 @@ uv run python scripts/analysis/analyze_qa_results.py --mode nosearch --model gpt
 ```
 
 ### LLM client pattern
-All LLM calls use the OpenAI-compatible client. Local models default to `http://localhost:8000/v1` with `api_key="EMPTY"`. Cloud models (GLM/Z.AI) read keys from a `.env` file via `python-dotenv`. Follow this existing pattern:
+All LLM calls use the OpenAI-compatible client. Local models default to `http://localhost:8000/v1` with `api_key="EMPTY"`. Cloud models read keys from a `.env` file via `python-dotenv`. Follow this existing pattern:
 ```python
 from openai import OpenAI
-# Z.AI / GLM models — correct OpenAI-compatible endpoint:
-client = OpenAI(base_url="https://api.z.ai/api/paas/v4/", api_key=os.getenv("GLM_API_KEY"))
+# Cloud models — OpenAI-compatible endpoint:
+client = OpenAI(base_url="<cloud_base_url>", api_key=os.getenv("OPENAI_API_KEY"))
 # Local models:
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="EMPTY")
 ```
 
-**Important**: The Z.AI OpenAI-compatible endpoint is `https://api.z.ai/api/paas/v4/`.
-Do NOT use `/api/openai` — that path does not work. The Anthropic-compatible
-endpoint (for Claude Agent SDK) is `https://api.z.ai/api/anthropic`.
-
-API key env var resolution order: `GLM_API_KEY` → `ZAI_API_KEY` → `OPENAI_API_KEY`.
+API key env var: `OPENAI_API_KEY`.
 
 ### Path resolution
 Scripts resolve PROJECT_ROOT relative to their own location:
@@ -70,7 +66,7 @@ Each edge result is a JSON file named `{SOURCE}_{TARGET}_{INTERACTION}.json`.
 ### Environment
 - Python ≥ 3.10, managed with `uv`
 - Key deps: `langchain-core`, `langchain-openai`, `langgraph`, `torch`, `torch_geometric`, `paper-search-mcp`
-- API keys in `.env` at project root: `GLM_API_KEY` (or `ZAI_API_KEY`), `ANTHROPIC_AUTH_TOKEN` (never commit)
+- API keys in `.env` at project root: `OPENAI_API_KEY`, `ANTHROPIC_AUTH_TOKEN` (never commit)
 - Optional: `UNPAYWALL_EMAIL` for full-text PDF retrieval via Unpaywall, `ELSEVIER_API_KEY` for Elsevier full text via INDRA
 
 ### Verification subsystem (`src/pkevolve/verification/`)
