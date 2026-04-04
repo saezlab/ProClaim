@@ -6,6 +6,8 @@
 
 Performed a ground-truth label audit on `results/signor_eval_results_march_30.csv` comparing it against the canonical `ground_truth.csv` from `shared_datasets/signor*/`. Found two discrepancies: (1) only 34 of the 44 `up-regulates*` edges were flipped — the 10 `WRONG` + `UNCERTAIN` edges were silently skipped; (2) `Agent_Verdict` emits `UNCERTAIN` instead of `NEI`, meaning the label normalisation step in the eval harness is required before computing metrics. Also computed accuracy using the correct label semantics. In the same session, the shared dataset documentation was pulled from `shared_datasets/claims/doc/` into `doc/`.
 
+Later in the same session (commit `a9f6b57`): replaced the binary F1 / precision / recall metric in the evaluation harness with weighted FPR and weighted FNR, so that error rates are averaged proportionally to each class's true support rather than equally across classes.
+
 ---
 
 ## Modified Files
@@ -14,6 +16,8 @@ Performed a ground-truth label audit on `results/signor_eval_results_march_30.cs
 |------|---------|
 | `doc/claim_verification_datasets.md` | Copied from `shared_datasets/claims/doc/` — four-dataset reference (SciFact-Open, CIViC-Fact, ConnectomeDB, SIGNOR). Documents label schema, file layout, evaluation subset sizes, and `datasets/paths.yaml` configuration pattern |
 | `doc/evaluation_plan.md` | Copied/updated from `shared_datasets/claims/doc/` — Group 1 (constrained retrieval) vs. Group 2 (open retrieval) evaluation design; updated SIGNOR distribution to 67 edges (34 SUPPORTED, 24 REFUTED, 9 UNCERTAIN); connectomeDB upgraded to primary benchmark role |
+| `experiments/baselines/shared/evaluate.py` | Removed binary F1/precision/recall; added `weighted_fpr` and `weighted_fnr` metrics (class error rates weighted by true support) |
+| `experiments/run_baselines_datasets.py` | Updated `aggregate_metrics()`, per-repeat log lines, aggregated log line, and summary table to use `weighted_fpr`/`weighted_fnr` instead of `binary_f1` |
 
 ---
 
@@ -149,3 +153,23 @@ Line 258: `All 66 forward + 45 negated (up-regulates only) | 111 variants`
 66 + 45 = 111, but the correct breakdown is **67 forward + 44 flipped = 111**.
 
 **Fix:** `All 67 forward + 44 negated (up-regulates only) | 111 variants`.
+
+---
+
+## Metric Change: Weighted FPR / FNR (commit `a9f6b57`)
+
+**Motivation:** binary F1 (SUPPORT vs. REFUTE only) discarded all NEI/UNCERTAIN rows, losing signal on the class the agent is worst at. Macro FPR/FNR averaged over classes equally, letting UNCERTAIN (4 examples) dominate.
+
+**Change:** `EvaluationHarness.metrics()` now computes:
+
+```
+weighted_fpr = Σ_l  support(l) * fpr(l)  /  total
+weighted_fnr = Σ_l  support(l) * fnr(l)  /  total
+```
+
+where `support(l) = tp[l] + fn[l]` (number of gold examples for class `l`) and `total = Σ support(l)`.
+
+**Removed keys:** `binary_f1`, `binary_precision`, `binary_recall`  
+**Added keys:** `weighted_fpr`, `weighted_fnr`
+
+These are now logged per-repeat and in the aggregated summary in `run_baselines_datasets.py`. The summary table column header changed from `FPR` / `FNR` (which previously showed macro values) to `W-FPR` / `W-FNR`.

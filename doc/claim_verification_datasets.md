@@ -149,10 +149,15 @@ KRAS Q61H has oncogenic activity in Cancer.
 
 ### Evaluation subset
 
-| File | Rows | Role |
-|------|------|------|
-| `cdb25_direct_multipub_unique.csv` | 184 | Positives — CDB25 Direct pairs, ≥2 publications, deduplicated |
-| `ConnectomeDB2020_rejected_labeled.csv` | 363 | Negatives/NEI — CDB2020 pairs rejected by CDB25 curators |
+Two source files from `connectome_dir` are merged into the consolidated `connectomedb.csv`:
+
+| File | Rows | Labels |
+|------|------|--------|
+| `cdb25_direct_multipub_unique.csv` | 184 | SUPPORT (all 184) |
+| `ConnectomeDB2020_rejected_labeled.csv` | 363 | REFUTE: 120 · UNCERTAIN: 243 |
+| **Total** | **547** | **SUPPORT: 184 · REFUTE: 120 · UNCERTAIN: 243** |
+
+Species breakdown (positives only; negatives have no species field and default to `human` in the claim template): human 145, mouse 36, rat 3.
 
 **Key positive columns:** `LR Pair` (e.g. `TGFB1 TGFBR1`), `Ligand Symbols`, `Receptor Symbols`, `AI summary` (Perplexity URL embedding PMIDs), `Species`.
 
@@ -164,13 +169,14 @@ from pathlib import Path
 import yaml
 
 cfg = yaml.safe_load(open(Path(__file__).parent.parent / "datasets/paths.yaml"))
-base = Path(cfg["sources"]["connectome_dir"])
+output_dir = Path(cfg["output_dir"])
 
-df_pos = pd.read_csv(base / "cdb25_direct_multipub_unique.csv")       # 184 rows, label=SUPPORTED
-df_neg = pd.read_csv(base / "ConnectomeDB2020_rejected_labeled.csv")   # 363 rows, label=REFUTED|NEI
+# Load the pre-built consolidated dataset
+df = pd.read_csv(output_dir / "connectomedb.csv")
+# df['label'] values: SUPPORT (184), REFUTE (120), UNCERTAIN (243)
 ```
 
-**Claim string:** formed from ligand/receptor columns using the template `"{Ligand} is a ligand that directly interacts with receptor {Receptor} for cell-cell communication in {Species}"`. All entries (SUPPORTED, REFUTED, NEI) use the affirmative form; the `label` column carries the verdict.
+**Claim string:** all 547 entries use the affirmative template `"{Ligand} is a ligand that directly interacts with receptor {Receptor} for cell-cell communication in {Species}"`. The `label` column carries the verdict (SUPPORT / REFUTE / UNCERTAIN).
 
 ---
 
@@ -252,7 +258,7 @@ for _, row in df.iterrows():
 
 | Dataset | Role | Evaluation subset | Size | Labels |
 |---------|------|-------------------|------|--------|
-| **ConnectomeDB** | **Primary** | `cdb25_direct_multipub_unique.csv` + `ConnectomeDB2020_rejected_labeled.csv` | 547 rows | SUPPORT / REFUTE / UNCERTAIN |
+| **ConnectomeDB** | **Primary** | `cdb25_direct_multipub_unique.csv` + `ConnectomeDB2020_rejected_labeled.csv` → `connectomedb.csv` | 547 rows (SUPPORT: 184, REFUTE: 120, UNCERTAIN: 243) | SUPPORT / REFUTE / UNCERTAIN |
 | **SIGNOR** | **Primary** | All 67 forward + 44 negated (up-regulates only) | 111 variants | SUPPORT / REFUTE / UNCERTAIN |
 | SciFact-Open | Secondary | 20 % stratified test split of annotated claims | ~42 claims | SUPPORT / REFUTE |
 | CIViC-Fact | Secondary | `partition == "test"`, `flagged != True` | ~2 014 rows | SUPPORT / REFUTE / UNCERTAIN |
