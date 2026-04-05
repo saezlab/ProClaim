@@ -12,13 +12,13 @@ Usage
 -----
 # Random baseline, 10 repeats, seed=100 (defaults):
 uv run python experiments/run_baselines_datasets.py \\
-    --datasets-dir /home/ail/workspace/connectomeDB_data/datasets \\
+    --datasets-dir /path_to/connectomeDB_data/datasets \\
     --datasets signor connectomedb \\
     --baseline random
 
 # Custom seed / repeats:
 uv run python experiments/run_baselines_datasets.py \\
-    --datasets-dir /home/ail/workspace/connectomeDB_data/datasets \\
+    --datasets-dir /path_to/connectomeDB_data/datasets \\
     --datasets signor connectomedb \\
     --baseline random --seed 42 --repeats 5
 """
@@ -51,16 +51,28 @@ logger = logging.getLogger("run_baselines_datasets")
 def load_claims(csv_path: Path) -> list[dict]:
     """Load a pre-processed dataset CSV into a list of claim dicts."""
     df = pd.read_csv(csv_path)
+    # Extra columns forwarded to richer baselines (e.g. OpenScholar RAG)
+    _EXTRA_COLS = ("evidence", "pmid", "entity_a", "entity_b", "effect")
     claims = []
     for _, row in df.iterrows():
-        claims.append(
-            {
-                "claim_id": str(row["id"]),
-                "claim": str(row["claim"]),
-                "gold_label": str(row["label"]),
-                "dataset": str(row.get("dataset", csv_path.stem)),
-            }
-        )
+        base_id = str(row["id"])
+        # Flip variants share the same base id in the SIGNOR dataset; disambiguate
+        # them so the evaluation harness can store and resume them independently.
+        flip_val = row.get("flip", None)
+        if flip_val is not None and str(flip_val).strip().lower() in ("true", "1"):
+            claim_id = base_id + "_flip"
+        else:
+            claim_id = base_id
+        item: dict = {
+            "claim_id": claim_id,
+            "claim": str(row["claim"]),
+            "gold_label": str(row["label"]),
+            "dataset": str(row.get("dataset", csv_path.stem)),
+        }
+        for col in _EXTRA_COLS:
+            if col in row.index and pd.notna(row[col]):
+                item[col] = str(row[col])
+        claims.append(item)
     return claims
 
 
@@ -76,8 +88,19 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             temperature=0.0,  # deterministic
         )
         return LLMOnly(llm=llm)
+    elif name == "open_scholar":
+        from baselines.open_scholar_baseline import OpenScholarBaseline
+        raw_max = getattr(args, "os_max_tokens", None)
+        return OpenScholarBaseline(
+            model=getattr(args, "os_model", "claude-sonnet-4-6"),
+            api=getattr(args, "os_api", "anthropic"),
+            top_n=getattr(args, "os_top_n", 5),
+            max_tokens=raw_max if raw_max and raw_max > 0 else None,
+            use_retrieval=getattr(args, "os_retrieval", False),
+            reranker=getattr(args, "os_reranker", None) or None,
+        )
     else:
-        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only")
+        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, open_scholar")
 
 
 def _mean_std(values: list[float]) -> dict[str, float]:
@@ -117,7 +140,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument(
         "--datasets-dir",
-        default="/home/ail/workspace/connectomeDB_data/datasets",
+        default="/path_to/connectomeDB_data/datasets",
         help="Directory containing dataset CSV files.",
     )
     p.add_argument(
@@ -126,10 +149,17 @@ def parse_args() -> argparse.Namespace:
         default=["signor", "connectomedb"],
         help="Dataset names (without .csv extension).",
     )
-    p.add_argument("--baseline", default="random", choices=["random", "llm_only"], help="Baseline to run.")
+    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "open_scholar"], help="Baseline to run.")
     p.add_argument("--seed", type=int, default=100, help="Base random seed. Each repeat i uses seed+i.")
-    p.add_argument("--repeats", type=int, default=1, help="Number of independent repeats. For stochastic baselines use >1; llm_only defaults to 1 (deterministic at temperature=0).")
-    p.add_argument("--model", default="zai/glm-4-plus", help="LiteLLM model string, e.g. 'zai/glm-4-plus' or 'openai/gpt-4o'.")
+    p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats. Each repeat i uses seed+i.")
+    p.add_argument("--model", default="zai/glm-4-plus", help="LiteLLM model string for llm_only, e.g. 'zai/glm-4-plus' or 'openai/gpt-4o'.")
+    # OpenScholar-specific arguments
+    p.add_argument("--os-model", dest="os_model", default="claude-sonnet-4-6", help="Model name for OpenScholar (--model_name in run.py).")
+    p.add_argument("--os-api", dest="os_api", default="anthropic", help="API provider for OpenScholar (e.g. anthropic, gemini).")
+    p.add_argument("--os-top-n", dest="os_top_n", type=int, default=5, help="Number of passages for OpenScholar (--top_n).")
+    p.add_argument("--os-max-tokens", dest="os_max_tokens", type=int, default=0, help="Max generation tokens for OpenScholar (0 = no constraint, use OpenScholar default of 3000).")
+    p.add_argument("--os-retrieval", dest="os_retrieval", action="store_true", help="Enable S2 retrieval + feedback in OpenScholar (--ss_retriever --feedback).")
+    p.add_argument("--os-reranker", dest="os_reranker", default="OpenScholar/OpenScholar_Reranker", help="Reranker model for OpenScholar (--ranking_ce --reranker). Set to empty string to disable. Default: OpenScholar/OpenScholar_Reranker.")
     p.add_argument("--limit", type=int, default=0, help="Limit number of claims per dataset (0 = all).")
     p.add_argument(
         "--output-dir",
@@ -144,11 +174,14 @@ def main() -> None:
     datasets_dir = Path(args.datasets_dir)
     output_dir = PROJECT_ROOT / args.output_dir
 
-    # For llm_only, append a sanitised model name so runs for different models
-    # don't overwrite each other.
+    # For llm_only / open_scholar, append a sanitised model name so runs for
+    # different models don't overwrite each other.
     baseline_subdir = args.baseline
     if args.baseline == "llm_only":
         model_slug = args.model.replace("/", "--")
+        baseline_subdir = f"{args.baseline}/{model_slug}"
+    elif args.baseline == "open_scholar":
+        model_slug = args.os_model.replace("/", "--")
         baseline_subdir = f"{args.baseline}/{model_slug}"
 
     logger.info("Baseline: %s  repeats=%d  base_seed=%d", args.baseline, args.repeats, args.seed)
@@ -176,7 +209,8 @@ def main() -> None:
             seed = args.seed + rep
             baseline = build_baseline(args.baseline, args, seed=seed)
             harness = EvaluationHarness(baseline, dataset_name=dataset_name)
-            results = harness.run(claims)
+            out_path = output_dir / baseline_subdir / f"{dataset_name}_seed{seed}.jsonl"
+            results = harness.run(claims, resume_path=out_path)
             m = EvaluationHarness.metrics(results)
             repeat_metrics.append(m)
             logger.info(
@@ -185,8 +219,7 @@ def main() -> None:
                 m["accuracy"], m["macro_f1"], m["weighted_fpr"], m["weighted_fnr"],
             )
 
-            # Save per-claim results for this repeat
-            out_path = output_dir / baseline_subdir / f"{dataset_name}_seed{seed}.jsonl"
+            # Rewrite the JSONL in canonical (claims-order) form after full completion
             EvaluationHarness.save(results, out_path)
 
         agg = aggregate_metrics(repeat_metrics)

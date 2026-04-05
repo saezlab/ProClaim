@@ -94,7 +94,7 @@ claude-sonnet-4.6        |  X.XX       |  X.XX       |  X.XX       |  X.XX      
 ## Notes
 
 - If `$DATASETS` is not provided, default to `signor connectomedb`.
-- Dataset CSVs must exist under `/home/ail/workspace/connectomeDB_data/datasets/`.
+- Dataset CSVs must exist under `/path_to/connectomeDB_data/datasets/`.
 - `macro_fpr` / `macro_fnr` are macro-averaged across SUPPORT / REFUTE / NEI classes.
 - Model slug directory names replace `/` with `--` (e.g. `anthropic/claude-sonnet-4-6` → `anthropic--claude-sonnet-4-6`).
 - Ensure `ANTHROPIC_API_KEY` is set in `.env` for Claude and Vertex AI credentials (`VERTEXAI_PROJECT`, `VERTEXAI_LOCATION`, `VERTEX_CREDENTIALS`) are set for Gemini.

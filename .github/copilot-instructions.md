@@ -29,6 +29,13 @@ PKEvolve is a bioinformatics research tool that validates Gene Regulatory Networ
 
 ## Key Conventions
 
+### Documentation and maintenance guidelines
+
+Make sure to update all relevant documentation when editing code or prompts, including:
+- `README.md` — high-level overview and quickstart
+- `.github/prompts/` - any relevant task-specific prompt instructions
+- `.github/notes/` — any relevant internal notes on architecture, gotchas, or design decisions
+
 ### Running scripts
 Always use `uv run python` from the project root:
 ```bash

@@ -17,6 +17,7 @@ Usage::
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -45,36 +46,93 @@ class EvaluationHarness:
     # ------------------------------------------------------------------
     # Running
 
-    def run(self, claims: list[dict[str, Any]]) -> list[BaselineResult]:
+    def run(
+        self,
+        claims: list[dict[str, Any]],
+        resume_path: Path | None = None,
+    ) -> list[BaselineResult]:
         """Evaluate baseline on a list of claim dicts.
 
         Each dict must have ``claim_id``, ``claim``, and ``gold_label`` keys.
         ``gold_label`` is normalized to the canonical taxonomy automatically.
-        """
-        results: list[BaselineResult] = []
-        n = len(claims)
-        for i, item in enumerate(claims):
-            claim_id = str(item["claim_id"])
-            claim = item["claim"]
-            gold_raw = item.get("gold_label", "NEI")
-            gold = normalize_label(gold_raw)
 
-            logger.info("[%d/%d] %s  gold=%s", i + 1, n, claim_id, gold)
-            try:
-                result = self.baseline.verify(claim_id, claim, gold)
-            except Exception as exc:
-                logger.error("Baseline crashed on %s: %s", claim_id, exc)
-                result = BaselineResult(
-                    claim_id=claim_id,
-                    claim=claim,
-                    gold_label=gold,
-                    predicted_label="NEI",
-                    reasoning=f"ERROR: {exc}",
-                    baseline_name=self.baseline.name,
-                    dataset=self.dataset_name,
+        If the baseline's ``verify()`` accepts a ``context`` keyword argument,
+        the full claim dict is forwarded as ``context`` so that richer baselines
+        (e.g. OpenScholar) can use pre-retrieved evidence stored in the dict.
+
+        Parameters
+        ----------
+        resume_path:
+            Optional path to a JSONL results file.  When provided, already-
+            completed claims (matched by ``claim_id``) are loaded from the file
+            and skipped; each new result is streamed to the file immediately
+            after it is computed so that a partial run can be resumed after any
+            interruption.
+        """
+        # Load already-completed results for resume support
+        completed: dict[str, BaselineResult] = {}
+        if resume_path is not None and resume_path.exists():
+            for r in self.load(resume_path):
+                completed[r.claim_id] = r
+            if completed:
+                logger.info(
+                    "Resume: loaded %d already-completed results from %s",
+                    len(completed), resume_path,
                 )
-            results.append(result)
-        return results
+
+        # Open stream file for appending new results
+        stream_file = None
+        if resume_path is not None:
+            resume_path.parent.mkdir(parents=True, exist_ok=True)
+            stream_file = open(resume_path, "a")
+
+        result_map: dict[str, BaselineResult] = dict(completed)
+        n = len(claims)
+        _verify_accepts_context = "context" in inspect.signature(
+            self.baseline.verify
+        ).parameters
+
+        try:
+            for i, item in enumerate(claims):
+                claim_id = str(item["claim_id"])
+                if claim_id in completed:
+                    logger.info("[%d/%d] %s  SKIPPED (already done)", i + 1, n, claim_id)
+                    continue
+                claim = item["claim"]
+                gold_raw = item.get("gold_label", "NEI")
+                gold = normalize_label(gold_raw)
+
+                logger.info("[%d/%d] %s  gold=%s", i + 1, n, claim_id, gold)
+                try:
+                    if _verify_accepts_context:
+                        result = self.baseline.verify(claim_id, claim, gold, context=item)
+                    else:
+                        result = self.baseline.verify(claim_id, claim, gold)
+                except Exception as exc:
+                    logger.error("Baseline crashed on %s: %s", claim_id, exc)
+                    result = BaselineResult(
+                        claim_id=claim_id,
+                        claim=claim,
+                        gold_label=gold,
+                        predicted_label="NEI",
+                        reasoning=f"ERROR: {exc}",
+                        baseline_name=self.baseline.name,
+                        dataset=self.dataset_name,
+                    )
+                result_map[claim_id] = result
+                if stream_file is not None:
+                    stream_file.write(result.model_dump_json() + "\n")
+                    stream_file.flush()
+        finally:
+            if stream_file is not None:
+                stream_file.close()
+
+        # Return results in original claims order
+        return [
+            result_map[str(item["claim_id"])]
+            for item in claims
+            if str(item["claim_id"]) in result_map
+        ]
 
     # ------------------------------------------------------------------
     # Metrics

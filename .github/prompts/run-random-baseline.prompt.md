@@ -49,6 +49,6 @@ uv run python experiments/run_baselines_datasets.py \
 
 - If `$DATASETS` is not provided, default to `signor connectomedb`.
 - Datasets must have a corresponding CSV in the connectomeDB datasets directory
-  (default: `/home/ail/workspace/connectomeDB_data/datasets/`).
+  (default: `/path_to/connectomeDB_data/datasets/`).
 - Each repeat `i` uses `seed + i` (100, 101, 102), making results reproducible.
 - Results are saved to `results/baselines/random/` relative to the project root.
