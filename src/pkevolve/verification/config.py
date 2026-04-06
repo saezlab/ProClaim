@@ -336,6 +336,15 @@ class VerificationSettings(BaseSettings):
         description="Path to the MLP model directory (relative to project root). "
                     "Defaults to 'results/models/classifier_best'.",
     )
+    sufficiency_backend: Literal["mlp", "llm", "haiku"] = Field(
+        default="mlp",
+        description=(
+            "Sufficiency classifier backend. "
+            "'mlp' (default): trained MLP using aggregated numerical features. "
+            "'llm': Qwen subagent via local vLLM endpoint. "
+            "'haiku': Claude Haiku via native Anthropic API."
+        ),
+    )
     max_turns: int = Field(
         default=30,
         ge=1,

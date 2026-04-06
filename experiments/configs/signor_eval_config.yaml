@@ -38,6 +38,10 @@ llm:
 
   temperature: 0.7
 
+# sufficiency_backend: mlp
+# sufficiency_backend: llm
+sufficiency_backend: haiku
+
 # Output paths (will be overridden by run_signor_eval.py for each claim)
 output_dir: results/signor_eval_prompt
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42

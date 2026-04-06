@@ -188,3 +188,89 @@ def make_llm(
         f"stream={stream} retries={retries}"
     )
     return llm
+
+
+def make_anthropic_llm(
+    api_key: str,
+    model: str = "claude-haiku-4-5-20251001",
+    *,
+    max_tokens: int = 1024,
+    temperature: float = 1.0,
+    retries: int = 3,
+    retry_base_delay: float = 1.0,
+) -> LLMCallable:
+    """Build an ``llm(prompt) -> str`` callable backed by the native Anthropic API.
+
+    Designed for Claude models (e.g. claude-haiku-4-5-20251001).
+    Uses ``max_tokens=1024`` since sufficiency output is a short JSON block.
+    ``temperature=1.0`` follows Anthropic's recommended default.
+
+    Args:
+        api_key:          Anthropic API key.
+        model:            Claude model identifier.
+        max_tokens:       Maximum output tokens (default 1024).
+        temperature:      Sampling temperature (default 1.0 — Anthropic recommended).
+        retries:          Number of attempts before returning an empty string.
+        retry_base_delay: Base delay in seconds for exponential back-off.
+
+    Returns:
+        A callable ``llm(prompt: str) -> str``.
+
+    Raises:
+        ValueError: If ``api_key`` or ``model`` are empty strings.
+    """
+    if not api_key:
+        raise ValueError("make_anthropic_llm: api_key must not be empty")
+    if not model:
+        raise ValueError("make_anthropic_llm: model must not be empty")
+
+    from anthropic import Anthropic  # imported lazily so the module is import-safe
+
+    client = Anthropic(api_key=api_key)
+
+    def llm(prompt: str) -> str:
+        """Call Claude via native Anthropic API and return the response text.
+
+        Retries up to ``retries`` times with exponential back-off.
+        Returns an empty string if all attempts fail.
+        """
+        for attempt in range(retries):
+            try:
+                message = client.messages.create(
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                result = (message.content[0].text or "").strip()
+                if result:
+                    preview = result[:200].replace("\n", " ")
+                    if len(result) > 200:
+                        preview += "..."
+                    print(f"[Haiku response: {len(result)} chars] {preview}")
+                    return result
+
+                logger.warning(
+                    "make_anthropic_llm: empty response on attempt %d/%d",
+                    attempt + 1, retries,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "make_anthropic_llm: error on attempt %d/%d: %s",
+                    attempt + 1, retries, exc,
+                )
+
+            if attempt < retries - 1:
+                delay = retry_base_delay * (2 ** attempt)
+                time.sleep(delay)
+
+        logger.error(
+            "make_anthropic_llm: all %d retries exhausted; returning empty string",
+            retries,
+        )
+        return ""
+
+    llm.__doc__ = (
+        f"Anthropic LLM callable — model={model!r} retries={retries}"
+    )
+    return llm

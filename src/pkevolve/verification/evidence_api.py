@@ -1678,10 +1678,31 @@ def check_sufficiency(
                           are present in total, force INSUFFICIENT to
                           encourage more retrieval. Set to 0 to disable.
                           (default: 3)
+    The backend is selected via the SUFFICIENCY_BACKEND environment variable
+    (propagated by VerificationSettings.build_sdk_env):
+      'mlp' (default): trained MLP classifier — original behaviour.
+      'llm': Qwen subagent reads paper titles, abstracts, and NLP features.
+      'haiku': Claude Haiku via Anthropic API — Qwen still used for gap identification.
 
     Appends result to state.sufficiency_history and increments iteration.
     Raises MaxIterationsExceeded if the iteration limit is reached.
     """
+    import os
+    backend = os.environ.get("SUFFICIENCY_BACKEND", "mlp").lower()
+    if backend == "haiku":
+        return _check_sufficiency_haiku(state, llm, threshold, min_total_papers)
+    if backend == "llm":
+        return _check_sufficiency_llm(state, llm, threshold, min_total_papers)
+    return _check_sufficiency_mlp(state, llm, threshold, min_total_papers)
+
+
+def _check_sufficiency_mlp(
+    state: EvidenceState,
+    llm,
+    threshold: float,
+    min_total_papers: int,
+) -> SufficiencyResult:
+    """MLP-based sufficiency check (original implementation)."""
 
     if state.iteration >= state.MAX_ITERATIONS:
         raise MaxIterationsExceeded(
@@ -1804,6 +1825,179 @@ def check_sufficiency(
         print(f"Reason: Need at least {min_total_papers} total papers, currently have {current_paper_count} papers")
     print(f"Final Label: {label}")
     print(f"Threshold: {threshold}")
+    print(f"Decision: {'PASS — evidence is sufficient' if label == 'sufficient' else 'FAIL — more evidence needed'}")
+    if gaps:
+        print(f"\nGaps ({len(gaps)}):")
+        for i, gap in enumerate(gaps, 1):
+            print(f"  {i}. [{gap.priority.value}] {gap.gap_type.value}")
+            print(f"     Subclaim: {gap.subclaim}")
+            print(f"     Action: {gap.description}")
+
+    return result
+
+
+def _check_sufficiency_llm(
+    state: EvidenceState,
+    llm,
+    threshold: float,
+    min_total_papers: int,
+) -> SufficiencyResult:
+    """LLM-based sufficiency check (Qwen subagent backend)."""
+    from pkevolve.verification.llm_sufficiency import check_sufficiency_llm
+    from pkevolve.verification.subagents import identify_gaps
+
+    if state.iteration >= state.MAX_ITERATIONS:
+        raise MaxIterationsExceeded(
+            f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
+            "Call emit_verdict() to produce your final verdict.",
+            state=state,
+        )
+
+    # Track paper count for this iteration
+    current_paper_count = len(state.papers)
+    previous_paper_count = (
+        state.papers_per_iteration[-1] if state.papers_per_iteration else 0
+    )
+    papers_added_this_iteration = current_paper_count - previous_paper_count
+    state.papers_per_iteration.append(current_paper_count)
+
+    # LLM scoring
+    label, score, raw_response = check_sufficiency_llm(state, llm, threshold)
+
+    # Override to INSUFFICIENT if minimum paper requirement not met
+    override_reason = None
+    if (
+        label == "sufficient"
+        and min_total_papers > 0
+        and current_paper_count < min_total_papers
+        and state.iteration < state.MAX_ITERATIONS
+    ):
+        override_reason = (
+            f"Minimum paper requirement not met: only {current_paper_count} papers "
+            f"(need at least {min_total_papers}). Continue searching."
+        )
+        label = "insufficient"
+
+    # Gap identification
+    gaps: list = []
+    if label == "insufficient":
+        if override_reason:
+            from pkevolve.verification.data_models import Gap, GapType, GapPriority
+            gaps = [Gap(
+                subclaim=state.claim,
+                gap_type=GapType.LOW_DIVERSITY,
+                description=override_reason,
+                priority=GapPriority.HIGH,
+            )]
+        else:
+            gaps = identify_gaps(
+                llm=llm, claim=state.claim,
+                subclaims=state.subclaims, facts=state.facts,
+            )
+
+    result = SufficiencyResult(label=label, confidence=score, gaps=gaps)
+    state.sufficiency_history.append(result)
+    state.iteration += 1
+    state._auto_save()
+
+    # Print structured feedback for the agent
+    print(f"=== SUFFICIENCY CHECK (iteration {state.iteration}, backend=llm) ===")
+    print(f"Papers: {current_paper_count} total (+{papers_added_this_iteration} this iteration)")
+    print(f"LLM Score: {score:.6f} → {label} (threshold={threshold})")
+    if override_reason:
+        print(f"⚠️  Override: sufficient → insufficient")
+        print(f"Reason: Need at least {min_total_papers} total papers, have {current_paper_count}")
+    print(f"Decision: {'PASS — evidence is sufficient' if label == 'sufficient' else 'FAIL — more evidence needed'}")
+    if gaps:
+        print(f"\nGaps ({len(gaps)}):")
+        for i, gap in enumerate(gaps, 1):
+            print(f"  {i}. [{gap.priority.value}] {gap.gap_type.value}")
+            print(f"     Subclaim: {gap.subclaim}")
+            print(f"     Action: {gap.description}")
+
+    return result
+
+
+def _check_sufficiency_haiku(
+    state: EvidenceState,
+    llm,
+    threshold: float,
+    min_total_papers: int,
+) -> SufficiencyResult:
+    """Haiku-based sufficiency check (Claude Haiku via native Anthropic API).
+
+    Uses Claude Haiku exclusively for the sufficiency scoring step.
+    Gap identification, fact extraction, and all other subagent calls
+    continue to use the general-purpose ``llm`` (Qwen3.5-9B).
+    """
+    from pkevolve.verification.llm_sufficiency import check_sufficiency_llm
+    from pkevolve.verification.subagents import identify_gaps
+    from pkevolve.verification.model_registry import get_haiku_llm
+
+    if state.iteration >= state.MAX_ITERATIONS:
+        raise MaxIterationsExceeded(
+            f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
+            "Call emit_verdict() to produce your final verdict.",
+            state=state,
+        )
+
+    # Track paper count for this iteration
+    current_paper_count = len(state.papers)
+    previous_paper_count = (
+        state.papers_per_iteration[-1] if state.papers_per_iteration else 0
+    )
+    papers_added_this_iteration = current_paper_count - previous_paper_count
+    state.papers_per_iteration.append(current_paper_count)
+
+    # Haiku scoring — dedicated Claude Haiku callable (cached singleton)
+    haiku_llm = get_haiku_llm()
+    label, score, raw_response = check_sufficiency_llm(state, haiku_llm, threshold)
+
+    # Override to INSUFFICIENT if minimum paper requirement not met
+    override_reason = None
+    if (
+        label == "sufficient"
+        and min_total_papers > 0
+        and current_paper_count < min_total_papers
+        and state.iteration < state.MAX_ITERATIONS
+    ):
+        override_reason = (
+            f"Minimum paper requirement not met: only {current_paper_count} papers "
+            f"(need at least {min_total_papers}). Continue searching."
+        )
+        label = "insufficient"
+
+    # Gap identification — uses Qwen (llm), NOT Haiku
+    gaps: list = []
+    if label == "insufficient":
+        if override_reason:
+            from pkevolve.verification.data_models import Gap, GapType, GapPriority
+            gaps = [Gap(
+                subclaim=state.claim,
+                gap_type=GapType.LOW_DIVERSITY,
+                description=override_reason,
+                priority=GapPriority.HIGH,
+            )]
+        else:
+            gaps = identify_gaps(
+                llm=llm,  # Qwen, not Haiku
+                claim=state.claim,
+                subclaims=state.subclaims,
+                facts=state.facts,
+            )
+
+    result = SufficiencyResult(label=label, confidence=score, gaps=gaps)
+    state.sufficiency_history.append(result)
+    state.iteration += 1
+    state._auto_save()
+
+    # Print structured feedback for the agent
+    print(f"=== SUFFICIENCY CHECK (iteration {state.iteration}, backend=haiku) ===")
+    print(f"Papers: {current_paper_count} total (+{papers_added_this_iteration} this iteration)")
+    print(f"Haiku Score: {score:.6f} → {label} (threshold={threshold})")
+    if override_reason:
+        print(f"⚠️  Override: sufficient → insufficient")
+        print(f"Reason: Need at least {min_total_papers} total papers, have {current_paper_count}")
     print(f"Decision: {'PASS — evidence is sufficient' if label == 'sufficient' else 'FAIL — more evidence needed'}")
     if gaps:
         print(f"\nGaps ({len(gaps)}):")

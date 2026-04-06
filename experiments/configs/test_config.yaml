@@ -41,6 +41,8 @@ llm:
 
 # Output paths (relative paths resolve from cwd)
 # output_dir: results/verification/test_run
+# Sufficiency classifier backend: "mlp" (trained MLP) or "llm" (Qwen subagent)
+sufficiency_backend: haiku
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
 # Logging
