@@ -1,0 +1,41 @@
+# ──────────────────────────────────────────────────────────────────────
+# LLM-Only Baseline Config
+#
+# Parametric-knowledge ceiling: single LLM call, no retrieval.
+# Deterministic (temperature=0) — one repeat is usually sufficient,
+# but repeats > 1 is allowed for variance estimation.
+#
+# Usage:
+#   uv run python experiments/run_baselines_datasets.py \
+#       --config experiments/configs/llm_only_config.yaml
+#
+# To switch model without editing this file:
+#   ... --model openai/gpt-4o
+#
+# Any CLI flag overrides the value set here.
+# ──────────────────────────────────────────────────────────────────────
+
+# ── Data ──────────────────────────────────────────────────────────────
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+datasets:
+  - signor
+  - connectomedb
+
+# ── Baseline ──────────────────────────────────────────────────────────
+baseline: llm_only
+
+# LiteLLM model string, e.g.:
+#   vertex_ai/gemini-3.1-pro-preview (Google Gemini 3.1 Pro)
+#   zai/glm-4-plus          (Z.AI GLM)
+#   openai/gpt-4o           (OpenAI GPT-4o)
+model: anthropic/claude-sonnet-4-6
+
+# ── Reproducibility ───────────────────────────────────────────────────
+seed: 100      # base seed; repeat i uses seed + i
+repeats: 3     # number of independent runs (temperature=0 so variance comes from API non-determinism)
+
+# ── Sampling ──────────────────────────────────────────────────────────
+limit: 0       # 0 = all claims
+
+# ── Output ────────────────────────────────────────────────────────────
+output_dir: results/baselines

@@ -32,6 +32,8 @@ import math
 import sys
 from pathlib import Path
 
+import yaml
+
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -97,7 +99,9 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             top_n=getattr(args, "os_top_n", 5),
             max_tokens=raw_max if raw_max and raw_max > 0 else None,
             use_retrieval=getattr(args, "os_retrieval", False),
+            oracle_context=getattr(args, "os_oracle_context", False),
             reranker=getattr(args, "os_reranker", None) or None,
+            task_name=getattr(args, "os_task_name", "claim_verdict_question"),
         )
     else:
         raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, open_scholar")
@@ -133,11 +137,13 @@ def aggregate_metrics(all_runs: list[dict]) -> dict:
             )
 
     agg["total_cost_usd"] = _mean_std([r["total_cost_usd"] for r in all_runs])
+    agg["avg_cost_usd"] = _mean_std([r["avg_cost_usd"] for r in all_runs])
     return agg
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--config", default=None, help="Path to a YAML config file. CLI flags override values from the config.")
     p.add_argument(
         "--datasets-dir",
         default="/path_to/connectomeDB_data/datasets",
@@ -158,14 +164,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--os-api", dest="os_api", default="anthropic", help="API provider for OpenScholar (e.g. anthropic, gemini).")
     p.add_argument("--os-top-n", dest="os_top_n", type=int, default=5, help="Number of passages for OpenScholar (--top_n).")
     p.add_argument("--os-max-tokens", dest="os_max_tokens", type=int, default=0, help="Max generation tokens for OpenScholar (0 = no constraint, use OpenScholar default of 3000).")
+    p.add_argument("--os-oracle-context", dest="os_oracle_context", action="store_true", help="Inject CSV evidence as oracle context in OpenScholar (default: False; use for oracle-leakage experiments).")
     p.add_argument("--os-retrieval", dest="os_retrieval", action="store_true", help="Enable S2 retrieval + feedback in OpenScholar (--ss_retriever --feedback).")
     p.add_argument("--os-reranker", dest="os_reranker", default="OpenScholar/OpenScholar_Reranker", help="Reranker model for OpenScholar (--ranking_ce --reranker). Set to empty string to disable. Default: OpenScholar/OpenScholar_Reranker.")
+    p.add_argument("--os-task-name", dest="os_task_name", default="claim_verdict_question", help="OpenScholar task name passed to --task_name (e.g. claim_verdict_question, claim_verdict).")
     p.add_argument("--limit", type=int, default=0, help="Limit number of claims per dataset (0 = all).")
     p.add_argument(
         "--output-dir",
         default="results/baselines",
         help="Directory to save results.",
     )
+
+    # Pre-parse --config so we can apply YAML defaults before the full parse.
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", default=None)
+    pre_args, _ = pre_parser.parse_known_args()
+    if pre_args.config:
+        with open(pre_args.config) as fh:
+            cfg = yaml.safe_load(fh) or {}
+        p.set_defaults(**cfg)
+
     return p.parse_args()
 
 
@@ -208,8 +226,10 @@ def main() -> None:
         for rep in range(n_repeats):
             seed = args.seed + rep
             baseline = build_baseline(args.baseline, args, seed=seed)
-            harness = EvaluationHarness(baseline, dataset_name=dataset_name)
             out_path = output_dir / baseline_subdir / f"{dataset_name}_seed{seed}.jsonl"
+            if hasattr(baseline, "log_dir"):
+                baseline.log_dir = out_path.parent / f"{dataset_name}_seed{seed}_logs"
+            harness = EvaluationHarness(baseline, dataset_name=dataset_name)
             results = harness.run(claims, resume_path=out_path)
             m = EvaluationHarness.metrics(results)
             repeat_metrics.append(m)

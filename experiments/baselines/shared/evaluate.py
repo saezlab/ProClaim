@@ -205,6 +205,7 @@ class EvaluationHarness:
 
         # Cost aggregates
         total_cost = sum(r.cost_usd for r in results)
+        avg_cost = total_cost / total if total > 0 else 0.0
         total_input_tokens = sum(r.input_tokens for r in results)
         total_output_tokens = sum(r.output_tokens for r in results)
 
@@ -218,6 +219,7 @@ class EvaluationHarness:
             "weighted_fnr": round(weighted_fnr, 4),
             "per_class": per_class,
             "total_cost_usd": round(total_cost, 6),
+            "avg_cost_usd": round(avg_cost, 6),
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
         }

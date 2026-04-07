@@ -92,7 +92,9 @@ class OpenScholarBaseline:
         top_n: int = 5,
         max_tokens: int | None = None,
         use_retrieval: bool = False,
+        oracle_context: bool = False,
         reranker: str | None = "OpenScholar/OpenScholar_Reranker",
+        task_name: str = "claim_verdict_question",
         open_scholar_dir: str | Path | None = None,
         env_file: str | Path | None = None,
         s2_api_key: str | None = None,
@@ -103,7 +105,10 @@ class OpenScholarBaseline:
         self.top_n = top_n
         self.max_tokens = max_tokens  # None → omit flag; OpenScholar default is 3000
         self.use_retrieval = use_retrieval
+        self.oracle_context = oracle_context  # inject pre-retrieved CSV evidence as context
         self.reranker = reranker  # None → no reranking; required with --ss_retriever --feedback
+        self.task_name = task_name
+        self.log_dir: Path | None = None  # set externally to write per-claim logs
         # Increase default timeout when retrieval is active (S2 + feedback can be slow)
         self.subprocess_timeout = subprocess_timeout if subprocess_timeout != 300 else (600 if use_retrieval else 300)
 
@@ -151,15 +156,18 @@ class OpenScholarBaseline:
         #   <system instruction>
         #   References: [0] … [1] …
         #   Claim: <claim text>
-        # Wrapping the claim as a question ("What does the scientific evidence say
-        # about …?") placed after the "Claim:" header produces a malformed
-        # prompt and causes the model to fabricate reference citations.
-        framed_input = claim
+        # Reframing the claim as a yes/no question ensures that OpenScholar's
+        # feedback and keyword-extraction stages (which both expect a "question")
+        # operate correctly.  The claim_verdict task instruction is explicit about
+        # JSON-only output, so reformulating as a question does not cause
+        # hallucinated citations.
+        claim_text = claim.rstrip(".?")
+        framed_input = f"Is the following scientific claim supported or refuted by the literature: {claim_text}? Answer uncertain otherwise."
 
         # Build ctxs from pre-existing evidence when available
         ctxs: list[dict] = []
         use_contexts_flag = self.use_retrieval  # default follows retrieval flag
-        if context and context.get("evidence"):
+        if self.oracle_context and context and context.get("evidence"):
             evidence_text = context["evidence"]
             pmid = context.get("pmid", "")
             ctxs = [{"title": f"PMID:{pmid}" if pmid else "", "text": evidence_text}]
@@ -184,6 +192,23 @@ class OpenScholarBaseline:
                 text=True,
                 timeout=self.subprocess_timeout,
             )
+
+            # Print subprocess output so LLM prompts logged in OpenScholar are visible
+            if proc.stdout:
+                print(proc.stdout, end="", flush=True)
+            if proc.stderr:
+                print(proc.stderr, end="", flush=True)
+
+            # Write per-claim log for post-hoc debugging
+            if self.log_dir is not None:
+                self.log_dir.mkdir(parents=True, exist_ok=True)
+                log_path = self.log_dir / f"{claim_id}.log"
+                with open(log_path, "w") as _lf:
+                    _lf.write(f"=== claim_id: {claim_id} ===\n")
+                    _lf.write(f"=== framed_input ===\n{framed_input}\n\n")
+                    _lf.write(f"=== stdout ===\n{proc.stdout or ''}\n")
+                    _lf.write(f"=== stderr ===\n{proc.stderr or ''}\n")
+                    _lf.write(f"=== returncode: {proc.returncode} ===\n")
 
             if proc.returncode != 0:
                 stderr_tail = proc.stderr[-1000:] if proc.stderr else ""
@@ -229,7 +254,7 @@ class OpenScholarBaseline:
             "--output_file", str(output_file),
             "--api", self.api,
             "--model_name", self.model,
-            "--task_name", "claim_verdict",
+            "--task_name", self.task_name,
             "--zero_shot",
             "--top_n", str(self.top_n),
         ]
@@ -247,8 +272,10 @@ class OpenScholarBaseline:
     def _parse_verdict(raw_output: str) -> dict:
         """Parse the JSON verdict from OpenScholar output.
 
-        Falls back to a NEI result rather than raising on malformed JSON.
+        Falls back to label extraction via regex on truncated JSON, then to
+        NEI if no label can be recovered.
         """
+        import re as _re
         text = raw_output.strip()
         # Strip markdown code fences that occasionally appear
         if text.startswith("```"):
@@ -259,5 +286,18 @@ class OpenScholarBaseline:
         try:
             return json.loads(text)
         except json.JSONDecodeError:
+            # The JSON was likely truncated at max_tokens.  Try to salvage the
+            # label from the partial object before giving up.
+            m = _re.search(r'"label"\s*:\s*"(SUPPORT|REFUTE|UNCERTAIN)"', text, _re.IGNORECASE)
+            if m:
+                recovered_label = m.group(1).upper()
+                # Also try to grab whatever reasoning was emitted so far
+                r = _re.search(r'"reasoning"\s*:\s*"(.*)', text, _re.DOTALL)
+                recovered_reasoning = r.group(1)[:500] if r else text[:500]
+                logger.warning(
+                    "Truncated JSON — recovered label=%s from partial output: %r",
+                    recovered_label, text[:200],
+                )
+                return {"label": recovered_label, "reasoning": recovered_reasoning, "evidence": []}
             logger.warning("Could not parse OpenScholar verdict JSON: %r", text[:200])
             return {"label": "NEI", "reasoning": text[:500], "evidence": []}

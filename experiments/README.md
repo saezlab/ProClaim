@@ -6,7 +6,7 @@ Scripts and shared infrastructure for running and evaluating baselines against S
 
 | Script | Purpose |
 |--------|---------|
-| `run_baselines_datasets.py` | Run a baseline on pre-processed CSV datasets (SIGNOR, ConnectomeDB, SciFact-Open, CIViC-Fact); prints a summary table of Macro F1 / FPR / FNR / Cost (mean ± std over repeats) |
+| `run_baselines_datasets.py` | Run a baseline on pre-processed CSV datasets (SIGNOR, ConnectomeDB, SciFact-Open, CIViC-Fact); prints a summary table of Macro F1 / FPR / FNR / Cost (mean ± std over repeats). Accepts `--config` to load baseline parameters from a YAML file. |
 | `run_signor_eval.py` | End-to-end SIGNOR evaluation using the full evidence-programming pipeline |
 | `qwen_test.py` | Ad-hoc test of Qwen-3 fact extraction on paper text |
 | `signor_eval_config.yaml` | Config file consumed by `run_signor_eval.py` (model, mode, iteration budget) |
@@ -14,47 +14,33 @@ Scripts and shared infrastructure for running and evaluating baselines against S
 ### Quick start
 
 ```bash
-# Random baseline on CSV datasets (10 repeats, seed=100)
+# Run a baseline from a YAML config (recommended)
 uv run python experiments/run_baselines_datasets.py \
-    --datasets-dir /path_to/claim_datasets/datasets \
-    --datasets signor connectomedb \
-    --baseline random
+    --config experiments/configs/random_baseline_config.yaml
 
-# LLM-only baseline on CSV datasets
 uv run python experiments/run_baselines_datasets.py \
-    --datasets-dir /path_to/claim_datasets/datasets \
-    --datasets signor connectomedb \
-    --baseline llm_only \
-    --output-dir results/baselines
+    --config experiments/configs/llm_only_config.yaml
 
-# OpenScholar baseline on SIGNOR (1 claim for smoke test)
 uv run python experiments/run_baselines_datasets.py \
-    --datasets-dir /path_to/claim_datasets/datasets \
-    --datasets signor \
-    --baseline open_scholar \
-    --limit 1 \
-    --output-dir results/baselines
+    --config experiments/configs/open_scholar_config.yaml
 
-# OpenScholar baseline on SIGNOR — full run
+# CLI flags override config values, e.g. smoke-test with 1 claim:
 uv run python experiments/run_baselines_datasets.py \
-    --datasets-dir /path_to/claim_datasets/datasets \
-    --datasets signor \
-    --baseline open_scholar \
-    --output-dir results/baselines
-
-# OpenScholar with live S2 retrieval (requires network + S2 API key or rate-limited anonymous access)
-uv run python experiments/run_baselines_datasets.py \
-    --datasets-dir /path_to/claim_datasets/datasets \
-    --datasets signor \
-    --baseline open_scholar \
-    --os-retrieval \
-    --output-dir results/baselines
-
-# Full evidence-programming evaluation on SIGNOR
-uv run python experiments/run_signor_eval.py \
-    --config experiments/signor_eval_config.yaml \
-    --output-csv results/signor_ep.csv
+    --config experiments/configs/open_scholar_config.yaml \
+    --limit 1
 ```
+
+## configs/
+
+YAML config files for `run_baselines_datasets.py`. Load with `--config`; any CLI flag overrides the config value.
+
+| File | Baseline | Key settings |
+|------|----------|-------------|
+| `random_baseline_config.yaml` | `random` | `signor` + `connectomedb`, 10 repeats, seed=100 |
+| `llm_only_config.yaml` | `llm_only` | `anthropic/claude-sonnet-4-6`, 3 repeats |
+| `open_scholar_config.yaml` | `open_scholar` | `claude-sonnet-4-6`, S2 adaptive retrieval on (`os_retrieval: true`), top_n=10, 1 repeat |
+
+YAML keys mirror `argparse` `dest` names (e.g. `os_model`, `os_retrieval`, `datasets_dir`). All keys are optional — omitted keys fall back to the CLI defaults.
 
 ## baselines/
 
