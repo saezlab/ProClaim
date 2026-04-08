@@ -193,13 +193,9 @@ class OpenScholarBaseline:
                 timeout=self.subprocess_timeout,
             )
 
-            # Print subprocess output so LLM prompts logged in OpenScholar are visible
-            if proc.stdout:
-                print(proc.stdout, end="", flush=True)
-            if proc.stderr:
-                print(proc.stderr, end="", flush=True)
-
-            # Write per-claim log for post-hoc debugging
+            # Write per-claim log for post-hoc debugging and echo subprocess
+            # output through the logger so it appears in the log file rather
+            # than on raw stdout (which can be a broken pipe).
             if self.log_dir is not None:
                 self.log_dir.mkdir(parents=True, exist_ok=True)
                 log_path = self.log_dir / f"{claim_id}.log"
@@ -209,6 +205,11 @@ class OpenScholarBaseline:
                     _lf.write(f"=== stdout ===\n{proc.stdout or ''}\n")
                     _lf.write(f"=== stderr ===\n{proc.stderr or ''}\n")
                     _lf.write(f"=== returncode: {proc.returncode} ===\n")
+
+            if proc.stdout:
+                logger.debug("OpenScholar stdout [%s]:\n%s", claim_id, proc.stdout)
+            if proc.stderr:
+                logger.debug("OpenScholar stderr [%s]:\n%s", claim_id, proc.stderr)
 
             if proc.returncode != 0:
                 stderr_tail = proc.stderr[-1000:] if proc.stderr else ""
@@ -284,7 +285,10 @@ class OpenScholarBaseline:
                 line for line in lines if not line.startswith("```")
             ).strip()
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
+            # Drop evidence field — not needed and causes validation issues
+            parsed.pop("evidence", None)
+            return parsed
         except json.JSONDecodeError:
             # The JSON was likely truncated at max_tokens.  Try to salvage the
             # label from the partial object before giving up.
@@ -295,7 +299,7 @@ class OpenScholarBaseline:
                 r = _re.search(r'"reasoning"\s*:\s*"(.*)', text, _re.DOTALL)
                 recovered_reasoning = r.group(1)[:500] if r else text[:500]
                 logger.warning(
-                    "Truncated JSON — recovered label=%s from partial output: %r",
+                    "Could not parse JSON — recovered label=%s from partial output: %r",
                     recovered_label, text[:200],
                 )
                 return {"label": recovered_label, "reasoning": recovered_reasoning, "evidence": []}
