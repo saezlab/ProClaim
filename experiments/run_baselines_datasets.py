@@ -163,7 +163,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--os-model", dest="os_model", default="claude-sonnet-4-6", help="Model name for OpenScholar (--model_name in run.py).")
     p.add_argument("--os-api", dest="os_api", default="anthropic", help="API provider for OpenScholar (e.g. anthropic, gemini).")
     p.add_argument("--os-top-n", dest="os_top_n", type=int, default=5, help="Number of passages for OpenScholar (--top_n).")
-    p.add_argument("--os-max-tokens", dest="os_max_tokens", type=int, default=0, help="Max generation tokens for OpenScholar (0 = no constraint, use OpenScholar default of 3000).")
+    p.add_argument("--os-max-tokens", dest="os_max_tokens", type=int, default=3000, help="Max generation tokens for OpenScholar (0 = no constraint, use OpenScholar default of 3000).")
     p.add_argument("--os-oracle-context", dest="os_oracle_context", action="store_true", help="Inject CSV evidence as oracle context in OpenScholar (default: False; use for oracle-leakage experiments).")
     p.add_argument("--os-retrieval", dest="os_retrieval", action="store_true", help="Enable S2 retrieval + feedback in OpenScholar (--ss_retriever --feedback).")
     p.add_argument("--os-reranker", dest="os_reranker", default="OpenScholar/OpenScholar_Reranker", help="Reranker model for OpenScholar (--ranking_ce --reranker). Set to empty string to disable. Default: OpenScholar/OpenScholar_Reranker.")
