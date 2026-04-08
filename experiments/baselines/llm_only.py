@@ -47,7 +47,7 @@ class LLMOnly:
         self.tracker.record("llm_call", in_tok, out_tok, time.monotonic() - t0)
 
         parsed = self.llm.parse_json(text)
-        raw_label = parsed.get("label", "NEI")
+        raw_label = parsed.get("label", "UNCERTAIN")
         predicted = normalize_label(raw_label)
         confidence = float(parsed.get("confidence", 0.0))
         reasoning = parsed.get("reasoning", text[:500] if text else "")

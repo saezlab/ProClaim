@@ -117,7 +117,7 @@ def _mean_std(values: list[float]) -> dict[str, float]:
 def aggregate_metrics(all_runs: list[dict]) -> dict:
     """Aggregate a list of per-repeat metric dicts into mean ± std."""
     scalar_keys = ["accuracy", "macro_f1", "macro_fpr", "macro_fnr", "weighted_fpr", "weighted_fnr"]
-    per_class_labels = ["SUPPORT", "REFUTE", "NEI"]
+    per_class_labels = ["SUPPORT", "REFUTE", "UNCERTAIN"]
     per_class_subkeys = ["precision", "recall", "f1"]
 
     agg: dict = {

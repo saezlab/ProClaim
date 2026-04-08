@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 class Verdict(BaseModel):
     """Minimal structured verdict emitted by any baseline."""
 
-    label: str  # SUPPORT | REFUTE | NEI (canonical)
+    label: str  # SUPPORT | REFUTE | UNCERTAIN (canonical)
     confidence: float = 0.0
     reasoning: str = ""
     evidence: list[str] = Field(default_factory=list)  # PMIDs or snippets
@@ -24,7 +24,7 @@ class BaselineResult(BaseModel):
 
     claim_id: str
     claim: str
-    gold_label: str  # canonical (SUPPORT | REFUTE | NEI)
+    gold_label: str  # canonical (SUPPORT | REFUTE | UNCERTAIN)
     predicted_label: str  # canonical
     confidence: float = 0.0
     reasoning: str = ""

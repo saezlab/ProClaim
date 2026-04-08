@@ -2,7 +2,7 @@
 Label normalization utilities for evidence programming baselines.
 
 All datasets use different label vocabularies. This module maps every
-raw label to the canonical {SUPPORT, REFUTE, NEI} taxonomy so that
+raw label to the canonical {SUPPORT, REFUTE, UNCERTAIN} taxonomy so that
 metrics can be compared across datasets and baselines.
 """
 
@@ -13,31 +13,29 @@ LABEL_MAP: dict[str, str] = {
     # Canonical (pass-through)
     "SUPPORT": "SUPPORT",
     "REFUTE": "REFUTE",
-    "NEI": "NEI",
+    "UNCERTAIN": "UNCERTAIN",
     # SciFact-Open
     "CONTRADICT": "REFUTE",
-    # SIGNOR*
+    # SIGNOR
     "SUPPORTED": "SUPPORT",
     "WRONG": "REFUTE",
-    "UNCERTAIN": "NEI",
     # CIViC-Fact
     "SUPPORTS": "SUPPORT",
     "REFUTES": "REFUTE",
     # ConnectomeDB
     "REFUTED": "REFUTE",
-    # Evidence Programming system
-    "UNCERTAIN": "NEI",
     # Common variants
-    "NOT ENOUGH INFORMATION": "NEI",
-    "NOT_ENOUGH_INFORMATION": "NEI",
+    "NEI": "UNCERTAIN",
+    "NOT ENOUGH INFORMATION": "UNCERTAIN",
+    "NOT_ENOUGH_INFORMATION": "UNCERTAIN",
 }
 
-CANONICAL_LABELS = frozenset({"SUPPORT", "REFUTE", "NEI"})
+CANONICAL_LABELS = frozenset({"SUPPORT", "REFUTE", "UNCERTAIN"})
 
 
 def normalize_label(label: str) -> str:
-    """Map a raw dataset label to the canonical {SUPPORT, REFUTE, NEI} taxonomy.
+    """Map a raw dataset label to the canonical {SUPPORT, REFUTE, UNCERTAIN} taxonomy.
 
-    Unknown labels default to NEI.
+    Unknown labels default to UNCERTAIN.
     """
-    return LABEL_MAP.get(label.upper().strip().replace("-", "_"), "NEI")
+    return LABEL_MAP.get(label.upper().strip().replace("-", "_"), "UNCERTAIN")

@@ -1,7 +1,7 @@
 # ──────────────────────────────────────────────────────────────────────
 # Random Baseline Config
 #
-# Chance-floor baseline: uniform draw from {SUPPORT, REFUTE, NEI}.
+# Chance-floor baseline: uniform draw from {SUPPORT, REFUTE, UNCERTAIN}.
 # Multiple repeats are used to estimate mean ± std.
 #
 # Usage:

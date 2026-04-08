@@ -1,7 +1,7 @@
 """
 Random baseline — establishes the chance-level performance floor.
 
-Draws uniformly at random from {SUPPORT, REFUTE, NEI} for every claim.
+Draws uniformly at random from {SUPPORT, REFUTE, UNCERTAIN} for every claim.
 Cost: 0 tokens, 0 LLM calls.
 """
 
@@ -22,13 +22,13 @@ class RandomBaseline:
         self._rng = random.Random(seed)
 
     def verify(self, claim_id: str, claim: str, gold_label: str) -> BaselineResult:
-        label = self._rng.choice(["SUPPORT", "REFUTE", "NEI"])
+        label = self._rng.choice(["SUPPORT", "REFUTE", "UNCERTAIN"])
         return BaselineResult(
             claim_id=claim_id,
             claim=claim,
             gold_label=normalize_label(gold_label),
             predicted_label=label,
             confidence=1.0 / 3.0,
-            reasoning="Randomly sampled from {SUPPORT, REFUTE, NEI}.",
+            reasoning="Randomly sampled from {SUPPORT, REFUTE, UNCERTAIN}.",
             baseline_name=self.name,
         )

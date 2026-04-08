@@ -230,7 +230,7 @@ class OpenScholarBaseline:
             claim_id=claim_id,
             claim=claim,
             gold_label=normalize_label(gold_label),
-            predicted_label=normalize_label(verdict.get("label", "NEI")),
+            predicted_label=normalize_label(verdict.get("label", "UNCERTAIN")),
             confidence=0.0,
             reasoning=verdict.get("reasoning", raw_output[:500] if raw_output else ""),
             evidence=verdict.get("evidence", []),
@@ -304,4 +304,4 @@ class OpenScholarBaseline:
                 )
                 return {"label": recovered_label, "reasoning": recovered_reasoning, "evidence": []}
             logger.warning("Could not parse OpenScholar verdict JSON: %r", text[:200])
-            return {"label": "NEI", "reasoning": text[:500], "evidence": []}
+            return {"label": "UNCERTAIN", "reasoning": text[:500], "evidence": []}

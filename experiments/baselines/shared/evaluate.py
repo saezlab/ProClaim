@@ -3,8 +3,8 @@ Evaluation harness for evidence programming baselines.
 
 Runs any baseline on a list of claims and computes metrics:
   - Accuracy
-  - Macro F1 (3-class: SUPPORT / REFUTE / NEI)
-  - Binary F1 (SUPPORT vs. REFUTE, excluding NEI rows)
+  - Macro F1 (3-class: SUPPORT / REFUTE / UNCERTAIN)
+  - Binary F1 (SUPPORT vs. REFUTE, excluding UNCERTAIN rows)
   - Per-class precision / recall / F1
 
 Usage::
@@ -99,7 +99,7 @@ class EvaluationHarness:
                     logger.info("[%d/%d] %s  SKIPPED (already done)", i + 1, n, claim_id)
                     continue
                 claim = item["claim"]
-                gold_raw = item.get("gold_label", "NEI")
+                gold_raw = item.get("gold_label", "UNCERTAIN")
                 gold = normalize_label(gold_raw)
 
                 logger.info("[%d/%d] %s  gold=%s", i + 1, n, claim_id, gold)
@@ -114,7 +114,7 @@ class EvaluationHarness:
                         claim_id=claim_id,
                         claim=claim,
                         gold_label=gold,
-                        predicted_label="NEI",
+                        predicted_label="UNCERTAIN",
                         reasoning=f"ERROR: {exc}",
                         baseline_name=self.baseline.name,
                         dataset=self.dataset_name,
@@ -142,7 +142,7 @@ class EvaluationHarness:
         """Compute accuracy, macro-F1, macro/weighted FPR, and macro/weighted FNR from a result list."""
         from collections import defaultdict
 
-        labels = ["SUPPORT", "REFUTE", "NEI"]
+        labels = ["SUPPORT", "REFUTE", "UNCERTAIN"]
 
         # Count TP / FP / FN / TN per class
         tp: dict[str, int] = defaultdict(int)
