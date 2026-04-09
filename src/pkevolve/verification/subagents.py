@@ -130,12 +130,7 @@ def extract_facts(
     Returns:
         List of Fact objects with stance labels and subclaim mappings.
     """
-    from pkevolve.verification.config import get_label_config
-    label_cfg = get_label_config()
-
     subclaims_str = "\n".join(f"  - {sc}" for sc in subclaims)
-    stance_block = label_cfg.stance_prompt_block()
-    stance_options = label_cfg.stance_options_str()
     prompt = f"""\
 You are a scientific fact extraction specialist.
 
@@ -143,13 +138,10 @@ Given a paper and a claim with subclaims, extract every atomic fact that address
 
 For each fact provide a JSON object with:
 - "text": factual statement (one sentence, self-contained)
-- "stance": one of {stance_options}
+- "stance": "SUPPORT" if it supports the claim, "REFUTE" if it contradicts, "NEUTRAL" if relevant but neither
 - "source_pmid": "{source_pmid}"
 - "relevant_subclaims": list of subclaim strings this fact addresses
 - "confidence": 0.0-1.0, how clearly the paper states this
-
-Stance definitions:
-{stance_block}
 
 Rules:
 - Base facts strictly on the provided text. Recognize equivalent terms, but do not hallucinate logical leaps not present in the paper.
@@ -184,19 +176,17 @@ def _parse_facts_response(response: str, source_pmid: str) -> list[Fact]:
         )
         return []
 
-    from pkevolve.verification.config import get_label_config
-    label_cfg = get_label_config()
-
     facts: list[Fact] = []
     for i, item in enumerate(data):
         if not isinstance(item, dict):
             continue
-        raw_stance = item.get("stance", label_cfg.default_stance)
-        stance_str = label_cfg.validate_stance(raw_stance)
+        stance_str = item.get("stance", "NEUTRAL").upper()
+        if stance_str not in ("SUPPORT", "REFUTE", "NEUTRAL"):
+            stance_str = "NEUTRAL"
         facts.append(Fact(
             id=f"fact_auto_{i}",
             text=item.get("text", ""),
-            stance=stance_str,
+            stance=Stance(stance_str),
             source_pmid=item.get("source_pmid", source_pmid),
             relevant_subclaims=item.get("relevant_subclaims", []),
             confidence=item.get("confidence", 0.5),
@@ -228,7 +218,7 @@ def synthesize_subclaim(
         return f"No facts found for subclaim: {subclaim}"
 
     facts_str = "\n".join(
-        f"  [{f.stance}] {f.text} (PMID:{f.source_pmid}, conf:{f.confidence:.2f})"
+        f"  [{f.stance.value}] {f.text} (PMID:{f.source_pmid}, conf:{f.confidence:.2f})"
         for f in facts
     )
     prompt = f"""\
@@ -276,7 +266,7 @@ def detect_conflicts(
         return []
 
     facts_str = "\n".join(
-        f"  [{f.id}] [{f.stance}] {f.text} (PMID:{f.source_pmid})"
+        f"  [{f.id}] [{f.stance.value}] {f.text} (PMID:{f.source_pmid})"
         for f in facts
     )
     prompt = f"""\
@@ -341,22 +331,18 @@ def identify_gaps(
     Returns:
         List of Gap objects with gap_type, description, and priority.
     """
-    from pkevolve.verification.config import get_label_config
-    label_cfg = get_label_config()
-
     facts_str = "\n".join(
-        f"  [{f.stance}] {f.text} (PMID:{f.source_pmid})"
+        f"  [{f.stance.value}] {f.text} (PMID:{f.source_pmid})"
         for f in facts
     ) or "  (no facts extracted yet)"
 
     subclaims_str = "\n".join(f"  - {sc}" for sc in subclaims)
 
-    # Count evidence stats per configured stance label
-    stance_counts = {}
-    for name in label_cfg.stance_names():
-        stance_counts[name] = sum(1 for f in facts if f.stance == name)
+    # Count basic evidence stats for context
+    n_support = sum(1 for f in facts if f.stance == Stance.SUPPORT)
+    n_refute = sum(1 for f in facts if f.stance == Stance.REFUTE)
+    n_neutral = sum(1 for f in facts if f.stance == Stance.NEUTRAL)
     unique_sources = len(set(f.source_pmid for f in facts))
-    counts_str = ", ".join(f"{name.lower()}: {cnt}" for name, cnt in stance_counts.items())
 
     prompt = f"""\
 You are an evidence gap analyst for scientific claim verification.
@@ -370,7 +356,7 @@ Claim: {claim}
 Subclaims:
 {subclaims_str}
 
-Extracted facts ({len(facts)} total — {counts_str}, from {unique_sources} unique sources):
+Extracted facts ({len(facts)} total — {n_support} support, {n_refute} refute, {n_neutral} neutral, from {unique_sources} unique sources):
 {facts_str}
 
 Gap types to choose from:

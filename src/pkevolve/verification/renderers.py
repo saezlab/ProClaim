@@ -20,37 +20,23 @@ from IPython.display import HTML, display
 # Shared HTML helpers
 # ---------------------------------------------------------------------------
 
-# Default color cycle for stance labels (first = positive, second = negative, rest = neutral shades)
-_DEFAULT_COLORS = ["#22c55e", "#ef4444", "#9ca3af", "#60a5fa", "#f59e0b", "#a78bfa"]
-
 
 def _stance_color(stance: str) -> str:
-    """Map an evidence stance to a display color.
-
-    Uses the configured label order: first label gets green, second gets red,
-    remaining get gray. Falls back to gray for unknown stances.
-    """
-    from pkevolve.verification.config import get_label_config
-    label_cfg = get_label_config()
-    names = label_cfg.stance_names()
-    for i, name in enumerate(names):
-        if stance.upper() == name.upper():
-            return _DEFAULT_COLORS[i] if i < len(_DEFAULT_COLORS) else "#9ca3af"
-    return "#9ca3af"
+    """Map an evidence stance to a display color."""
+    return {
+        "SUPPORT": "#22c55e",
+        "REFUTE": "#ef4444",
+        "NEUTRAL": "#9ca3af",
+    }.get(stance, "#9ca3af")
 
 
 def _stance_icon(stance: str) -> str:
-    """Map an evidence stance to an HTML icon entity.
-
-    First two configured labels get filled circles; rest get hollow circles.
-    """
-    from pkevolve.verification.config import get_label_config
-    label_cfg = get_label_config()
-    names = label_cfg.stance_names()
-    for i, name in enumerate(names):
-        if stance.upper() == name.upper():
-            return "&#9679;" if i < 2 else "&#9675;"
-    return "&#9675;"
+    """Map an evidence stance to an HTML icon entity."""
+    return {
+        "SUPPORT": "&#9679;",   # filled circle
+        "REFUTE": "&#9679;",    # filled circle
+        "NEUTRAL": "&#9675;",   # hollow circle
+    }.get(stance, "&#9675;")
 
 
 def _bar_html(
@@ -156,17 +142,12 @@ def render_facts(workspace: str) -> None:
     n_ref = sum(1 for f in facts if f.get("stance") == "REFUTE")
     n_neu = sum(1 for f in facts if f.get("stance") == "NEUTRAL")
 
-    from pkevolve.verification.config import get_label_config
-    _lc = get_label_config()
-    stance_spans = " &nbsp; ".join(
-        f"<span style='color:{_stance_color(name)}'>{_stance_icon(name)} {name}: "
-        f"{sum(1 for f in facts if f.get('stance', '').upper() == name.upper())}</span>"
-        for name in _lc.stance_names()
-    )
-
     html = (
         "<h3>Extracted Facts</h3>"
-        f"<p>Total: {len(facts)} &mdash; {stance_spans}</p>"
+        f"<p>Total: {len(facts)} &mdash; "
+        f"<span style='color:#22c55e'>&#9679; Support: {n_sup}</span> &nbsp; "
+        f"<span style='color:#ef4444'>&#9679; Refute: {n_ref}</span> &nbsp; "
+        f"<span style='color:#9ca3af'>&#9675; Neutral: {n_neu}</span></p>"
         "<table style='border-collapse:collapse;width:100%'>"
         "<tr style='background:#f1f5f9'>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Stance</th>"
@@ -202,7 +183,7 @@ def render_sufficiency(workspace: str) -> None:
     gaps = latest.get("gaps", [])
 
     # Status color
-    if label.lower() == "sufficient" and conf >= 0.80:
+    if label != "INSUFFICIENT" and conf >= 0.80:
         status_color = "#22c55e"
         status_text = "SUFFICIENT"
     else:
@@ -348,17 +329,12 @@ def render_facts_from_state(state) -> None:
     n_ref = sum(1 for f in facts if str(f.get("stance", "")).upper() == "REFUTE")
     n_neu = sum(1 for f in facts if str(f.get("stance", "")).upper() == "NEUTRAL")
 
-    from pkevolve.verification.config import get_label_config
-    _lc = get_label_config()
-    stance_spans = " &nbsp; ".join(
-        f"<span style='color:{_stance_color(name)}'>{_stance_icon(name)} {name}: "
-        f"{sum(1 for f in facts if str(f.get('stance', '')).upper() == name.upper())}</span>"
-        for name in _lc.stance_names()
-    )
-
     html = (
         "<h3>Extracted Facts</h3>"
-        f"<p>Total: {len(facts)} &mdash; {stance_spans}</p>"
+        f"<p>Total: {len(facts)} &mdash; "
+        f"<span style='color:#22c55e'>&#9679; Support: {n_sup}</span> &nbsp; "
+        f"<span style='color:#ef4444'>&#9679; Refute: {n_ref}</span> &nbsp; "
+        f"<span style='color:#9ca3af'>&#9675; Neutral: {n_neu}</span></p>"
         "<table style='border-collapse:collapse;width:100%'>"
         "<tr style='background:#f1f5f9'>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Stance</th>"
@@ -391,7 +367,7 @@ def render_sufficiency_from_state(state) -> None:
     conf = latest.get("confidence", 0)
     gaps = latest.get("gaps", [])
 
-    if label.lower() == "sufficient" and conf >= 0.80:
+    if label != "INSUFFICIENT" and conf >= 0.80:
         status_color = "#22c55e"
         status_text = "SUFFICIENT"
     else:
@@ -457,14 +433,11 @@ def render_verdict(workspace: str) -> None:
     key_ev = v.get("key_evidence", [])
     gaps = v.get("gaps_remaining", [])
 
-    # Build verdict color map dynamically from configured labels
-    from pkevolve.verification.config import get_label_config
-    _lc = get_label_config()
-    vcolors = {}
-    verdict_names = _lc.verdict_names()
-    verdict_color_cycle = ["#22c55e", "#ef4444", "#f59e0b", "#60a5fa", "#a78bfa"]
-    for i, name in enumerate(verdict_names):
-        vcolors[name] = verdict_color_cycle[i] if i < len(verdict_color_cycle) else "#9ca3af"
+    vcolors = {
+        "SUPPORT": "#22c55e",
+        "REFUTE": "#ef4444",
+        "INSUFFICIENT": "#f59e0b",
+    }
     vc = vcolors.get(verdict, "#9ca3af")
 
     ev_items = (

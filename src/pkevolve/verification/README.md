@@ -186,17 +186,17 @@ uv run python -m pkevolve.verification.evidence_programming \
 |---------|---------|-------------|
 | `llm.model` | — | Main LLM model identifier |
 | `llm.subagent_model` | (falls back to `model`) | Inner subagent model |
-| `llm.agent_base_url` | `<anthropic_compatible_endpoint>` | Anthropic-compatible endpoint |
+| `llm.agent_base_url` | `https://api.z.ai/api/anthropic` | Anthropic-compatible endpoint |
 | `llm.subagent_base_url` | `http://localhost:8000/v1` | OpenAI-compatible (vLLM) |
 | `max_iterations` | 8 | Search/extract loop limit |
 | `sufficiency_threshold` | 0.80 | MLP confidence threshold |
-| `api.openai_api_key` | env `OPENAI_API_KEY` | API key |
+| `api.glm_api_key` | env `GLM_API_KEY` | API key (priority: GLM > ZAI > OpenAI) |
 
 ## Environment Variables
 
 | Variable | Required | Purpose |
-|----------|----------|--------|
-| `OPENAI_API_KEY` | Yes | LLM API authentication |
+|----------|----------|---------|
+| `GLM_API_KEY` / `ZAI_API_KEY` | Yes (one of) | LLM API authentication |
 | `UNPAYWALL_EMAIL` | Optional | Full-text PDF retrieval via Unpaywall |
 | `ELSEVIER_API_KEY` | Optional | Full-text via INDRA/Elsevier |
 | `MLP_MODEL_DIR` | Optional | Override MLP classifier directory (default: `results/models/classifier_best/`) |
