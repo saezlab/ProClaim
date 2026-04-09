@@ -36,10 +36,22 @@ import litellm
 import requests
 
 from baselines.shared.cost_tracker import CostTracker
-from baselines.shared.label_utils import normalize_label
+from baselines.shared.label_utils import (
+    normalize_label,
+    validate_verdict,
+    verdict_defs_block,
+    verdict_names,
+    verdict_or_str,
+)
 from baselines.shared.verdict import BaselineResult
 
 logger = logging.getLogger(__name__)
+
+# ── Verdict labels (loaded from shared label_utils) ──────────────────
+
+_VERDICT_NAMES: list[str] = verdict_names()
+_VERDICT_OPTIONS = verdict_or_str()
+_VERDICT_DEFS = verdict_defs_block()
 
 
 # ── Tool definitions for native tool-use API ─────────────────────────
@@ -79,13 +91,8 @@ _TOOLS = [
                 "properties": {
                     "verdict": {
                         "type": "string",
-                        "enum": ["SUPPORT", "REFUTE", "UNCERTAIN"],
-                        "description": (
-                            "SUPPORT — evidence corroborates the claim; "
-                            "REFUTE — evidence contradicts the claim or no "
-                            "evidence substantiates it; "
-                            "UNCERTAIN — evidence is ambiguous or conflicting."
-                        ),
+                        "enum": _VERDICT_NAMES,
+                        "description": _VERDICT_DEFS,
                     },
                     "reasoning": {
                         "type": "string",
@@ -101,11 +108,14 @@ _TOOLS = [
     },
 ]
 
-_SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT = f"""\
 You are a scientific claim verification agent using the ReAct framework.
 
-Your task: determine whether a scientific claim is SUPPORTED, REFUTED, or \
-UNCERTAIN based on evidence you retrieve from the web.
+Your task: determine whether a scientific claim is {_VERDICT_OPTIONS} \
+based on evidence you retrieve from the web.
+
+Verdict definitions:
+{_VERDICT_DEFS}
 
 Available tools:
 - search_web(query): Search the web for scientific evidence. Use specific \
@@ -121,15 +131,15 @@ Strategy:
 
 Rules:
 - Do NOT guess — search for evidence before deciding.
-- If multiple searches yield no relevant evidence, call finish() with REFUTE \
-(no evidence substantiates the claim) or UNCERTAIN (insufficient evidence).
+- If multiple searches yield no relevant evidence, assess whether the claim \
+lacks supporting evidence and choose the appropriate verdict.
 - Cite specific findings from your searches in your reasoning.
 - You have a limited number of steps — be efficient with your queries."""
 
-_FORCE_FINISH_PROMPT = """\
+_FORCE_FINISH_PROMPT = f"""\
 You have used all available search steps. Based on all the evidence gathered \
 so far, you MUST now call the finish() tool with your final verdict \
-(SUPPORT, REFUTE, or UNCERTAIN) and reasoning."""
+({_VERDICT_OPTIONS}) and reasoning."""
 
 
 # ── Web search backends (shared with FIRE) ───────────────────────────
@@ -270,7 +280,7 @@ class ReActBaseline:
                     lf.write(f"  Q: {q}\n")
                 lf.write(f"\n=== reasoning ===\n{reasoning}\n")
 
-        predicted = normalize_label(verdict)
+        predicted = validate_verdict(verdict)
 
         return BaselineResult(
             claim_id=claim_id,
@@ -333,7 +343,13 @@ class ReActBaseline:
                 })
                 continue
 
-            # Process each tool call
+            # Process ALL tool calls first, collecting results, before
+            # appending anything to messages.  Anthropic requires every
+            # tool_use id to have a matching tool_result in the immediately
+            # following turn — inserting a user message in between breaks it.
+            tool_results: list[dict] = []
+            finish_call: dict | None = None
+
             for tc in tool_calls:
                 fn_name = tc["function"]["name"]
                 try:
@@ -342,31 +358,41 @@ class ReActBaseline:
                     fn_args = {}
 
                 if fn_name == "finish":
-                    verdict = fn_args.get("verdict", "UNCERTAIN")
-                    reasoning = fn_args.get("reasoning", "")
-                    return verdict, reasoning
+                    finish_call = fn_args
+                    # Still record a tool_result so the history stays valid
+                    # if we ever need to continue (e.g. invalid verdict).
+                    tool_results.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": json.dumps(fn_args),
+                    })
 
                 elif fn_name == "search_web":
                     query = fn_args.get("query", claim)
                     search_queries.append(query)
                     steps_used += 1
-
-                    # Execute search
                     result = self._search(query)
-
-                    # Add tool result to messages
-                    messages.append({
+                    tool_results.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
                         "content": result,
                     })
 
-                    # If we've hit max steps, force finish on next iteration
-                    if steps_used >= self.max_steps:
-                        messages.append({
-                            "role": "user",
-                            "content": _FORCE_FINISH_PROMPT,
-                        })
+            # Append all tool results in one block (keeps Anthropic happy)
+            messages.extend(tool_results)
+
+            # If the model called finish, return now
+            if finish_call is not None:
+                verdict = finish_call.get("verdict", "UNCERTAIN")
+                reasoning = finish_call.get("reasoning", "")
+                return verdict, reasoning
+
+            # If we've hit max steps, force finish on next iteration
+            if steps_used >= self.max_steps:
+                messages.append({
+                    "role": "user",
+                    "content": _FORCE_FINISH_PROMPT,
+                })
 
         # If we exhaust iterations without a finish call, force one
         return self._force_finish(messages, usage)
@@ -485,7 +511,7 @@ class ReActBaseline:
 
         # Try keyword matching
         upper = text.upper()
-        for label in ("SUPPORT", "REFUTE", "UNCERTAIN"):
+        for label in _VERDICT_NAMES:
             if label in upper:
                 return label, text[:500]
 

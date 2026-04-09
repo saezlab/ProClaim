@@ -26,10 +26,15 @@ from pathlib import Path
 import litellm
 
 from baselines.shared.cost_tracker import CostTracker
-from baselines.shared.label_utils import normalize_label
+from baselines.shared.label_utils import normalize_label, verdict_names, verdict_options_str
 from baselines.shared.verdict import BaselineResult
 
 logger = logging.getLogger(__name__)
+
+# ── Verdict label helpers (used in playbook and question template) ───
+
+_VERDICT_LIST = ", ".join(verdict_names())            # "SUPPORT, REFUTE, UNCERTAIN"
+_VERDICT_OPTIONS = verdict_options_str()               # '"SUPPORT" | "REFUTE" | "UNCERTAIN"'
 
 # ── ACE Generator prompt (from the ACE framework) ───────────────────
 
@@ -75,9 +80,9 @@ Your output should be a json object, which contains the following fields:
 """
 
 # Default playbook for scientific claim verification
-_CLAIM_VERIFICATION_PLAYBOOK = """\
+_CLAIM_VERIFICATION_PLAYBOOK = f"""\
 ## STRATEGIES & INSIGHTS
-[str-00001] helpful=0 harmful=0 :: Classify the scientific claim as SUPPORT, REFUTE, or UNCERTAIN based on your knowledge.
+[str-00001] helpful=0 harmful=0 :: Classify the scientific claim as {_VERDICT_LIST} based on your knowledge.
 [str-00002] helpful=0 harmful=0 :: SUPPORT means the claim is well-supported by established scientific evidence.
 [str-00003] helpful=0 harmful=0 :: REFUTE means the claim contradicts established scientific evidence or is unsupported.
 [str-00004] helpful=0 harmful=0 :: UNCERTAIN means the evidence is ambiguous, incomplete, or conflicting.
@@ -98,9 +103,9 @@ _CLAIM_VERIFICATION_PLAYBOOK = """\
 
 _CLAIM_QUESTION_TEMPLATE = (
     "Scientific Claim Verification Task:\n\n"
-    "Classify the following scientific claim as one of: SUPPORT, REFUTE, or UNCERTAIN.\n\n"
+    f"Classify the following scientific claim as one of: {_VERDICT_LIST}.\n\n"
     "Claim: {claim}\n\n"
-    "Your final_answer MUST be exactly one of: SUPPORT, REFUTE, or UNCERTAIN."
+    f"Your final_answer MUST be exactly one of: {_VERDICT_LIST}."
 )
 
 

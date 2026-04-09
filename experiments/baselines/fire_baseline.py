@@ -38,20 +38,21 @@ import litellm
 import requests
 
 from baselines.shared.cost_tracker import CostTracker
-from baselines.shared.label_utils import normalize_label
+from baselines.shared.label_utils import (
+    normalize_label,
+    validate_verdict,
+    verdict_defs_block,
+    verdict_names,
+    verdict_or_str,
+)
 from baselines.shared.verdict import BaselineResult
-from pkevolve.verification.config import LabelConfig
 
 logger = logging.getLogger(__name__)
 
-# ── Verdict labels (loaded from LabelConfig defaults) ────────────────
+# ── Verdict labels (loaded from shared label_utils) ──────────────────
 
-_LABEL_CFG = LabelConfig()
-_VERDICT_NAMES: list[str] = _LABEL_CFG.verdict_names()       # ["SUPPORT", "REFUTE", "UNCERTAIN"]
-_VERDICT_OPTIONS = " or ".join(f'"{n.capitalize()}"' for n in _VERDICT_NAMES)
-_VERDICT_DEFS = "\n".join(
-    f'   - "{name.capitalize()}" — {desc}' for name, desc in _LABEL_CFG.verdict_labels.items()
-)
+_VERDICT_OPTIONS = verdict_or_str()
+_VERDICT_DEFS = verdict_defs_block()
 
 # ── FIRE prompts (from Xie et al.) ──────────────────────────────────
 
@@ -282,7 +283,7 @@ class FIREBaseline:
 
         # Map FIRE's answer → canonical labels
         if answer is not None:
-            predicted = _LABEL_CFG.validate_verdict(answer)
+            predicted = validate_verdict(answer)
         else:
             predicted = "UNCERTAIN"
 
@@ -399,7 +400,7 @@ class FIREBaseline:
             parsed = _extract_json(text)
             if parsed and "final_answer" in parsed:
                 fa = parsed["final_answer"]
-                if _LABEL_CFG.validate_verdict(fa) in _VERDICT_NAMES:
+                if validate_verdict(fa) in verdict_names():
                     return (fa, text)
         return (None, "Failed to extract final answer from FIRE loop")
 

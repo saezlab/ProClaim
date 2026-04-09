@@ -21,6 +21,9 @@ uv run python experiments/run_baselines_datasets.py \
     --config experiments/configs/llm_only_config.yaml
 
 uv run python experiments/run_baselines_datasets.py \
+    --config experiments/configs/s2_retrieval_config.yaml
+
+uv run python experiments/run_baselines_datasets.py \
     --config experiments/configs/open_scholar_config.yaml
 
 uv run python experiments/run_baselines_datasets.py \
@@ -40,6 +43,7 @@ YAML config files for `run_baselines_datasets.py`. Load with `--config`; any CLI
 |------|----------|-------------|
 | `random_baseline_config.yaml` | `random` | `signor` + `connectomedb`, 10 repeats, seed=100 |
 | `llm_only_config.yaml` | `llm_only` | `anthropic/claude-sonnet-4-6`, 3 repeats |
+| `s2_retrieval_config.yaml` | `s2_retrieval` | `anthropic/claude-sonnet-4-6`, top_k=5, 1 repeat |
 | `open_scholar_config.yaml` | `open_scholar` | `claude-sonnet-4-6`, S2 adaptive retrieval on (`os_retrieval: true`), top_n=10, 1 repeat |
 | `fire_config.yaml` | `fire` | `openai:gpt-4o-mini`, max_steps=5, 1 repeat |
 | `ace_config.yaml` | `ace` | `gpt-4o-mini` (OpenAI), eval_only mode, 1 repeat |
@@ -55,10 +59,23 @@ Installable baseline classes. All baselines share the same infrastructure from `
 |--------|-------|-------------|
 | `random_baseline.py` | `RandomBaseline` | Chance floor — uniform draw from {SUPPORT, REFUTE, NEI} |
 | `llm_only.py` | `LLMOnly` | Parametric knowledge ceiling — single LLM call, no retrieval |
+| `s2_retrieval.py` | `S2Retrieval` | Fixed-k S2 RAG — searches Semantic Scholar with the raw claim, retrieves top-k abstracts, and classifies with a single LLM call. No iteration or feedback. The "paste search results into an LLM" baseline. |
 | `open_scholar_baseline.py` | `OpenScholarBaseline` | RAG baseline — routes each claim through the [OpenScholar](../../OpenScholar) pipeline (Claude Sonnet 4.6 by default). When the dataset CSV provides an `evidence` snippet (e.g. SIGNOR, ConnectomeDB), it is forwarded as a retrieved passage alongside any live S2-retrieved passages. With `--os-retrieval`, OpenScholar runs its full feedback loop (keyword extraction → S2 search → re-rank → answer edit). Outputs `claim_verdict` JSON (SUPPORT / REFUTE / UNCERTAIN → normalised to SUPPORT / REFUTE / NEI). Results saved as `BaselineResult` JSONL, identical in schema to `llm_only`. |
 | `fire_baseline.py` | `FIREBaseline` | Iterative retrieval baseline — [FIRE](../../fire) dynamically decides whether to search the web or finalise a verdict at each step, integrating reasoning and retrieval. Binary output (True/False) mapped to SUPPORT/REFUTE; failures → UNCERTAIN. Runs as subprocess in FIRE's own `.venv`. |
 | `ace_baseline.py` | `ACEBaseline` | Agentic context engineering baseline — [ACE](../../ace) Generator agent classifies claims using a self-improving playbook. By default runs in eval_only mode with a built-in claim-verification playbook (no training). Runs as subprocess in ACE's own `.venv`. |
 | `react_baseline.py` | `ReActBaseline` | Unconstrained agentic reasoning baseline — ReAct (Yao et al., ICLR 2023) Thought → Action → Observation loop with web search tools. The agent decides when to stop with no external sufficiency signal. Uses native tool-use API. The "why not just use a ReAct agent?" baseline. |
+
+### S2 Retrieval-specific CLI flags (for `run_baselines_datasets.py`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--s2-model` | `anthropic/claude-sonnet-4-6` | LiteLLM model string for the verdict LLM call |
+| `--s2-top-k` | `5` | Number of Semantic Scholar abstracts to retrieve per claim |
+
+### Prerequisites for `S2Retrieval`
+
+- An LLM API key recognised by litellm (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`).
+- `S2_API_KEY` defaults to `""` (anonymous, rate-limited). Set it for higher throughput.
 
 ### OpenScholar-specific CLI flags (for `run_baselines_datasets.py`)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import random
 
-from baselines.shared.label_utils import normalize_label
+from baselines.shared.label_utils import normalize_label, verdict_names
 from baselines.shared.verdict import BaselineResult
 
 
@@ -22,7 +22,7 @@ class RandomBaseline:
         self._rng = random.Random(seed)
 
     def verify(self, claim_id: str, claim: str, gold_label: str) -> BaselineResult:
-        label = self._rng.choice(["SUPPORT", "REFUTE", "UNCERTAIN"])
+        label = self._rng.choice(verdict_names())
         return BaselineResult(
             claim_id=claim_id,
             claim=claim,
