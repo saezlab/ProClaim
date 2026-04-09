@@ -8,7 +8,6 @@ Scripts and shared infrastructure for running and evaluating baselines against S
 |--------|---------|
 | `run_baselines_datasets.py` | Run a baseline on pre-processed CSV datasets (SIGNOR, ConnectomeDB, SciFact-Open, CIViC-Fact); prints a summary table of Macro F1 / FPR / FNR / Cost (mean ± std over repeats). Accepts `--config` to load baseline parameters from a YAML file. |
 | `run_signor_eval.py` | End-to-end SIGNOR evaluation using the full evidence-programming pipeline |
-| `qwen_test.py` | Ad-hoc test of Qwen-3 fact extraction on paper text |
 | `signor_eval_config.yaml` | Config file consumed by `run_signor_eval.py` (model, mode, iteration budget) |
 
 ### Quick start
@@ -23,6 +22,9 @@ uv run python experiments/run_baselines_datasets.py \
 
 uv run python experiments/run_baselines_datasets.py \
     --config experiments/configs/open_scholar_config.yaml
+
+uv run python experiments/run_baselines_datasets.py \
+    --config experiments/configs/react_config.yaml
 
 # CLI flags override config values, e.g. smoke-test with 1 claim:
 uv run python experiments/run_baselines_datasets.py \
@@ -41,6 +43,7 @@ YAML config files for `run_baselines_datasets.py`. Load with `--config`; any CLI
 | `open_scholar_config.yaml` | `open_scholar` | `claude-sonnet-4-6`, S2 adaptive retrieval on (`os_retrieval: true`), top_n=10, 1 repeat |
 | `fire_config.yaml` | `fire` | `openai:gpt-4o-mini`, max_steps=5, 1 repeat |
 | `ace_config.yaml` | `ace` | `gpt-4o-mini` (OpenAI), eval_only mode, 1 repeat |
+| `react_config.yaml` | `react` | `gpt-4o-mini` (OpenAI), max_steps=10, 1 repeat |
 
 YAML keys mirror `argparse` `dest` names (e.g. `os_model`, `os_retrieval`, `datasets_dir`). All keys are optional — omitted keys fall back to the CLI defaults.
 
@@ -55,6 +58,7 @@ Installable baseline classes. All baselines share the same infrastructure from `
 | `open_scholar_baseline.py` | `OpenScholarBaseline` | RAG baseline — routes each claim through the [OpenScholar](../../OpenScholar) pipeline (Claude Sonnet 4.6 by default). When the dataset CSV provides an `evidence` snippet (e.g. SIGNOR, ConnectomeDB), it is forwarded as a retrieved passage alongside any live S2-retrieved passages. With `--os-retrieval`, OpenScholar runs its full feedback loop (keyword extraction → S2 search → re-rank → answer edit). Outputs `claim_verdict` JSON (SUPPORT / REFUTE / UNCERTAIN → normalised to SUPPORT / REFUTE / NEI). Results saved as `BaselineResult` JSONL, identical in schema to `llm_only`. |
 | `fire_baseline.py` | `FIREBaseline` | Iterative retrieval baseline — [FIRE](../../fire) dynamically decides whether to search the web or finalise a verdict at each step, integrating reasoning and retrieval. Binary output (True/False) mapped to SUPPORT/REFUTE; failures → UNCERTAIN. Runs as subprocess in FIRE's own `.venv`. |
 | `ace_baseline.py` | `ACEBaseline` | Agentic context engineering baseline — [ACE](../../ace) Generator agent classifies claims using a self-improving playbook. By default runs in eval_only mode with a built-in claim-verification playbook (no training). Runs as subprocess in ACE's own `.venv`. |
+| `react_baseline.py` | `ReActBaseline` | Unconstrained agentic reasoning baseline — ReAct (Yao et al., ICLR 2023) Thought → Action → Observation loop with web search tools. The agent decides when to stop with no external sufficiency signal. Uses native tool-use API. The "why not just use a ReAct agent?" baseline. |
 
 ### OpenScholar-specific CLI flags (for `run_baselines_datasets.py`)
 
@@ -98,6 +102,18 @@ Installable baseline classes. All baselines share the same infrastructure from `
 
 - ACE must be cloned at `<workspace>/ace` with `uv sync` already run.
 - `OPENAI_API_KEY` (or the relevant provider key) must be set.
+
+### ReAct-specific CLI flags (for `run_baselines_datasets.py`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--react-model` | `openai/gpt-4o-mini` | LiteLLM model string (e.g. `openai/gpt-4o`, `anthropic/claude-sonnet-4-20250514`) |
+| `--react-max-steps` | `10` | Maximum number of search steps |
+
+### Prerequisites for `ReActBaseline`
+
+- An LLM API key recognised by litellm (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
+- `SERPER_API_KEY` (optional; falls back to DuckDuckGo via `ddgs`).
 
 ### shared/
 

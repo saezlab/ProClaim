@@ -1,17 +1,19 @@
 # ──────────────────────────────────────────────────────────────────────
-# ACE Baseline Config
+# ReAct Baseline Config
 #
-# Agentic Context Engineering — uses ACE's Generator agent with a
-# claim verification playbook to classify claims.  Runs in eval_only
-# mode (no training, no reflection/curation loop).
+# Unconstrained agentic reasoning with tool use (Yao et al., ICLR 2023).
+# The agent uses a Thought → Action → Observation loop with web search
+# and decides on its own when to stop — no external sufficiency signal.
+#
+# This is the "why not just use a ReAct agent?" baseline.
 #
 # Usage:
 #   uv run python experiments/run_baselines_datasets.py \
-#       --config experiments/configs/ace_config.yaml
+#       --config experiments/configs/react_config.yaml
 #
 # Prerequisites:
-#   - ACE cloned at <workspace>/ace (reference only; runs in-process via litellm)
-#   - An LLM API key recognised by litellm (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY)
+#   - An LLM API key recognised by litellm (e.g. OPENAI_API_KEY)
+#   - SERPER_API_KEY (optional; falls back to DuckDuckGo)
 #
 # Any CLI flag overrides the value set here.
 # ──────────────────────────────────────────────────────────────────────
@@ -23,24 +25,23 @@ datasets:
   - connectomedb
 
 # ── Baseline ──────────────────────────────────────────────────────────
-baseline: ace
+baseline: react
 
-# ── ACE model ─────────────────────────────────────────────────────────
-# LiteLLM model string: "<provider>/<model_id>"
+# ── ReAct model ───────────────────────────────────────────────────────
+# Format: litellm model string "<provider>/<model_id>"
 # Examples:
 #   openai/gpt-4o-mini
+#   openai/gpt-4o
 #   anthropic/claude-sonnet-4-20250514
-ace_model: anthropic/claude-sonnet-4-6
+react_model: anthropic/claude-sonnet-4-6
 
-# Max generation tokens
-ace_max_tokens: 4096
-
-# Optional: path to a pre-trained playbook .txt file
-# ace_playbook: /path/to/best_playbook.txt
+# Maximum number of search steps (tune so median token usage is
+# comparable to Evidence Programming; FIRE default is 5)
+react_max_steps: 10
 
 # ── Reproducibility ───────────────────────────────────────────────────
 seed: 100
-repeats: 1       # ACE Generator is deterministic (temperature=0.0)
+repeats: 1       # temperature=0 → deterministic
 
 # ── Sampling ──────────────────────────────────────────────────────────
 limit: 0         # 0 = all claims

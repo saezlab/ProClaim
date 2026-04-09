@@ -25,6 +25,7 @@ from pathlib import Path
 
 import litellm
 
+from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.label_utils import normalize_label
 from baselines.shared.verdict import BaselineResult
 
@@ -170,6 +171,14 @@ class ACEBaseline:
         else:
             self._playbook = _CLAIM_VERIFICATION_PLAYBOOK
 
+        # Cost estimation — reuse CostTracker pricing table
+        model_key = model.split("/", 1)[-1] if "/" in model else model
+        in_price, out_price = CostTracker.DEFAULT_PRICING.get(
+            model_key, CostTracker.FALLBACK_PRICING,
+        )
+        self._in_price = in_price    # USD per 1M input tokens
+        self._out_price = out_price  # USD per 1M output tokens
+
     # ── Public interface ─────────────────────────────────────────────
 
     def verify(
@@ -243,7 +252,10 @@ class ACEBaseline:
             reasoning=gen_response[:1000] if gen_response else "",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost_usd=0.0,
+            cost_usd=(
+                input_tokens / 1_000_000 * self._in_price
+                + output_tokens / 1_000_000 * self._out_price
+            ),
             latency_seconds=latency,
             baseline_name=self.name,
             model=self.model,

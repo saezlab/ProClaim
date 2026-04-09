@@ -33,7 +33,7 @@ baseline: fire
 #   openai/gpt-4o-mini
 #   openai/gpt-4o
 #   anthropic/claude-sonnet-4-20250514
-fire_model: "openai/gpt-4o-mini"
+fire_model: anthropic/claude-sonnet-4-6
 
 # Maximum iterative search steps (FIRE default is 5)
 fire_max_steps: 5

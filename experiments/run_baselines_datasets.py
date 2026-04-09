@@ -117,8 +117,14 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             max_tokens=getattr(args, "ace_max_tokens", 4096),
             playbook=playbook if playbook else None,
         )
+    elif name == "react":
+        from baselines.react_baseline import ReActBaseline
+        return ReActBaseline(
+            model=getattr(args, "react_model", "openai/gpt-4o-mini"),
+            max_steps=getattr(args, "react_max_steps", 10),
+        )
     else:
-        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, open_scholar, fire, ace")
+        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, open_scholar, fire, ace, react")
 
 
 def _mean_std(values: list[float]) -> dict[str, float]:
@@ -169,7 +175,7 @@ def parse_args() -> argparse.Namespace:
         default=["signor", "connectomedb"],
         help="Dataset names (without .csv extension).",
     )
-    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "open_scholar", "fire", "ace"], help="Baseline to run.")
+    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "open_scholar", "fire", "ace", "react"], help="Baseline to run.")
     p.add_argument("--seed", type=int, default=100, help="Base random seed. Each repeat i uses seed+i.")
     p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats. Each repeat i uses seed+i.")
     p.add_argument("--model", default="zai/glm-4-plus", help="LiteLLM model string for llm_only, e.g. 'zai/glm-4-plus' or 'openai/gpt-4o'.")
@@ -189,6 +195,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ace-model", dest="ace_model", default="openai/gpt-4o-mini", help="LiteLLM model string for ACE Generator (e.g. openai/gpt-4o-mini, anthropic/claude-sonnet-4-20250514).")
     p.add_argument("--ace-max-tokens", dest="ace_max_tokens", type=int, default=4096, help="Max generation tokens for ACE.")
     p.add_argument("--ace-playbook", dest="ace_playbook", default=None, help="Path to a pre-trained ACE playbook .txt file (optional; uses built-in claim verification playbook if omitted).")
+    # ReAct-specific arguments
+    p.add_argument("--react-model", dest="react_model", default="openai/gpt-4o-mini", help="LiteLLM model string for ReAct (e.g. openai/gpt-4o-mini, anthropic/claude-sonnet-4-20250514).")
+    p.add_argument("--react-max-steps", dest="react_max_steps", type=int, default=10, help="Maximum number of search steps for ReAct.")
     p.add_argument("--limit", type=int, default=0, help="Limit number of claims per dataset (0 = all).")
     p.add_argument(
         "--output-dir",
@@ -227,6 +236,9 @@ def main() -> None:
         baseline_subdir = f"{args.baseline}/{model_slug}"
     elif args.baseline == "ace":
         model_slug = args.ace_model.replace("/", "--")
+        baseline_subdir = f"{args.baseline}/{model_slug}"
+    elif args.baseline == "react":
+        model_slug = args.react_model.replace("/", "--")
         baseline_subdir = f"{args.baseline}/{model_slug}"
 
     logger.info("Baseline: %s  repeats=%d  base_seed=%d", args.baseline, args.repeats, args.seed)

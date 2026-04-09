@@ -8,7 +8,7 @@ or separate venv needed.
 FIRE iteratively decides whether to (a) issue a web search query or (b) render
 a final verdict, based on accumulated search results.
 
-FIRE outputs use the same canonical taxonomy as the Evidence Programming agent:
+FIRE outputs use the same canonical taxonomy:
   - Support   → SUPPORT
   - Refute    → REFUTE
   - Uncertain → UNCERTAIN
@@ -37,16 +37,27 @@ from pathlib import Path
 import litellm
 import requests
 
+from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.label_utils import normalize_label
 from baselines.shared.verdict import BaselineResult
+from pkevolve.verification.config import LabelConfig
 
 logger = logging.getLogger(__name__)
+
+# ── Verdict labels (loaded from LabelConfig defaults) ────────────────
+
+_LABEL_CFG = LabelConfig()
+_VERDICT_NAMES: list[str] = _LABEL_CFG.verdict_names()       # ["SUPPORT", "REFUTE", "UNCERTAIN"]
+_VERDICT_OPTIONS = " or ".join(f'"{n.capitalize()}"' for n in _VERDICT_NAMES)
+_VERDICT_DEFS = "\n".join(
+    f'   - "{name.capitalize()}" — {desc}' for name, desc in _LABEL_CFG.verdict_labels.items()
+)
 
 # ── FIRE prompts (from Xie et al.) ──────────────────────────────────
 
 _SYS_PROMPT = "You are a fact-checking agent responsible for verifying the accuracy of claims."
 
-_FINAL_ANSWER_OR_NEXT_SEARCH = """\
+_FINAL_ANSWER_OR_NEXT_SEARCH = f"""\
 Instructions:
 1. You are provided with a STATEMENT and relevant KNOWLEDGE points.
 2. Based on the KNOWLEDGE, assess the factual accuracy of the STATEMENT.
@@ -54,47 +65,43 @@ Instructions:
 Include a summary of the key points from the KNOWLEDGE as part of your reasoning.
 4. If the KNOWLEDGE allows you to confidently make a decision, output the final \
 answer as a JSON object in the following format:
-   {{
-     "final_answer": "Support" or "Refute" or "Uncertain"
-   }}
-   - "Support" if the retrieved evidence contains statements that directly corroborate the claim.
-   - "Refute" if the retrieved evidence contains statements that directly contradict the claim, or a thorough search yields no evidence supporting it.
-   - "Uncertain" if the evidence is ambiguous, incomplete, or internally conflicting.
+   {{{{
+     "final_answer": {_VERDICT_OPTIONS}
+   }}}}
+{_VERDICT_DEFS}
 5. If the KNOWLEDGE is insufficient to make a judgment, issue ONE Google Search \
 query that could provide additional evidence. Output the search query in JSON \
 format, as follows:
-   {{
+   {{{{
      "search_query": "Your Google search query here"
-   }}
+   }}}}
 6. The query should aim to obtain new information not already present in the \
 KNOWLEDGE, specifically helpful for verifying the STATEMENT's accuracy.
 
 KNOWLEDGE:
-{knowledge}
+{{knowledge}}
 
 STATEMENT:
-{statement}"""
+{{statement}}"""
 
-_MUST_HAVE_FINAL_ANSWER = """\
+_MUST_HAVE_FINAL_ANSWER = f"""\
 Instructions:
 1. You are provided with a STATEMENT and relevant KNOWLEDGE points.
 2. Based on the KNOWLEDGE, assess the factual accuracy of the STATEMENT.
 3. Before presenting your final answer, think step-by-step and show your reasoning. \
 Include a summary of the key points from the KNOWLEDGE as part of your reasoning.
-4. Your final answer should be "Support", "Refute", or "Uncertain".
-   - "Support" if the retrieved evidence contains statements that directly corroborate the claim.
-   - "Refute" if the retrieved evidence contains statements that directly contradict the claim, or a thorough search yields no evidence supporting it.
-   - "Uncertain" if the evidence is ambiguous, incomplete, or internally conflicting.
+4. Your final answer should be {_VERDICT_OPTIONS}.
+{_VERDICT_DEFS}
 5. Format your final answer as a JSON object in the following structure:
-   {{
-     "final_answer": "Support" or "Refute" or "Uncertain"
-   }}
+   {{{{
+     "final_answer": {_VERDICT_OPTIONS}
+   }}}}
 
 KNOWLEDGE:
-{knowledge}
+{{knowledge}}
 
 STATEMENT:
-{statement}"""
+{{statement}}"""
 
 
 # ── Web search backends ──────────────────────────────────────────────
@@ -231,6 +238,14 @@ class FIREBaseline:
         self._search_backend = "serper" if self._serper_key else "google"
         logger.info("FIRE search backend: %s", self._search_backend)
 
+        # Cost estimation — reuse CostTracker pricing table
+        model_key = model.split("/", 1)[-1] if "/" in model else model
+        in_price, out_price = CostTracker.DEFAULT_PRICING.get(
+            model_key, CostTracker.FALLBACK_PRICING,
+        )
+        self._in_price = in_price    # USD per 1M input tokens
+        self._out_price = out_price  # USD per 1M output tokens
+
     # ── Public interface ─────────────────────────────────────────────
 
     def verify(
@@ -267,13 +282,7 @@ class FIREBaseline:
 
         # Map FIRE's answer → canonical labels
         if answer is not None:
-            ans = str(answer).strip().lower()
-            if ans == "support":
-                predicted = "SUPPORT"
-            elif ans == "refute":
-                predicted = "REFUTE"
-            else:
-                predicted = "UNCERTAIN"
+            predicted = _LABEL_CFG.validate_verdict(answer)
         else:
             predicted = "UNCERTAIN"
 
@@ -289,7 +298,10 @@ class FIREBaseline:
             evidence=evidence,
             input_tokens=total_usage["input_tokens"],
             output_tokens=total_usage["output_tokens"],
-            cost_usd=0.0,
+            cost_usd=(
+                total_usage["input_tokens"] / 1_000_000 * self._in_price
+                + total_usage["output_tokens"] / 1_000_000 * self._out_price
+            ),
             latency_seconds=latency,
             baseline_name=self.name,
             model=self.model,
@@ -387,7 +399,7 @@ class FIREBaseline:
             parsed = _extract_json(text)
             if parsed and "final_answer" in parsed:
                 fa = parsed["final_answer"]
-                if fa in ("Support", "Refute", "Uncertain"):
+                if _LABEL_CFG.validate_verdict(fa) in _VERDICT_NAMES:
                     return (fa, text)
         return (None, "Failed to extract final answer from FIRE loop")
 
