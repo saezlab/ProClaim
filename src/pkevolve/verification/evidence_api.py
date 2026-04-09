@@ -105,6 +105,8 @@ def schema_docs() -> str:
         SufficiencyResult as _SR,
         VerificationVerdict as _VV,
     )
+    from pkevolve.verification.config import get_label_config
+    _label_cfg = get_label_config()
 
     def _fields(model):
         from pydantic_core import PydanticUndefined as _PU
@@ -146,7 +148,7 @@ def schema_docs() -> str:
         f"{_fields(_VV)}\n\n"
         "### add_facts_from_dicts — expected dict keys\n"
         "  text (or aliases: statement, fact_text, evidence, description)\n"
-        "  stance: \"SUPPORT\" | \"REFUTE\" | \"NEUTRAL\"\n"
+        f"  stance: {_label_cfg.stance_options_str()}\n"
         "  source_pmid (or alias: pmid)  — MUST be a PMID in state.papers\n"
         "  relevant_subclaims: list of subclaim strings  (defaults to all subclaims)\n"
         "  subclaim_index: int  (resolved to the subclaim string at that index)\n"
@@ -722,28 +724,34 @@ def search_semantic_scholar_recommendations(
         List of added paper IDs.
     """
     from pkevolve.search.semantic_scholar import S2Client
-    from pkevolve.verification.data_models import Stance
+    from pkevolve.verification.config import get_label_config as _glc_s2
+    _lc_s2 = _glc_s2()
+    _stance_names = _lc_s2.stance_names()
+    # First configured stance is the "positive" stance (default: SUPPORT)
+    _positive_stance = _stance_names[0] if _stance_names else "SUPPORT"
+    # Second configured stance is the "negative" stance (default: REFUTE)
+    _negative_stance = _stance_names[1] if len(_stance_names) > 1 else "REFUTE"
 
     if seed_pmids is not None:
         positive_pmids = list(seed_pmids)
         negative_pmids: list[str] = []
     else:
-        # Auto-derive: positive = papers with ≥1 SUPPORT fact
+        # Auto-derive: positive = papers with ≥1 positive-stance fact
         positive_pmids = [
             pmid for pmid in state.papers
             if any(
-                f.source_pmid == pmid and f.stance == Stance.SUPPORT
+                f.source_pmid == pmid and f.stance == _positive_stance
                 for f in state.facts
             )
         ]
-        # Negative = papers whose facts are exclusively REFUTE
+        # Negative = papers whose facts are exclusively negative-stance
         positive_set = set(positive_pmids)
         negative_pmids = [
             pmid for pmid in state.papers
             if pmid not in positive_set
             and state.facts  # only when there are facts at all
             and all(
-                f.stance == Stance.REFUTE
+                f.stance == _negative_stance
                 for f in state.facts
                 if f.source_pmid == pmid
             )
@@ -1029,14 +1037,15 @@ def add_facts_from_dicts(
             continue
         existing_keys.add(dedup_key)
 
-        stance_str = (norm.get("stance") or "NEUTRAL").upper()
-        if stance_str not in ("SUPPORT", "REFUTE", "NEUTRAL"):
-            stance_str = "NEUTRAL"
+        from pkevolve.verification.config import get_label_config as _glc
+        _lc = _glc()
+        raw_stance = norm.get("stance") or _lc.default_stance
+        stance_str = _lc.validate_stance(raw_stance)
 
         fact = Fact(
             id=f"fact_{len(state.facts) + added}",
             text=text,
-            stance=Stance(stance_str),
+            stance=stance_str,
             source_pmid=source_pmid,
             relevant_subclaims=norm.get("relevant_subclaims", []),
             confidence=norm.get("confidence", 0.5),
@@ -1061,10 +1070,12 @@ def add_facts_from_dicts(
 
 def _recompute_coverage(state: EvidenceState) -> None:
     """Recompute per-subclaim coverage scores."""
+    from pkevolve.verification.config import get_label_config as _glc_cov
+    _default_stance = _glc_cov().default_stance
     for sc in state.subclaims:
         relevant = [
             f for f in state.facts
-            if sc in f.relevant_subclaims and f.stance != Stance.NEUTRAL
+            if sc in f.relevant_subclaims and f.stance != _default_stance
         ]
         state.coverage[sc] = min(1.0, len(relevant) / 3.0)
 
@@ -1158,7 +1169,7 @@ def _extract_and_add_facts_single(
     facts_dicts = [
         {
             "text": f.text,
-            "stance": f.stance.value,
+            "stance": f.stance,
             "source_pmid": f.source_pmid,
             "relevant_subclaims": f.relevant_subclaims,
             "confidence": f.confidence,
@@ -1592,13 +1603,17 @@ def populate_paper_features_parallel(
 
 def get_evidence_summary(state: EvidenceState) -> str:
     """Get a human-readable summary of the current evidence state."""
+    from pkevolve.verification.config import get_label_config as _glc2
+    _lc2 = _glc2()
+    stance_counts = ", ".join(
+        f"{name.lower()}: {sum(1 for f in state.facts if f.stance == name)}"
+        for name in _lc2.stance_names()
+    )
     lines = [
         f"Claim: {state.claim}",
         f"Iteration: {state.iteration}",
         f"Papers: {len(state.papers)}",
-        f"Facts: {len(state.facts)} ("
-        f"support: {sum(1 for f in state.facts if f.stance == Stance.SUPPORT)}, "
-        f"refute: {sum(1 for f in state.facts if f.stance == Stance.REFUTE)})",
+        f"Facts: {len(state.facts)} ({stance_counts})",
         f"Conflicts: {len(state.conflicts)}",
         f"Token estimate: ~{state.token_estimate}",
         "",
@@ -1912,7 +1927,10 @@ def filter_papers_by_stance(
         filter_papers_by_stance(state, keep_stances=["SUPPORT", "REFUTE", "NEUTRAL"])
     """
     if keep_stances is None:
-        keep_stances = ["SUPPORT", "REFUTE"]
+        from pkevolve.verification.config import get_label_config as _glc3
+        _lc3 = _glc3()
+        # Default: keep all stances except the default_stance (typically NEUTRAL)
+        keep_stances = [s for s in _lc3.stance_names() if s != _lc3.default_stance]
 
     keep_stances_set = set(keep_stances)
 
@@ -1933,7 +1951,7 @@ def filter_papers_by_stance(
 
         # Check if paper has at least one fact with a stance in keep_stances
         has_relevant_fact = any(
-            f.stance.value in keep_stances_set for f in paper_facts
+            f.stance.upper() in keep_stances_set for f in paper_facts
         )
 
         if has_relevant_fact:
@@ -2129,6 +2147,21 @@ def setup_kernel(
 
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
     llm = make_llm(base_url=base_url, api_key=api_key, model=model, temperature=temperature, extra_body=extra_body)
+
+    # Initialize label config from environment (JSON-encoded, set by build_sdk_env)
+    label_json = os.environ.get("LABEL_CONFIG_JSON")
+    if label_json:
+        import json as _json
+        try:
+            from pkevolve.verification.config import LabelConfig, set_label_config
+            label_data = _json.loads(label_json)
+            set_label_config(LabelConfig(**label_data))
+        except Exception as exc:
+            logger.warning("Failed to parse LABEL_CONFIG_JSON: %s", exc)
+    else:
+        # Ensure default label config is available
+        from pkevolve.verification.config import set_label_config, LabelConfig
+        set_label_config(LabelConfig())
 
     print(f"Kernel ready. state=<{len(state.papers)} papers>, llm={model!r}, max_iterations={state.MAX_ITERATIONS}")
     return state, llm, ws
