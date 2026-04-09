@@ -43,9 +43,9 @@ The `pkevolve.verification` package implements a **Metacognitive Evidence Verifi
 
 | Module | Purpose | Key Exports |
 |--------|---------|-------------|
-| `data_models.py` | Pydantic v2 schemas for all evidence structures | `PaperRecord`, `Fact`, `Stance`, `Conflict`, `Gap`, `SufficiencyResult`, `VerificationVerdict`, `PaperFeatureVector`, `NLPFeatureVector` |
+| `data_models.py` | Pydantic v2 schemas for all evidence structures | `PaperRecord`, `Fact`, `Stance`, `DynamicStance`, `rebuild_stance_enum()`, `Conflict`, `Gap`, `SufficiencyResult`, `VerificationVerdict`, `PaperFeatureVector`, `NLPFeatureVector` |
 | `evidence_state.py` | Central mutable state container with auto-save to JSON | `EvidenceState`, `TraceLog` |
-| `config.py` | Layered settings (CLI > YAML > env > defaults) via pydantic-settings | `VerificationSettings`, `APISettings`, `LLMSettings`, `get_settings()` |
+| `config.py` | Layered settings (CLI > YAML > env > defaults) via pydantic-settings | `VerificationSettings`, `APISettings`, `LLMSettings`, `LabelConfig`, `get_settings()`, `set_label_config()`, `get_label_config()` |
 
 ### Core API
 
@@ -111,7 +111,7 @@ The `pkevolve.verification` package implements a **Metacognitive Evidence Verifi
 
 3. FACT EXTRACTION
    (claim, paper text) → extract_and_add_facts(llm, pmid, state) → Fact[]
-   Each fact: {text, stance: SUPPORT|REFUTE|NEUTRAL, source_pmid, confidence}
+   Each fact: {text, stance: <configured labels>, source_pmid, confidence}
 
 4. FEATURE POPULATION
    papers[] → populate_paper_features(state) → PaperFeatureVector + NLPFeatureVector per paper
@@ -127,6 +127,59 @@ The `pkevolve.verification` package implements a **Metacognitive Evidence Verifi
 6. VERDICT
    state → emit_verdict(verdict, confidence, reasoning, key_evidence, gaps_remaining, state) → VerificationVerdict
 ```
+
+## Configurable Labels
+
+Stance labels (fact extraction) and verdict labels (final claim verdict) are fully user-configurable. All prompts, parsers, renderers, and data models read from a central `LabelConfig` — no hardcoded label names exist in the codebase.
+
+### Configuration
+
+Add a `labels` section to the verification YAML config:
+
+```yaml
+labels:
+  stance_labels:
+    SUPPORT: "Evidence directly corroborates the claim."
+    REFUTE: "Evidence contradicts the claim."
+    NEUTRAL: "Relevant but neither supports nor contradicts."
+  verdict_labels:
+    SUPPORT: "The evidence corroborates the claim."
+    REFUTE: "The evidence contradicts the claim."
+    UNCERTAIN: "The evidence is ambiguous or insufficient."
+  default_stance: "NEUTRAL"
+```
+
+### How it works
+
+```
+YAML config (labels section)
+  │
+  ▼
+LabelConfig (config.py)          ← pydantic-settings model
+  │                                  stance_labels, verdict_labels, default_stance
+  ├─► set_label_config()         ← module-level singleton
+  │     └─► rebuild_stance_enum()   ← swaps module-level Stance enum in data_models.py
+  │
+  ├─► Subagent prompts           ← stance_prompt_block(), stance_options_str()
+  │     (subagents.py)               injected into extract_facts / identify_gaps
+  │
+  ├─► System prompt              ← verdict_names(), verdict_prompt_block()
+  │     (evidence_programming.py)    injected into SYSTEM_PROMPT
+  │
+  ├─► Evidence API               ← get_label_config() for schema_docs, add_facts,
+  │     (evidence_api.py)            summary, filtering, coverage
+  │
+  └─► Renderers                  ← dynamic colour/icon cycles from label names
+        (renderers.py)
+```
+
+### Dynamic Stance enum
+
+`Stance` is a `str`-based `Enum` created by `_make_stance_enum()`. Members compare equal to their string values (`Stance.SUPPORT == "SUPPORT"`).
+
+`Fact.stance` is typed as `Annotated[Any, BeforeValidator(...)]` — the validator reads the *current* module-level `Stance` at validation time (deferred lookup), so `rebuild_stance_enum()` takes effect immediately without needing `Fact.model_rebuild()`.
+
+The label config propagates to SDK kernel subprocesses via the `LABEL_CONFIG_JSON` environment variable, which `setup_kernel()` deserialises on startup.
 
 ## Key Data Structures
 
