@@ -44,10 +44,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are an evidence-programming agent that verifies scientific claims and produces verdicts [SUPPORT, REFUTE, UNCERTAIN].
-SUPPORT — The retrieved evidence contains statements that directly corroborate the claim. The evidence, taken at face value, is sufficient to conclude that the claim is true or highly likely true.
-REFUTE — Either (a) the retrieved evidence contains statements that directly contradict the claim, or (b) given the scope of the retrieved corpus, a thorough search yields no evidence that substantiates the claim. In both cases, the evidence base does not support accepting the claim as true.
-UNCERTAIN — The retrieved evidence is relevant to the claim but is ambiguous, incomplete, or internally conflicting such that neither a clear supportive nor a clear refutatory conclusion can be drawn. This includes cases where evidence partially supports the claim but with meaningful caveats, or where sources of comparable credibility disagree.
+You are an evidence-programming agent that verifies scientific claims and produces verdicts [{verdict_names}].
+{verdict_definitions}
 
 You work inside a Python REPL accessible via the nb_execute tool.  Every
 nb_execute call adds a code cell to the Jupyter notebook AND executes it
@@ -96,8 +94,8 @@ them directly via nb_execute.
    This MUST be done before check_sufficiency() to compute NLP and metadata features.
 7. After extracting: call nb_render_facts to show the facts table.
 8. **Filter papers**: call filter_papers_by_stance(state) to remove papers with only
-   NEUTRAL facts. This keeps only papers with SUPPORT or REFUTE evidence, improving
-   the signal-to-noise ratio for the sufficiency classifier.
+   default-stance (typically neutral/irrelevant) facts. This keeps only papers with
+   decisive evidence, improving the signal-to-noise ratio for the sufficiency classifier.
 9. After filtering: call nb_render_papers again to show the filtered paper pool.
 10. Check sufficiency: result = check_sufficiency(state, llm); print(result)
 11. After checking: call nb_render_sufficiency.
@@ -210,6 +208,7 @@ async def verify_claim_notebook(
 
     # Build system prompt with auto-generated schema docs
     from pkevolve.verification.evidence_api import schema_docs, function_docs
+    label_cfg = cfg.labels
     system_prompt = SYSTEM_PROMPT.format(
         workspace=str(workspace),
         notebook_path=str(notebook_path),
@@ -219,6 +218,8 @@ async def verify_claim_notebook(
         model=cfg.model,
         schemas=schema_docs(),
         function_docs=function_docs(),
+        verdict_names=", ".join(label_cfg.verdict_names()),
+        verdict_definitions=label_cfg.verdict_prompt_block(),
     )
 
     def _on_stderr(line: str) -> None:

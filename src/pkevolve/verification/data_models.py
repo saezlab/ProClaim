@@ -6,20 +6,101 @@ PaperRecord and Fact are the atomic data units stored in EvidenceState.
 Additional types: Stance, GapType, Conflict, Gap, SufficiencyResult, VerificationVerdict.
 """
 
-from enum import Enum
-from typing import Optional
+import enum as _enum
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, Field
-
-
-class Stance(str, Enum):
-    """Stance of a fact relative to the claim."""
-    SUPPORT = "SUPPORT"
-    REFUTE = "REFUTE"
-    NEUTRAL = "NEUTRAL"
+from pydantic import BaseModel, BeforeValidator, Field
 
 
-class GapType(str, Enum):
+# ---------------------------------------------------------------------------
+# Dynamic Stance enum
+# ---------------------------------------------------------------------------
+
+
+def _make_stance_enum(labels: dict[str, str]) -> type:
+    """Create a dynamic ``Stance`` str-Enum from label definitions.
+
+    Each key in *labels* becomes both the member name and its value.
+    The resulting enum inherits from ``str``, so members compare equal to
+    their string values: ``Stance.SUPPORT == "SUPPORT"`` → ``True``.
+
+    ``__str__`` and ``__format__`` are overridden so that f-strings and
+    ``print()`` render the **value** (e.g. ``"SUPPORT"``) instead of the
+    default ``"Stance.SUPPORT"`` representation.
+    """
+    members = {name: name for name in labels}
+    StanceEnum = _enum.Enum("Stance", members, type=str)
+
+    # Override so f"{stance}" and str(stance) return the value, not "Stance.NAME"
+    def _str(self):
+        return self.value
+
+    def _format(self, spec):
+        return format(self.value, spec)
+
+    StanceEnum.__str__ = _str
+    StanceEnum.__format__ = _format
+    # Preserve descriptions as a class attribute for prompt generation
+    StanceEnum._descriptions = labels
+    return StanceEnum
+
+
+# Default Stance enum — redefined at runtime by ``rebuild_stance_enum()``
+Stance = _make_stance_enum({
+    "SUPPORT": "The fact directly supports or corroborates the claim.",
+    "REFUTE": "The fact directly contradicts or refutes the claim.",
+    "NEUTRAL": "The fact is relevant to the claim but neither clearly supports nor refutes it.",
+})
+
+
+def _validate_stance_field(v: Any) -> Any:
+    """Pydantic BeforeValidator for the ``Fact.stance`` field.
+
+    Reads the *current* module-level ``Stance`` enum (which may have been
+    rebuilt with custom labels) and coerces the input value to a member.
+    Falls back to the configured default stance for unrecognised values.
+    """
+    import pkevolve.verification.data_models as _dm
+    CurrentStance = _dm.Stance
+    if isinstance(v, CurrentStance):
+        return v
+    s = str(v).upper().strip()
+    try:
+        return CurrentStance(s)
+    except (ValueError, KeyError):
+        from pkevolve.verification.config import get_label_config
+        default = get_label_config().default_stance
+        return CurrentStance(default)
+
+
+# Annotated type used by Fact.stance — dynamically resolves to the current Stance enum
+DynamicStance = Annotated[Any, BeforeValidator(_validate_stance_field)]
+
+
+def rebuild_stance_enum(labels: dict[str, str]) -> type:
+    """Rebuild the module-level ``Stance`` enum from new label definitions.
+
+    After this call, any new ``Fact`` objects will validate ``stance``
+    against the **new** enum members.  No ``Fact.model_rebuild()`` is
+    needed because the ``DynamicStance`` field uses a ``BeforeValidator``
+    that reads the current ``Stance`` reference at validation time.
+
+    Called automatically by ``config.set_label_config()`` when the user
+    provides custom stance labels.
+
+    Args:
+        labels: Mapping from label name → description.  Keys become enum
+            member names and values.
+
+    Returns:
+        The newly created Stance enum class.
+    """
+    global Stance
+    Stance = _make_stance_enum(labels)
+    return Stance
+
+
+class GapType(str, _enum.Enum):
     """Types of evidence gaps the classifier can identify."""
     MISSING_SUBCLAIM = "missing_subclaim_evidence"
     CONTRADICTORY = "contradictory_evidence"
@@ -31,7 +112,7 @@ class GapType(str, Enum):
     MISSING_POPULATION = "missing_population"
 
 
-class GapPriority(str, Enum):
+class GapPriority(str, _enum.Enum):
     """Discrete priority levels for evidence gaps."""
     HIGH = "high"
     MEDIUM = "medium"
@@ -61,11 +142,17 @@ class PaperRecord(BaseModel):
 
 
 class Fact(BaseModel):
-    """A stance-labeled fact extracted from a paper."""
+    """A stance-labeled fact extracted from a paper.
+
+    The ``stance`` field uses a dynamic ``BeforeValidator`` that always
+    resolves against the *current* module-level ``Stance`` enum.  This
+    means the enum can be rebuilt at runtime (via ``rebuild_stance_enum()``)
+    without needing to call ``Fact.model_rebuild()``.
+    """
 
     id: str = ""
     text: str
-    stance: Stance
+    stance: DynamicStance
     source_pmid: str
     relevant_subclaims: list[str] = Field(default_factory=list)
     confidence: float = 0.0
