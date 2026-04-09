@@ -39,6 +39,8 @@ YAML config files for `run_baselines_datasets.py`. Load with `--config`; any CLI
 | `random_baseline_config.yaml` | `random` | `signor` + `connectomedb`, 10 repeats, seed=100 |
 | `llm_only_config.yaml` | `llm_only` | `anthropic/claude-sonnet-4-6`, 3 repeats |
 | `open_scholar_config.yaml` | `open_scholar` | `claude-sonnet-4-6`, S2 adaptive retrieval on (`os_retrieval: true`), top_n=10, 1 repeat |
+| `fire_config.yaml` | `fire` | `openai:gpt-4o-mini`, max_steps=5, 1 repeat |
+| `ace_config.yaml` | `ace` | `gpt-4o-mini` (OpenAI), eval_only mode, 1 repeat |
 
 YAML keys mirror `argparse` `dest` names (e.g. `os_model`, `os_retrieval`, `datasets_dir`). All keys are optional — omitted keys fall back to the CLI defaults.
 
@@ -51,6 +53,8 @@ Installable baseline classes. All baselines share the same infrastructure from `
 | `random_baseline.py` | `RandomBaseline` | Chance floor — uniform draw from {SUPPORT, REFUTE, NEI} |
 | `llm_only.py` | `LLMOnly` | Parametric knowledge ceiling — single LLM call, no retrieval |
 | `open_scholar_baseline.py` | `OpenScholarBaseline` | RAG baseline — routes each claim through the [OpenScholar](../../OpenScholar) pipeline (Claude Sonnet 4.6 by default). When the dataset CSV provides an `evidence` snippet (e.g. SIGNOR, ConnectomeDB), it is forwarded as a retrieved passage alongside any live S2-retrieved passages. With `--os-retrieval`, OpenScholar runs its full feedback loop (keyword extraction → S2 search → re-rank → answer edit). Outputs `claim_verdict` JSON (SUPPORT / REFUTE / UNCERTAIN → normalised to SUPPORT / REFUTE / NEI). Results saved as `BaselineResult` JSONL, identical in schema to `llm_only`. |
+| `fire_baseline.py` | `FIREBaseline` | Iterative retrieval baseline — [FIRE](../../fire) dynamically decides whether to search the web or finalise a verdict at each step, integrating reasoning and retrieval. Binary output (True/False) mapped to SUPPORT/REFUTE; failures → UNCERTAIN. Runs as subprocess in FIRE's own `.venv`. |
+| `ace_baseline.py` | `ACEBaseline` | Agentic context engineering baseline — [ACE](../../ace) Generator agent classifies claims using a self-improving playbook. By default runs in eval_only mode with a built-in claim-verification playbook (no training). Runs as subprocess in ACE's own `.venv`. |
 
 ### OpenScholar-specific CLI flags (for `run_baselines_datasets.py`)
 
@@ -67,6 +71,33 @@ Installable baseline classes. All baselines share the same infrastructure from `
 - `ANTHROPIC_API_KEY` must be set (or present in `grn-llm-correct/.env`).
 - `S2_API_KEY` defaults to `""` (anonymous, rate-limited). Set it for higher throughput.
 - OpenScholar must be checked out at `<workspace>/OpenScholar` with its `.venv` intact.
+
+### FIRE-specific CLI flags (for `run_baselines_datasets.py`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--fire-model` | `openai:gpt-4o-mini` | Model in `<org>:<model>` format (e.g. `openai:gpt-4o`, `anthropic:claude-3-5-sonnet-20240620`) |
+| `--fire-max-steps` | `5` | Maximum iterative search steps |
+
+### Prerequisites for `FIREBaseline`
+
+- FIRE must be cloned at `<workspace>/fire` with `.venv` set up (`python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`).
+- `SERPER_API_KEY` must be set (for Google Search via SerperAPI).
+- `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` depending on the model.
+
+### ACE-specific CLI flags (for `run_baselines_datasets.py`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ace-model` | `gpt-4o-mini` | Model name for the Generator agent |
+| `--ace-api-provider` | `openai` | API provider (`openai`, `anthropic`, `together`, `sambanova`, `commonstack`) |
+| `--ace-max-tokens` | `4096` | Max generation tokens per call |
+| `--ace-playbook` | (built-in) | Path to a pre-trained playbook `.txt` file |
+
+### Prerequisites for `ACEBaseline`
+
+- ACE must be cloned at `<workspace>/ace` with `uv sync` already run.
+- `OPENAI_API_KEY` (or the relevant provider key) must be set.
 
 ### shared/
 

@@ -1,32 +1,46 @@
 # ──────────────────────────────────────────────────────────────────────
-# Random Baseline Config
+# FIRE Baseline Config
 #
-# Chance-floor baseline: uniform draw from {SUPPORT, REFUTE, UNCERTAIN}.
-# Multiple repeats are used to estimate mean ± std.
+# Iterative retrieval-augmented fact-checking via the FIRE pipeline.
+# FIRE dynamically searches the web and decides when it has enough
+# evidence to classify the claim.  Binary output (True/False) is
+# mapped to SUPPORT / REFUTE; failures default to UNCERTAIN.
 #
 # Usage:
 #   uv run python experiments/run_baselines_datasets.py \
-#       --config experiments/configs/random_baseline_config.yaml
+#       --config experiments/configs/fire_config.yaml
+#
+# Prerequisites:
+#   - FIRE cloned at <workspace>/fire with .venv set up
+#   - SERPER_API_KEY set (for Google Search via SerperAPI)
+#   - OPENAI_API_KEY or ANTHROPIC_API_KEY set (depending on model)
 #
 # Any CLI flag overrides the value set here.
 # ──────────────────────────────────────────────────────────────────────
 
 # ── Data ──────────────────────────────────────────────────────────────
 datasets_dir: /home/ail/workspace/claim_datasets/datasets
-# datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
 datasets:
   - signor
   - connectomedb
 
 # ── Baseline ──────────────────────────────────────────────────────────
-baseline: random
+baseline: fire
+
+# ── FIRE model ────────────────────────────────────────────────────────
+# Format: litellm model string "<provider>/<model_id>"
+# Examples:
+#   openai/gpt-4o-mini
+#   openai/gpt-4o
+#   anthropic/claude-sonnet-4-20250514
+fire_model: "openai/gpt-4o-mini"
+
+# Maximum iterative search steps (FIRE default is 5)
+fire_max_steps: 5
 
 # ── Reproducibility ───────────────────────────────────────────────────
-seed: 100      # base seed; repeat i uses seed + i
-repeats: 10    # number of independent draws per dataset
+seed: 100
+repeats: 1       # FIRE is quasi-deterministic (temperature=0.5 by default)
 
 # ── Sampling ──────────────────────────────────────────────────────────
-limit: 0       # 0 = all claims
-
-# ── Output ────────────────────────────────────────────────────────────
-output_dir: results/baselines
+limit: 0         # 0 = all claims

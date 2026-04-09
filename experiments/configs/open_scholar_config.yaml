@@ -19,6 +19,7 @@
 
 # ── Data ──────────────────────────────────────────────────────────────
 datasets_dir: /home/ail/workspace/claim_datasets/datasets
+# datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
 datasets:
   - signor
   - connectomedb
@@ -38,7 +39,7 @@ os_task_name: claim_verdict_question  # claim_verdict_question (framed as yes/no
 # ── Context ───────────────────────────────────────────────────────────
 os_top_n: 10              # number of passages forwarded to the generator
 # os_max_tokens: 0          # 0 = no constraint 
-# os_max_tokens: 3000     # OpenScholar default: 3000
+os_max_tokens: 3000     # OpenScholar default: 3000
 os_oracle_context: false # inject CSV evidence as oracle context (leaks labels — for ablation only)
 
 # ── Reproducibility ───────────────────────────────────────────────────

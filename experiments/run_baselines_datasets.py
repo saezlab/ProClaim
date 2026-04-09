@@ -103,8 +103,22 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             reranker=getattr(args, "os_reranker", None) or None,
             task_name=getattr(args, "os_task_name", "claim_verdict_question"),
         )
+    elif name == "fire":
+        from baselines.fire_baseline import FIREBaseline
+        return FIREBaseline(
+            model=getattr(args, "fire_model", "openai/gpt-4o-mini"),
+            max_steps=getattr(args, "fire_max_steps", 5),
+        )
+    elif name == "ace":
+        from baselines.ace_baseline import ACEBaseline
+        playbook = getattr(args, "ace_playbook", None)
+        return ACEBaseline(
+            model=getattr(args, "ace_model", "openai/gpt-4o-mini"),
+            max_tokens=getattr(args, "ace_max_tokens", 4096),
+            playbook=playbook if playbook else None,
+        )
     else:
-        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, open_scholar")
+        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, open_scholar, fire, ace")
 
 
 def _mean_std(values: list[float]) -> dict[str, float]:
@@ -155,7 +169,7 @@ def parse_args() -> argparse.Namespace:
         default=["signor", "connectomedb"],
         help="Dataset names (without .csv extension).",
     )
-    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "open_scholar"], help="Baseline to run.")
+    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "open_scholar", "fire", "ace"], help="Baseline to run.")
     p.add_argument("--seed", type=int, default=100, help="Base random seed. Each repeat i uses seed+i.")
     p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats. Each repeat i uses seed+i.")
     p.add_argument("--model", default="zai/glm-4-plus", help="LiteLLM model string for llm_only, e.g. 'zai/glm-4-plus' or 'openai/gpt-4o'.")
@@ -168,6 +182,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--os-retrieval", dest="os_retrieval", action="store_true", help="Enable S2 retrieval + feedback in OpenScholar (--ss_retriever --feedback).")
     p.add_argument("--os-reranker", dest="os_reranker", default="OpenScholar/OpenScholar_Reranker", help="Reranker model for OpenScholar (--ranking_ce --reranker). Set to empty string to disable. Default: OpenScholar/OpenScholar_Reranker.")
     p.add_argument("--os-task-name", dest="os_task_name", default="claim_verdict_question", help="OpenScholar task name passed to --task_name (e.g. claim_verdict_question, claim_verdict).")
+    # FIRE-specific arguments
+    p.add_argument("--fire-model", dest="fire_model", default="openai/gpt-4o-mini", help="LiteLLM model string for FIRE (e.g. openai/gpt-4o-mini, anthropic/claude-sonnet-4-20250514).")
+    p.add_argument("--fire-max-steps", dest="fire_max_steps", type=int, default=5, help="Maximum iterative search steps for FIRE.")
+    # ACE-specific arguments
+    p.add_argument("--ace-model", dest="ace_model", default="openai/gpt-4o-mini", help="LiteLLM model string for ACE Generator (e.g. openai/gpt-4o-mini, anthropic/claude-sonnet-4-20250514).")
+    p.add_argument("--ace-max-tokens", dest="ace_max_tokens", type=int, default=4096, help="Max generation tokens for ACE.")
+    p.add_argument("--ace-playbook", dest="ace_playbook", default=None, help="Path to a pre-trained ACE playbook .txt file (optional; uses built-in claim verification playbook if omitted).")
     p.add_argument("--limit", type=int, default=0, help="Limit number of claims per dataset (0 = all).")
     p.add_argument(
         "--output-dir",
@@ -200,6 +221,12 @@ def main() -> None:
         baseline_subdir = f"{args.baseline}/{model_slug}"
     elif args.baseline == "open_scholar":
         model_slug = args.os_model.replace("/", "--")
+        baseline_subdir = f"{args.baseline}/{model_slug}"
+    elif args.baseline == "fire":
+        model_slug = args.fire_model.replace("/", "--")
+        baseline_subdir = f"{args.baseline}/{model_slug}"
+    elif args.baseline == "ace":
+        model_slug = args.ace_model.replace("/", "--")
         baseline_subdir = f"{args.baseline}/{model_slug}"
 
     logger.info("Baseline: %s  repeats=%d  base_seed=%d", args.baseline, args.repeats, args.seed)
