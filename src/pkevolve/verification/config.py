@@ -68,6 +68,118 @@ PROJECT_ROOT = _THIS_DIR.parent.parent.parent  # repo root
 # ---------------------------------------------------------------------------
 
 
+class LabelConfig(BaseSettings):
+    """User-configurable label definitions for stance and verdict categories.
+
+    Allows users to define/redefine the label names and their detailed
+    explanations used throughout the evidence programming system. All
+    prompts (system prompt, subagent prompts) and parsers read from these
+    definitions so the label taxonomy is consistent end-to-end.
+
+    Override via YAML config::
+
+        labels:
+          stance_labels:
+            SUPPORT: "Evidence directly corroborates the claim."
+            REFUTE: "Evidence contradicts the claim."
+            NEUTRAL: "Relevant but neither supports nor contradicts."
+          verdict_labels:
+            SUPPORT: "The retrieved evidence directly corroborates the claim."
+            REFUTE: "The retrieved evidence contradicts the claim."
+            UNCERTAIN: "The evidence is ambiguous or insufficient."
+          default_stance: "NEUTRAL"
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    stance_labels: dict[str, str] = Field(
+        default_factory=lambda: {
+            "SUPPORT": "The fact directly supports or corroborates the claim.",
+            "REFUTE": "The fact directly contradicts or refutes the claim.",
+            "NEUTRAL": "The fact is relevant to the claim but neither clearly supports nor refutes it.",
+        },
+        description="Mapping from stance label name to its description. "
+                    "Each key is used in LLM prompts for fact extraction; "
+                    "each value is the explanation shown to the LLM.",
+    )
+
+    verdict_labels: dict[str, str] = Field(
+        default_factory=lambda: {
+            "SUPPORT": (
+                "The retrieved evidence contains statements that directly "
+                "corroborate the claim. The evidence, taken at face value, is "
+                "sufficient to conclude that the claim is true or highly likely true."
+            ),
+            "REFUTE": (
+                "Either (a) the retrieved evidence contains statements that "
+                "directly contradict the claim, or (b) given the scope of the "
+                "retrieved corpus, a thorough search yields no evidence that "
+                "substantiates the claim. In both cases, the evidence base does "
+                "not support accepting the claim as true."
+            ),
+            "UNCERTAIN": (
+                "The retrieved evidence is relevant to the claim but is ambiguous, "
+                "incomplete, or internally conflicting such that neither a clear "
+                "supportive nor a clear refutatory conclusion can be drawn. This "
+                "includes cases where evidence partially supports the claim but "
+                "with meaningful caveats, or where sources of comparable credibility "
+                "disagree."
+            ),
+        },
+        description="Mapping from verdict label name to its description. "
+                    "These are used in the system prompt for the orchestrator agent.",
+    )
+
+    default_stance: str = Field(
+        default="NEUTRAL",
+        description="Fallback stance label when the LLM returns an unrecognised value.",
+    )
+
+    # --- Helpers for prompt construction ---
+
+    def stance_names(self) -> list[str]:
+        """Return the list of valid stance label names."""
+        return list(self.stance_labels.keys())
+
+    def stance_options_str(self) -> str:
+        """Format stance labels as a pipe-separated options string, e.g. 'SUPPORT | REFUTE | NEUTRAL'."""
+        return " | ".join(f'"{name}"' for name in self.stance_labels)
+
+    def stance_prompt_block(self) -> str:
+        """Build a multi-line label definition block for use in LLM prompts."""
+        lines = []
+        for name, desc in self.stance_labels.items():
+            lines.append(f'- "{name}": {desc}')
+        return "\n".join(lines)
+
+    def verdict_names(self) -> list[str]:
+        """Return the list of valid verdict label names."""
+        return list(self.verdict_labels.keys())
+
+    def verdict_prompt_block(self) -> str:
+        """Build a multi-line verdict definition block for use in the system prompt."""
+        lines = []
+        for name, desc in self.verdict_labels.items():
+            lines.append(f"{name} — {desc}")
+        return "\n".join(lines)
+
+    def validate_stance(self, value: str) -> str:
+        """Validate a stance string against configured labels, returning the canonical name or default."""
+        upper = value.upper().strip()
+        for name in self.stance_labels:
+            if upper == name.upper():
+                return name
+        return self.default_stance
+
+    def validate_verdict(self, value: str) -> str:
+        """Validate a verdict string against configured labels."""
+        upper = value.upper().strip()
+        for name in self.verdict_labels:
+            if upper == name.upper():
+                return name
+        return upper  # pass through for free-form verdicts
+
+
 class APISettings(BaseSettings):
     """LLM / external-service API keys and endpoints.
 
@@ -195,6 +307,7 @@ class VerificationSettings(BaseSettings):
     # ── Nested settings (populated via env vars) ──────────────────────
     api: APISettings = Field(default_factory=APISettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    labels: LabelConfig = Field(default_factory=LabelConfig)
 
     # ── Verification workflow ─────────────────────────────────────────
     claim: str = Field(
@@ -360,6 +473,8 @@ class VerificationSettings(BaseSettings):
             "LLM_DISABLE_THINKING": "1" if self.llm.disable_thinking else "0",
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
             "MAX_ITERATIONS": str(self.max_iterations),
+            # Label config for setup_kernel() inside the Jupyter kernel
+            "LABEL_CONFIG_JSON": self.labels.model_dump_json(),
             # Notebook MCP truncation limit
             "NB_MAX_OUTPUT_CHARS": str(self.max_output_chars),
         }
@@ -416,6 +531,8 @@ class VerificationSettings(BaseSettings):
             raw["llm"] = LLMSettings(**raw["llm"])
         if "api" in raw and isinstance(raw["api"], dict):
             raw["api"] = APISettings(**raw["api"])
+        if "labels" in raw and isinstance(raw["labels"], dict):
+            raw["labels"] = LabelConfig(**raw["labels"])
 
         # Convert path strings
         for key in ("output_dir", "notebook_path"):
@@ -585,3 +702,35 @@ def get_settings() -> VerificationSettings:
     ``VerificationSettings.from_cli()`` and pass the result explicitly.
     """
     return VerificationSettings()
+
+
+# ---------------------------------------------------------------------------
+# Module-level label config singleton
+# ---------------------------------------------------------------------------
+
+_label_config: LabelConfig | None = None
+
+
+def set_label_config(config: LabelConfig) -> None:
+    """Set the global label configuration (called during kernel setup).
+
+    Also rebuilds the ``Stance`` enum in ``data_models`` so that
+    Pydantic accepts the configured label names when constructing
+    ``Fact`` objects.
+    """
+    global _label_config
+    _label_config = config
+    # Rebuild the Stance enum (and Fact model) to match new labels
+    from pkevolve.verification.data_models import rebuild_stance_enum
+    rebuild_stance_enum(config.stance_labels)
+
+
+def get_label_config() -> LabelConfig:
+    """Return the current label configuration.
+
+    Returns the config set by ``set_label_config()``, or the default
+    ``LabelConfig()`` if none has been set.
+    """
+    if _label_config is not None:
+        return _label_config
+    return LabelConfig()
