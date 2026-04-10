@@ -87,9 +87,17 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
         from baselines.shared.llm import LLMBackend
         llm = LLMBackend(
             model=args.model,
-            temperature=0.0,  # deterministic
+            temperature=args.temperature,
         )
         return LLMOnly(llm=llm)
+    elif name == "s2_retrieval":
+        from baselines.s2_retrieval import S2Retrieval
+        from baselines.shared.llm import LLMBackend
+        llm = LLMBackend(
+            model=getattr(args, "s2_model", "anthropic/claude-sonnet-4-6"),
+            temperature=args.temperature,
+        )
+        return S2Retrieval(llm=llm, top_k=getattr(args, "s2_top_k", 5))
     elif name == "open_scholar":
         from baselines.open_scholar_baseline import OpenScholarBaseline
         raw_max = getattr(args, "os_max_tokens", None)
@@ -105,8 +113,14 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
         )
     elif name == "fire":
         from baselines.fire_baseline import FIREBaseline
-        return FIREBaseline(
+        from baselines.shared.llm import LLMBackend
+        llm = LLMBackend(
             model=getattr(args, "fire_model", "openai/gpt-4o-mini"),
+            temperature=args.temperature,
+            max_tokens=2048,
+        )
+        return FIREBaseline(
+            llm=llm,
             max_steps=getattr(args, "fire_max_steps", 5),
         )
     elif name == "ace":
@@ -116,15 +130,18 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             model=getattr(args, "ace_model", "openai/gpt-4o-mini"),
             max_tokens=getattr(args, "ace_max_tokens", 4096),
             playbook=playbook if playbook else None,
+            temperature=args.temperature,
         )
     elif name == "react":
         from baselines.react_baseline import ReActBaseline
         return ReActBaseline(
             model=getattr(args, "react_model", "openai/gpt-4o-mini"),
             max_steps=getattr(args, "react_max_steps", 10),
+            temperature=args.temperature,
+            search_backend=getattr(args, "react_search_backend", "web"),
         )
     else:
-        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, open_scholar, fire, ace, react")
+        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, s2_retrieval, open_scholar, fire, ace, react")
 
 
 def _mean_std(values: list[float]) -> dict[str, float]:
@@ -175,10 +192,13 @@ def parse_args() -> argparse.Namespace:
         default=["signor", "connectomedb"],
         help="Dataset names (without .csv extension).",
     )
-    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "open_scholar", "fire", "ace", "react"], help="Baseline to run.")
+    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "s2_retrieval", "open_scholar", "fire", "ace", "react"], help="Baseline to run.")
     p.add_argument("--seed", type=int, default=100, help="Base random seed. Each repeat i uses seed+i.")
     p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats. Each repeat i uses seed+i.")
     p.add_argument("--model", default="zai/glm-4-plus", help="LiteLLM model string for llm_only, e.g. 'zai/glm-4-plus' or 'openai/gpt-4o'.")
+    # S2 Retrieval-specific arguments
+    p.add_argument("--s2-model", dest="s2_model", default="anthropic/claude-sonnet-4-6", help="LiteLLM model string for S2 retrieval baseline.")
+    p.add_argument("--s2-top-k", dest="s2_top_k", type=int, default=5, help="Number of S2 abstracts to retrieve (e.g. 5, 10).")
     # OpenScholar-specific arguments
     p.add_argument("--os-model", dest="os_model", default="claude-sonnet-4-6", help="Model name for OpenScholar (--model_name in run.py).")
     p.add_argument("--os-api", dest="os_api", default="anthropic", help="API provider for OpenScholar (e.g. anthropic, gemini).")
@@ -198,6 +218,8 @@ def parse_args() -> argparse.Namespace:
     # ReAct-specific arguments
     p.add_argument("--react-model", dest="react_model", default="openai/gpt-4o-mini", help="LiteLLM model string for ReAct (e.g. openai/gpt-4o-mini, anthropic/claude-sonnet-4-20250514).")
     p.add_argument("--react-max-steps", dest="react_max_steps", type=int, default=10, help="Maximum number of search steps for ReAct.")
+    p.add_argument("--react-search-backend", dest="react_search_backend", default="web", choices=["web", "s2"], help="Search backend for ReAct: 'web' (Serper/DuckDuckGo) or 's2' (Semantic Scholar).")
+    p.add_argument("--temperature", type=float, default=0.0, help="LLM sampling temperature. Overrides each baseline's default (llm_only/s2/react: 0.0, fire: 0.5, ace: 0.0). Anthropic supports 0.0–1.0.")
     p.add_argument("--limit", type=int, default=0, help="Limit number of claims per dataset (0 = all).")
     p.add_argument(
         "--output-dir",
@@ -228,6 +250,9 @@ def main() -> None:
     if args.baseline == "llm_only":
         model_slug = args.model.replace("/", "--")
         baseline_subdir = f"{args.baseline}/{model_slug}"
+    elif args.baseline == "s2_retrieval":
+        model_slug = args.s2_model.replace("/", "--")
+        baseline_subdir = f"{args.baseline}/{model_slug}/top{args.s2_top_k}"
     elif args.baseline == "open_scholar":
         model_slug = args.os_model.replace("/", "--")
         baseline_subdir = f"{args.baseline}/{model_slug}"
@@ -239,7 +264,8 @@ def main() -> None:
         baseline_subdir = f"{args.baseline}/{model_slug}"
     elif args.baseline == "react":
         model_slug = args.react_model.replace("/", "--")
-        baseline_subdir = f"{args.baseline}/{model_slug}"
+        backend_suffix = "_s2" if getattr(args, "react_search_backend", "web") == "s2" else ""
+        baseline_subdir = f"react{backend_suffix}/{model_slug}"
 
     logger.info("Baseline: %s  repeats=%d  base_seed=%d", args.baseline, args.repeats, args.seed)
 

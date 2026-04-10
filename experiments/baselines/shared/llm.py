@@ -43,7 +43,7 @@ class LLMBackend:
 
     def __init__(
         self,
-        model: str = "zai/glm-4-plus",
+        model: str = "",
         temperature: float = 0.0,
         max_tokens: int = 2048,
         retries: int = 3,

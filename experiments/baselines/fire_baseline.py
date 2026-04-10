@@ -1,9 +1,9 @@
 """
 FIRE baseline — iterative retrieval-augmented fact-checking.
 
-Reimplements the core FIRE (Xie et al., NAACL 2025) loop using litellm for
-LLM calls and Google search for web retrieval.  Runs in-process — no subprocess
-or separate venv needed.
+Reimplements the core FIRE (Xie et al., NAACL 2025) loop using the shared
+LLMBackend (litellm) for LLM calls and Google search for web retrieval.  Runs
+in-process — no subprocess or separate venv needed.
 
 FIRE iteratively decides whether to (a) issue a web search query or (b) render
 a final verdict, based on accumulated search results.
@@ -34,10 +34,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import litellm
 import requests
 
 from baselines.shared.cost_tracker import CostTracker
+from baselines.shared.llm import LLMBackend
 from baselines.shared.label_utils import (
     normalize_label,
     validate_verdict,
@@ -196,13 +196,16 @@ class _SearchResult:
 
 
 class FIREBaseline:
-    """Verify claims via the FIRE iterative retrieval loop (in-process, litellm).
+    """Verify claims via the FIRE iterative retrieval loop (in-process, LLMBackend).
 
     Parameters
     ----------
+    llm:
+        Shared ``LLMBackend`` instance.  When provided, *model* and
+        *temperature* are ignored (taken from the backend instead).
     model:
         Any litellm model string, e.g. ``"anthropic/claude-sonnet-4-20250514"``,
-        ``"openai/gpt-4o-mini"``.
+        ``"openai/gpt-4o-mini"``.  Used only when *llm* is ``None``.
     max_steps:
         Maximum number of iterative search steps.
     max_retries:
@@ -213,26 +216,29 @@ class FIREBaseline:
     num_search_results:
         Number of search results per query.
     temperature:
-        LLM sampling temperature (FIRE default is 0.5).
+        LLM sampling temperature (FIRE default is 0.5).  Used only when
+        *llm* is ``None``.
     """
 
     name = "fire"
 
     def __init__(
         self,
+        llm: LLMBackend | None = None,
+        *,
         model: str = "openai/gpt-4o-mini",
         max_steps: int = 5,
         max_retries: int = 10,
         max_tolerance: int = 2,
         num_search_results: int = 3,
-        temperature: float = 0.5,
+        temperature: float = 0.0,
     ) -> None:
-        self.model = model
+        self.model = self._llm.model
+        self.temperature = self._llm.temperature
         self.max_steps = max_steps
         self.max_retries = max_retries
         self.max_tolerance = max_tolerance
         self.num_search_results = num_search_results
-        self.temperature = temperature
         self.log_dir: Path | None = None
 
         self._serper_key = os.environ.get("SERPER_API_KEY", "")
@@ -240,7 +246,7 @@ class FIREBaseline:
         logger.info("FIRE search backend: %s", self._search_backend)
 
         # Cost estimation — reuse CostTracker pricing table
-        model_key = model.split("/", 1)[-1] if "/" in model else model
+        model_key = self.model.split("/", 1)[-1] if "/" in self.model else self.model
         in_price, out_price = CostTracker.DEFAULT_PRICING.get(
             model_key, CostTracker.FALLBACK_PRICING,
         )
@@ -343,8 +349,9 @@ class FIREBaseline:
         ).strip()
 
         for _ in range(self.max_retries):
-            text, u = self._llm_call(prompt)
-            self._add_usage(usage, u)
+            text, in_tok, out_tok = self._llm_call(prompt)
+            usage["input_tokens"] += in_tok
+            usage["output_tokens"] += out_tok
 
             parsed = _extract_json(text)
             if parsed is None:
@@ -395,8 +402,9 @@ class FIREBaseline:
         ).strip()
 
         for _ in range(self.max_retries):
-            text, u = self._llm_call(prompt)
-            self._add_usage(usage, u)
+            text, in_tok, out_tok = self._llm_call(prompt)
+            usage["input_tokens"] += in_tok
+            usage["output_tokens"] += out_tok
             parsed = _extract_json(text)
             if parsed and "final_answer" in parsed:
                 fa = parsed["final_answer"]
@@ -404,27 +412,8 @@ class FIREBaseline:
                     return (fa, text)
         return (None, "Failed to extract final answer from FIRE loop")
 
-    # ── LLM call via litellm ─────────────────────────────────────────
+    # ── LLM call via shared LLMBackend ─────────────────────────────
 
-    def _llm_call(self, user_prompt: str) -> tuple[str, dict]:
-        """Single litellm completion.  Returns (text, usage_dict)."""
-        resp = litellm.completion(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": _SYS_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=self.temperature,
-            max_tokens=2048,
-        )
-        text = resp.choices[0].message.content or ""
-        u = {
-            "input_tokens": resp.usage.prompt_tokens if resp.usage else 0,
-            "output_tokens": resp.usage.completion_tokens if resp.usage else 0,
-        }
-        return text, u
-
-    @staticmethod
-    def _add_usage(total: dict[str, int], new: dict[str, int]) -> None:
-        total["input_tokens"] += new.get("input_tokens", 0)
-        total["output_tokens"] += new.get("output_tokens", 0)
+    def _llm_call(self, user_prompt: str) -> tuple[str, int, int]:
+        """Single LLM completion.  Returns (text, input_tokens, output_tokens)."""
+        return self._llm.complete_text(system=_SYS_PROMPT, user=user_prompt)

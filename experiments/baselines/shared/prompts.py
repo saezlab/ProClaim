@@ -37,12 +37,6 @@ Given a claim and retrieved evidence passages, assign one of the following verdi
 
 {verdict_block}
 
-Rules:
-- Base your verdict ONLY on the provided evidence passages. Do not introduce facts from your pretraining.
-- If a passage explicitly states the opposite of the claim, that is strong evidence for REFUTE.
-- If no passage mentions the entities or relationship in the claim, prefer REFUTE over UNCERTAIN.
-- Cite the PMID(s) most relevant to your verdict in the "evidence" field.
-
 Respond with valid JSON only — no markdown fences, no extra keys:
 {{
     "label": {label_options},
@@ -68,10 +62,6 @@ def build_verification_system_prompt_no_retrieval(labels: LabelConfig | None = N
 Given a claim, assess whether it is supported by established scientific knowledge:
 
 {verdict_block}
-
-Rules:
-- Be conservative: prefer UNCERTAIN over SUPPORT when your knowledge is incomplete or the evidence is thin.
-- State the key experimental finding or mechanistic reason behind your verdict in "reasoning".
 
 Respond with valid JSON only — no markdown fences, no extra keys:
 {{
@@ -117,16 +107,3 @@ Classify the claim based solely on the evidence passages above. Output JSON."""
 LLM_ONLY_USER_TEMPLATE = """Claim: {claim}
 
 Classify this claim based on your scientific knowledge. Output JSON."""
-
-DECOMPOSITION_PROMPT = """Decompose the following scientific claim into
-independently verifiable atomic facts. Each fact should be a single
-statement that can be checked against scientific literature.
-
-Output as a JSON list of strings.
-
-Claim: {claim}"""
-
-QUERY_GENERATION_PROMPT = """Generate a PubMed search query to find
-evidence about the following. Output only the query string.
-
-Topic: {topic}"""

@@ -30,7 +30,9 @@ dependencies = [
     "claude-agent-sdk",
     "sentence-transformers",
     "seaborn>=0.13.2",
-    "litellm"
+    "litellm",
+    "langchain-community>=0.4.1",
+    "langchain-litellm>=0.6.1",
 ]
 
 [project.optional-dependencies]

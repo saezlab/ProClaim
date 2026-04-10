@@ -7,8 +7,7 @@ Scripts and shared infrastructure for running and evaluating baselines against S
 | Script | Purpose |
 |--------|---------|
 | `run_baselines_datasets.py` | Run a baseline on pre-processed CSV datasets (SIGNOR, ConnectomeDB, SciFact-Open, CIViC-Fact); prints a summary table of Macro F1 / FPR / FNR / Cost (mean ± std over repeats). Accepts `--config` to load baseline parameters from a YAML file. |
-| `run_signor_eval.py` | End-to-end SIGNOR evaluation using the full evidence-programming pipeline |
-| `signor_eval_config.yaml` | Config file consumed by `run_signor_eval.py` (model, mode, iteration budget) |
+| `run_signor_eval.py` | End-to-end SIGNOR evaluation using the full evidence-programming pipeline (runs `pkevolve.verification.evidence_programming` as a subprocess). Config: `configs/signor_eval_config.yaml`. |
 
 ### Quick start
 
@@ -45,9 +44,11 @@ YAML config files for `run_baselines_datasets.py`. Load with `--config`; any CLI
 | `llm_only_config.yaml` | `llm_only` | `anthropic/claude-sonnet-4-6`, 3 repeats |
 | `s2_retrieval_config.yaml` | `s2_retrieval` | `anthropic/claude-sonnet-4-6`, top_k=5, 1 repeat |
 | `open_scholar_config.yaml` | `open_scholar` | `claude-sonnet-4-6`, S2 adaptive retrieval on (`os_retrieval: true`), top_n=10, 1 repeat |
-| `fire_config.yaml` | `fire` | `openai:gpt-4o-mini`, max_steps=5, 1 repeat |
-| `ace_config.yaml` | `ace` | `gpt-4o-mini` (OpenAI), eval_only mode, 1 repeat |
+| `fire_config.yaml` | `fire` | `anthropic/claude-sonnet-4-6`, max_steps=5, 1 repeat |
+| `ace_config.yaml` | `ace` | `anthropic/claude-sonnet-4-6`, eval_only mode, 1 repeat |
 | `react_config.yaml` | `react` | `gpt-4o-mini` (OpenAI), max_steps=10, 1 repeat |
+| `signor_eval_config.yaml` | *(evidence-programming)* | Config for `run_signor_eval.py` (model, mode, iteration budget) |
+| `test_config.yaml` | *(evidence-programming)* | Test config for `pkevolve.verification.evidence_programming` smoke tests |
 
 YAML keys mirror `argparse` `dest` names (e.g. `os_model`, `os_retrieval`, `datasets_dir`). All keys are optional — omitted keys fall back to the CLI defaults.
 
@@ -84,8 +85,11 @@ Installable baseline classes. All baselines share the same infrastructure from `
 | `--os-model` | `claude-sonnet-4-6` | Model name passed to OpenScholar's `--model_name` |
 | `--os-api` | `anthropic` | API provider (e.g. `anthropic`, `gemini`) |
 | `--os-top-n` | `5` | Number of context passages forwarded to the generator |
-| `--os-max-tokens` | `0` | Max generation tokens (0 = omit flag, OpenScholar default 3000 applies) |
+| `--os-max-tokens` | `3000` | Max generation tokens (0 = no constraint, uses OpenScholar default of 3000) |
 | `--os-retrieval` | off | Enable S2 adaptive retrieval + self-feedback loop (`--ss_retriever --feedback`) |
+| `--os-oracle-context` | off | Inject CSV evidence as oracle context (for oracle-leakage experiments) |
+| `--os-reranker` | `OpenScholar/OpenScholar_Reranker` | Reranker model for OpenScholar (`--ranking_ce --reranker`). Set to empty string to disable. |
+| `--os-task-name` | `claim_verdict_question` | OpenScholar task name passed to `--task_name` |
 
 ### Prerequisites for `OpenScholarBaseline`
 
@@ -97,7 +101,7 @@ Installable baseline classes. All baselines share the same infrastructure from `
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fire-model` | `openai:gpt-4o-mini` | Model in `<org>:<model>` format (e.g. `openai:gpt-4o`, `anthropic:claude-3-5-sonnet-20240620`) |
+| `--fire-model` | `openai/gpt-4o-mini` | LiteLLM model string (e.g. `openai/gpt-4o`, `anthropic/claude-sonnet-4-20250514`) |
 | `--fire-max-steps` | `5` | Maximum iterative search steps |
 
 ### Prerequisites for `FIREBaseline`
@@ -110,15 +114,14 @@ Installable baseline classes. All baselines share the same infrastructure from `
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--ace-model` | `gpt-4o-mini` | Model name for the Generator agent |
-| `--ace-api-provider` | `openai` | API provider (`openai`, `anthropic`, `together`, `sambanova`, `commonstack`) |
+| `--ace-model` | `openai/gpt-4o-mini` | LiteLLM model string (e.g. `openai/gpt-4o-mini`, `anthropic/claude-sonnet-4-20250514`) |
 | `--ace-max-tokens` | `4096` | Max generation tokens per call |
 | `--ace-playbook` | (built-in) | Path to a pre-trained playbook `.txt` file |
 
 ### Prerequisites for `ACEBaseline`
 
-- ACE must be cloned at `<workspace>/ace` with `uv sync` already run.
-- `OPENAI_API_KEY` (or the relevant provider key) must be set.
+- ACE must be cloned at `<workspace>/ace` (reference only; runs in-process via litellm).
+- An LLM API key recognised by litellm (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
 
 ### ReAct-specific CLI flags (for `run_baselines_datasets.py`)
 
@@ -126,6 +129,7 @@ Installable baseline classes. All baselines share the same infrastructure from `
 |------|---------|-------------|
 | `--react-model` | `openai/gpt-4o-mini` | LiteLLM model string (e.g. `openai/gpt-4o`, `anthropic/claude-sonnet-4-20250514`) |
 | `--react-max-steps` | `10` | Maximum number of search steps |
+| `--react-search-backend` | `web` | Search backend: `web` (Serper/DuckDuckGo) or `s2` (Semantic Scholar) |
 
 ### Prerequisites for `ReActBaseline`
 
@@ -142,6 +146,14 @@ Installable baseline classes. All baselines share the same infrastructure from `
 | `label_utils.py` | `normalize_label()` | Maps dataset-specific labels to canonical `{SUPPORT, REFUTE, NEI}`. |
 | `cost_tracker.py` | `CostTracker` | Records LLM calls, token counts (exact, API-reported via `resp.usage`), and latency per claim. Cost in USD is a **proxy**: `(input_tokens / 1M × in_price) + (output_tokens / 1M × out_price)`. Prices are hardcoded in `DEFAULT_PRICING` (provider prefix stripped from model name before lookup; falls back to $3/$15 per 1M if model is unknown). Token counts are the durable ground truth saved in every `BaselineResult` — USD cost can be recomputed offline. |
 | `prompts.py` | `VERIFICATION_SYSTEM_PROMPT`, … | Shared prompt templates — all baselines use the same verification prompt so only the evidence varies. |
+
+### Common CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--temperature` | `0.0` | LLM sampling temperature (0.0–1.0). Overrides each baseline's default. |
+| `--limit` | `0` | Limit number of claims per dataset (0 = all). |
+| `--output-dir` | `results/baselines` | Directory to save results. |
 
 ## Output format
 
@@ -172,8 +184,9 @@ results/baselines/<baseline>/<model-slug>/<dataset>_metrics.json
 | `output_tokens` | int | Output token count (0 for OpenScholar — not tracked) |
 | `cost_usd` | float | Per-claim USD cost |
 | `latency_seconds` | float | Wall-clock time for the full claim |
-| `baseline_name` | str | `random` / `llm_only` / `open_scholar` |
+| `baseline_name` | str | `random` / `llm_only` / `open_scholar` / … |
 | `model` | str | Model name |
+| `dataset` | str | Dataset name (e.g. `signor`, `connectomedb`) |
 
 ## Adding a new baseline
 
