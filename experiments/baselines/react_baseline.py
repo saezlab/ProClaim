@@ -299,7 +299,7 @@ class ReActBaseline:
         self.num_search_results = num_search_results
         self.temperature = temperature
         self.search_backend = search_backend
-        self.name = "react" if search_backend == "web" else "react_s2"
+        self.name = "react"
         self.log_dir: Path | None = None
 
         # Update module-level default for search results count

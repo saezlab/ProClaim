@@ -26,6 +26,7 @@ uv run python experiments/run_baselines_datasets.py \\
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import logging
 import math
@@ -264,10 +265,23 @@ def main() -> None:
         baseline_subdir = f"{args.baseline}/{model_slug}"
     elif args.baseline == "react":
         model_slug = args.react_model.replace("/", "--")
-        backend_suffix = "_s2" if getattr(args, "react_search_backend", "web") == "s2" else ""
-        baseline_subdir = f"react{backend_suffix}/{model_slug}"
+        search_be = getattr(args, "react_search_backend", "web")
+        baseline_subdir = f"react/{search_be}/{model_slug}"
 
     logger.info("Baseline: %s  repeats=%d  base_seed=%d", args.baseline, args.repeats, args.seed)
+
+    # Save run parameters to a log file in the output directory.
+    run_log_dir = output_dir / baseline_subdir
+    run_log_dir.mkdir(parents=True, exist_ok=True)
+    run_params = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "command": sys.argv,
+        "parameters": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+    }
+    run_params_path = run_log_dir / "run_params.json"
+    with open(run_params_path, "w") as f:
+        json.dump(run_params, f, indent=2)
+    logger.info("Run parameters saved to %s", run_params_path)
 
     all_metrics: dict[str, dict] = {}
 

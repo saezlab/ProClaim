@@ -18,6 +18,7 @@ Cost: 1 S2 API call + 1 LLM call per claim.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -83,8 +84,10 @@ class S2Retrieval:
         t0 = time.monotonic()
 
         # 1. Retrieve from Semantic Scholar
+        # Strip parenthetical boilerplate so the query focuses on key entities.
+        query = re.sub(r"\s*\([^)]*\)\s*", " ", claim).strip()
         try:
-            papers = self._s2.search(claim, limit=self.top_k)
+            papers = self._s2.search(query, limit=self.top_k)
         except S2RateLimitError as exc:
             logger.error("S2 rate-limit exhausted for claim %s: %s", claim_id, exc)
             return BaselineResult(
@@ -98,7 +101,7 @@ class S2Retrieval:
                 latency_seconds=round(time.monotonic() - t0, 2),
             )
         self.tracker.record(
-            "s2_search", latency=time.monotonic() - t0, query=claim
+            "s2_search", latency=time.monotonic() - t0, query=query
         )
 
         if not papers:
