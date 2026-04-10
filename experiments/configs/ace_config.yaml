@@ -1,0 +1,46 @@
+# ──────────────────────────────────────────────────────────────────────
+# ACE Baseline Config
+#
+# Agentic Context Engineering — uses ACE's Generator agent with a
+# claim verification playbook to classify claims.  Runs in eval_only
+# mode (no training, no reflection/curation loop).
+#
+# Usage:
+#   uv run python experiments/run_baselines_datasets.py \
+#       --config experiments/configs/ace_config.yaml
+#
+# Prerequisites:
+#   - ACE cloned at <workspace>/ace (reference only; runs in-process via litellm)
+#   - An LLM API key recognised by litellm (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY)
+#
+# Any CLI flag overrides the value set here.
+# ──────────────────────────────────────────────────────────────────────
+
+# ── Data ──────────────────────────────────────────────────────────────
+datasets_dir: /home/ail/workspace/claim_datasets/datasets
+datasets:
+  - signor
+  - connectomedb
+
+# ── Baseline ──────────────────────────────────────────────────────────
+baseline: ace
+
+# ── ACE model ─────────────────────────────────────────────────────────
+# LiteLLM model string: "<provider>/<model_id>"
+# Examples:
+#   openai/gpt-4o-mini
+#   anthropic/claude-sonnet-4-20250514
+ace_model: anthropic/claude-sonnet-4-6
+
+# Max generation tokens
+ace_max_tokens: 4096
+
+# Optional: path to a pre-trained playbook .txt file
+# ace_playbook: /path/to/best_playbook.txt
+
+# ── Reproducibility ───────────────────────────────────────────────────
+seed: 100
+repeats: 1       # ACE Generator is deterministic (temperature=0.0)
+
+# ── Sampling ──────────────────────────────────────────────────────────
+limit: 0         # 0 = all claims

@@ -317,42 +317,30 @@ def _resolve_doi(pmid: str) -> Optional[str]:
 # Layer 1.5:  Semantic Scholar OA PDF  (openAccessPdf endpoint)
 # ──────────────────────────────────────────────────────────────────────
 
-_S2_GRAPH_BASE = "https://api.semanticscholar.org/graph/v1"
-
 
 def _fetch_semantic_scholar(pmid: str, title: str = "") -> Optional[str]:
     """Fetch full text via Semantic Scholar's ``openAccessPdf`` metadata.
 
-    Looks up the paper by PMID, retrieves the OA PDF URL from the S2
-    metadata response, downloads the PDF, and extracts body text with
-    pymupdf.  Covers papers where S2 links to publisher OA PDFs,
-    PubMed Central PDFs, or repository copies not indexed by NCBI PMC.
-
-    Rate-limit note: the public S2 API allows ~100 req/5 min without an
-    API key.  A 429 response is treated as a soft failure — the layer is
-    skipped silently rather than raising.
+    Looks up the paper by PMID via :class:`~pkevolve.search.semantic_scholar.S2Client`
+    (inheriting process-wide rate-limiting and 429 retry), retrieves the
+    OA PDF URL, downloads the PDF, and extracts body text with pymupdf.
     """
+    from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
+
     try:
-        resp = requests.get(
-            f"{_S2_GRAPH_BASE}/paper/PMID:{pmid}",
-            params={"fields": "openAccessPdf,title"},
-            timeout=15,
-        )
-        if resp.status_code == 429:
-            logger.debug("S2 rate limit hit for PMID %s — skipping Layer 1.5", pmid)
-            return None
-        if resp.status_code != 200:
-            logger.debug("S2 returned %d for PMID %s", resp.status_code, pmid)
+        client = S2Client()
+        data = client.lookup(f"PMID:{pmid}", fields="openAccessPdf,title")
+        if data is None:
+            logger.debug("S2 returned no data for PMID %s", pmid)
             return None
 
-        data = resp.json()
         oa_pdf = data.get("openAccessPdf") or {}
         pdf_url = oa_pdf.get("url")
         if not pdf_url:
             logger.debug("No S2 openAccessPdf for PMID %s", pmid)
             return None
 
-        # Download the OA PDF
+        # Download the OA PDF (not an S2 API call — no rate limiting needed)
         pdf_resp = requests.get(
             pdf_url,
             timeout=60,
@@ -395,6 +383,9 @@ def _fetch_semantic_scholar(pmid: str, title: str = "") -> Optional[str]:
         )
         return full_text
 
+    except S2RateLimitError:
+        logger.warning("S2 rate-limit exhausted for PMID %s — skipping Layer 1.5", pmid)
+        return None
     except Exception as exc:
         logger.debug("Layer 1.5 (Semantic Scholar) failed for PMID %s: %s", pmid, exc)
         return None
