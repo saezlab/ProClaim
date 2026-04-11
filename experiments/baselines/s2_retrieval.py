@@ -65,9 +65,11 @@ class S2Retrieval:
         self,
         llm: LLMBackend,
         top_k: int = 5,
+        strip_parens: bool = True,
     ) -> None:
         self.llm = llm
         self.top_k = top_k
+        self.strip_parens = strip_parens
         self.tracker = CostTracker(model=llm.model)
         self._s2 = S2Client()
         self.log_dir: Path | None = None
@@ -84,8 +86,14 @@ class S2Retrieval:
         t0 = time.monotonic()
 
         # 1. Retrieve from Semantic Scholar
-        # Strip parenthetical boilerplate so the query focuses on key entities.
-        query = re.sub(r"\s*\([^)]*\)\s*", " ", claim).strip()
+        # Optionally strip parenthetical boilerplate so the query focuses on
+        # key entities.  Long parenthetical clauses (e.g. SIGNOR mechanism
+        # descriptions) dominate S2's relevance ranking and drown out the
+        # entity names that actually distinguish one claim from another.
+        if self.strip_parens:
+            query = re.sub(r"\s*\([^)]*\)\s*", " ", claim).strip()
+        else:
+            query = claim
         try:
             papers = self._s2.search(query, limit=self.top_k)
         except S2RateLimitError as exc:

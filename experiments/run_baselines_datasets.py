@@ -98,7 +98,7 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             model=getattr(args, "s2_model", "anthropic/claude-sonnet-4-6"),
             temperature=args.temperature,
         )
-        return S2Retrieval(llm=llm, top_k=getattr(args, "s2_top_k", 5))
+        return S2Retrieval(llm=llm, top_k=getattr(args, "s2_top_k", 5), strip_parens=getattr(args, "s2_strip_parens", True))
     elif name == "open_scholar":
         from baselines.open_scholar_baseline import OpenScholarBaseline
         raw_max = getattr(args, "os_max_tokens", None)
@@ -200,6 +200,7 @@ def parse_args() -> argparse.Namespace:
     # S2 Retrieval-specific arguments
     p.add_argument("--s2-model", dest="s2_model", default="anthropic/claude-sonnet-4-6", help="LiteLLM model string for S2 retrieval baseline.")
     p.add_argument("--s2-top-k", dest="s2_top_k", type=int, default=5, help="Number of S2 abstracts to retrieve (e.g. 5, 10).")
+    p.add_argument("--s2-no-strip-parens", dest="s2_strip_parens", action="store_false", default=True, help="Disable stripping parenthetical text from claims before S2 search (default: strip).")
     # OpenScholar-specific arguments
     p.add_argument("--os-model", dest="os_model", default="claude-sonnet-4-6", help="Model name for OpenScholar (--model_name in run.py).")
     p.add_argument("--os-api", dest="os_api", default="anthropic", help="API provider for OpenScholar (e.g. anthropic, gemini).")
