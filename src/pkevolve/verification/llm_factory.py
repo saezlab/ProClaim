@@ -90,6 +90,21 @@ def make_llm(
 
     client = OpenAI(base_url=base_url, api_key=api_key)
 
+    # Preflight: verify the model is actually served (skip for Anthropic endpoints
+    # which don't expose an OpenAI-compatible /v1/models list).
+    if "api.anthropic.com" not in base_url:
+        try:
+            available = {m.id for m in client.models.list().data}
+            if model not in available:
+                raise ValueError(
+                    f"make_llm: model {model!r} not served by {base_url}. "
+                    f"Available: {sorted(available)}"
+                )
+        except ValueError:
+            raise
+        except Exception:
+            pass  # endpoint unreachable or doesn't implement /v1/models — proceed
+
     def _call_streaming(prompt: str) -> str:
         """Single streaming attempt; returns text or raises."""
         import sys
@@ -121,13 +136,12 @@ def make_llm(
 
         # Print a summary to stdout (so Agent sees activity)
         if display_text:
-            # Show first 200 chars as a preview
             preview = display_text[:200].replace('\n', ' ')
             if len(display_text) > 200:
                 preview += "..."
-            print(f"[LLM response: {len(display_text)} chars] {preview}")
+            logger.debug("[LLM response: %d chars] %s", len(display_text), preview)
         else:
-            print("[LLM response received]")
+            logger.debug("[LLM response received (empty display text)]")
 
         return full_text
 
@@ -247,7 +261,7 @@ def make_anthropic_llm(
                     preview = result[:200].replace("\n", " ")
                     if len(result) > 200:
                         preview += "..."
-                    print(f"[Haiku response: {len(result)} chars] {preview}")
+                    logger.debug("[Haiku response: %d chars] %s", len(result), preview)
                     return result
 
                 logger.warning(

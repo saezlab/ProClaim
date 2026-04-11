@@ -169,7 +169,7 @@ Output ONLY a JSON array of fact objects. No other text."""
 
     response = llm(prompt)
     if not response or response.strip() == "[]":
-        print(f"extract_facts: No facts found for PMID {source_pmid}")
+        logger.debug("extract_facts: No facts found for PMID %s", source_pmid)
         return []
     return _parse_facts_response(response, source_pmid)
 
@@ -411,10 +411,6 @@ def _parse_gaps_response(
         logger.warning(
             "Could not parse gaps JSON from LLM response (first 500 chars): %s",
             response[:500],
-        )
-        print(
-            f"[identify_gaps] JSON parse failed. Raw response (first 300 chars):\n"
-            f"{response[:300]}"
         )
         return _fallback_gaps(claim, subclaims, facts)
 

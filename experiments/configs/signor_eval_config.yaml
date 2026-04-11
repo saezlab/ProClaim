@@ -24,12 +24,12 @@ llm:
   agent_base_url: "https://api.anthropic.com"
 
   # Subagent configuration
-  # subagent_model MUST match the vLLM model ID exactly
+  # subagent_model MUST match the vLLM model ID exactly (no ./ prefix)
   # Common options:
-  #   - ./qwen3-8b (for Qwen 3 8B)
-  #   - ./qwen3.5-9b (for Qwen 3.5 9B)
+  #   - qwen3-8b (for Qwen 3 8B)
+  #   - qwen3.5-9b (for Qwen 3.5 9B)
   #   - Qwen/Qwen3-8B (for full model path)
-  subagent_model: ./qwen3.5-9b
+  subagent_model: qwen3.5-9b
 
   # subagent_base_url is NOT set here - it will use the LLM_BASE_URL
   # environment variable set by run_signor_batch.sh, which reads from
