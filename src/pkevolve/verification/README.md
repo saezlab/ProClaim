@@ -222,14 +222,14 @@ Aggregated across all papers in the evidence pool by `FeatureAggregator`:
 
 ```python
 from pkevolve.verification.config import VerificationSettings
-cfg = VerificationSettings.from_yaml("experiments/signor_eval_config.yaml")
+cfg = VerificationSettings.from_yaml("experiments/configs/signor_eval_config.yaml")
 ```
 
 ### From CLI
 
 ```bash
 uv run python -m pkevolve.verification.evidence_programming \
-    --config experiments/signor_eval_config.yaml \
+    --config experiments/configs/signor_eval_config.yaml \
     --claim "Does MAPK1 phosphorylate H3?"
 ```
 
