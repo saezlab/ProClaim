@@ -7,12 +7,21 @@ Scripts and shared infrastructure for running and evaluating baselines against S
 | Script | Purpose |
 |--------|---------|
 | `run_baselines_datasets.py` | Run a baseline on pre-processed CSV datasets (SIGNOR, ConnectomeDB, SciFact-Open, CIViC-Fact); prints a summary table of Macro F1 / FPR / FNR / Cost (mean ± std over repeats). Accepts `--config` to load baseline parameters from a YAML file. |
+| `run_connectomedb_all.sh` | Run all 9 baselines sequentially on one or more datasets. Uses `flock` to prevent concurrent instances (avoids S2 rate-limit races). Supports resume — re-running skips already-completed claims. |
 | `run_signor_eval.py` | End-to-end SIGNOR evaluation using the full evidence-programming pipeline (runs `pkevolve.verification.evidence_programming` as a subprocess). Config: `configs/signor_eval_config.yaml`. |
 
 ### Quick start
 
 ```bash
-# Run a baseline from a YAML config (recommended)
+# ── Run all 9 baselines on a dataset (sequential, flock-guarded) ──
+bash experiments/run_connectomedb_all.sh                       # connectomedb (default)
+bash experiments/run_connectomedb_all.sh signor                # signor only
+bash experiments/run_connectomedb_all.sh connectomedb signor   # both datasets
+
+# Run in background with logging:
+nohup bash experiments/run_connectomedb_all.sh connectomedb > nohup_connectomedb.out 2>&1 &
+
+# ── Run a single baseline from a YAML config ──
 uv run python experiments/run_baselines_datasets.py \
     --config experiments/configs/random_baseline_config.yaml
 
@@ -51,6 +60,46 @@ YAML config files for `run_baselines_datasets.py`. Load with `--config`; any CLI
 | `test_config.yaml` | *(evidence-programming)* | Test config for `pkevolve.verification.evidence_programming` smoke tests |
 
 YAML keys mirror `argparse` `dest` names (e.g. `os_model`, `os_retrieval`, `datasets_dir`). All keys are optional — omitted keys fall back to the CLI defaults.
+
+## run_connectomedb_all.sh
+
+Runs all 9 baselines sequentially on one or more datasets. Accepts dataset names as positional arguments (default: `connectomedb`).
+
+### Baselines run (in order)
+
+| # | Category | Baseline | Model |
+|---|----------|----------|-------|
+| 1 | LLM-only | `llm_only` | `anthropic/claude-sonnet-4-6` |
+| 2 | LLM-only | `llm_only` | `vertex_ai/gemini-3.1-pro-preview` |
+| 3 | Static retrieval | `s2_retrieval` | `anthropic/claude-sonnet-4-6` |
+| 4 | Static retrieval | `s2_retrieval` | `vertex_ai/gemini-3.1-pro-preview` |
+| 5 | Adaptive retrieval | `react` (web) | `anthropic/claude-sonnet-4-6` |
+| 6 | Adaptive retrieval | `react` (S2) | `anthropic/claude-sonnet-4-6` |
+| 7 | Adaptive retrieval | `ace` | `anthropic/claude-sonnet-4-6` |
+| 8 | Adaptive retrieval | `fire` | `anthropic/claude-sonnet-4-6` |
+| 9 | Adaptive retrieval | `open_scholar` | `claude-sonnet-4-6` (S2 retrieval, no oracle evidence) |
+
+```
+LLM-only:
+Claude-Sonnet-4.6
+Gemini-3.1-Pro-Preview
+
+Static retrieval:
+Claude-Sonnet-4.6 + S2
+Gemini-3.1-Pro-Preview + S2
+
+Adaptive retrieval (Claude-Sonnet-4.6 for all below):
+ReAct + web search
+ReAct + S2
+ACE
+FIRE
+OpenScholar-Sonnet-4.6 (no evidence)
+```
+
+### Concurrency & resume
+
+- **flock guard**: Uses `flock` on `/tmp/run_all_baselines.lock` so only one instance can run at a time. A second launch exits immediately with an error. This prevents S2 rate-limit races between concurrent processes.
+- **Resume**: Each baseline uses the evaluation harness's resume feature — already-completed claims (matched by `claim_id` in the JSONL) are skipped. Re-running the script after a partial failure picks up exactly where it left off.
 
 ## baselines/
 

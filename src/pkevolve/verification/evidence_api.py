@@ -2146,7 +2146,13 @@ def setup_kernel(
         extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
-    llm = make_llm(base_url=base_url, api_key=api_key, model=model, temperature=temperature, extra_body=extra_body)
+    llm = make_llm(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        temperature=temperature,
+        extra_body=extra_body,
+    )
 
     # Initialize label config from environment (JSON-encoded, set by build_sdk_env)
     label_json = os.environ.get("LABEL_CONFIG_JSON")
@@ -2164,4 +2170,104 @@ def setup_kernel(
         set_label_config(LabelConfig())
 
     print(f"Kernel ready. state=<{len(state.papers)} papers>, llm={model!r}, max_iterations={state.MAX_ITERATIONS}")
+    return state, llm, ws
+
+
+def setup_workspace(
+    claim: str,
+    workspace_path: str,
+) -> tuple:
+    """Stateless workspace bootstrap — returns ``(state, llm, workspace)``.
+
+    Like ``setup_kernel()`` but designed for bash-mode execution where
+    there is no persistent Jupyter kernel.  Each call:
+
+    - **Loads** existing ``evidence_state.json`` if present (idempotent),
+      or creates a new ``EvidenceState`` if not.
+    - Builds an ``llm`` callable from environment variables.
+    - Initialises label config.
+
+    Safe to call at the top of every bash invocation.
+
+    LLM and config parameters are read from environment variables set by
+    the orchestrator:
+
+    - ``LLM_BASE_URL``  — OpenAI-compatible base URL (subagent endpoint)
+    - ``LLM_API_KEY``   — API key
+    - ``LLM_MODEL``     — model identifier
+    - ``MLP_MODEL_DIR`` — path to MLP classifier weights
+
+    Example::
+
+        from pkevolve.verification.evidence_api import setup_workspace
+        state, llm, workspace = setup_workspace(
+            claim="MAPK1 directly activates H3-3A.",
+            workspace_path="/path/to/workspace",
+        )
+    """
+    import os
+
+    ws = Path(workspace_path)
+    ws.mkdir(parents=True, exist_ok=True)
+
+    state_path = ws / "evidence_state.json"
+    if state_path.exists():
+        state = EvidenceState.load(state_path)
+    else:
+        state = EvidenceState.init_new(
+            claim=claim,
+            subclaims=[claim],
+            workspace=ws,
+        )
+
+    # Override MAX_ITERATIONS from environment
+    max_iter_env = os.environ.get("MAX_ITERATIONS")
+    if max_iter_env is not None:
+        try:
+            state.MAX_ITERATIONS = int(max_iter_env)
+        except ValueError:
+            pass
+
+    base_url = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1/")
+    api_key = (
+        os.environ.get("LLM_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("GLM_API_KEY")
+        or os.environ.get("ZAI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or "EMPTY"
+    )
+    model = os.environ.get("LLM_MODEL", "glm-5")
+
+    disable_thinking = os.environ.get("LLM_DISABLE_THINKING", "0") == "1"
+    extra_body = None
+    if disable_thinking:
+        extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
+
+    temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+
+    from pkevolve.verification.llm_factory import make_llm
+    llm = make_llm(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        temperature=temperature,
+        extra_body=extra_body,
+    )
+
+    # Initialize label config from environment
+    label_json = os.environ.get("LABEL_CONFIG_JSON")
+    if label_json:
+        import json as _json
+        try:
+            from pkevolve.verification.config import LabelConfig, set_label_config
+            label_data = _json.loads(label_json)
+            set_label_config(LabelConfig(**label_data))
+        except Exception as exc:
+            logger.warning("Failed to parse LABEL_CONFIG_JSON: %s", exc)
+    else:
+        from pkevolve.verification.config import set_label_config, LabelConfig
+        set_label_config(LabelConfig())
+
+    print(f"Workspace ready. state=<{len(state.papers)} papers, {len(state.facts)} facts>, llm={model!r}")
     return state, llm, ws
