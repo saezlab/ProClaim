@@ -8,6 +8,23 @@ multiple repetitions per claim. Results are appended incrementally to an
 output CSV. Token usage and cost estimates are parsed from the verdict artifacts.
 
 No flip variants are generated — each claim is run as-is.
+
+To test a single claim (e.g., AFDN EPHA7) directly from the terminal, you can use:
+uv run python -m pkevolve.verification.evidence_programming \
+    --config experiments/configs/test_config.yaml \
+    --claim "In the context of protein-protein interactions, AFDN as ligand directly interacts with EPHA7 as receptor." \
+    --output-dir results/test_AFDN_EPHA7 \
+    --notebook-path results/test_AFDN_EPHA7/evidence_report.ipynb
+uv run python -m pkevolve.verification.evidence_programming \
+    --config experiments/configs/test_config.yaml \
+    --claim "In the context of protein-protein interactions, ITGB2 as ligand directly interacts with THY1 as receptor." \
+    --output-dir results/test_ITGB2_THY1 \
+    --notebook-path results/test_ITGB2_THY1/evidence_report.ipynb
+uv run python -m pkevolve.verification.evidence_programming \
+    --config experiments/configs/test_config.yaml \
+    --claim "In the context of protein-protein interactions, LY86 as ligand directly interacts with CD180 as receptor." \
+    --output-dir results/test_LY86_CD180 \
+    --notebook-path results/test_LY86_CD180/evidence_report.ipynb
 """
 
 import argparse

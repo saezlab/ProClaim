@@ -26,17 +26,17 @@ echo "============================================================"
 
 # ---------------------------------------------------------------------------
 # Row range for this array task (ignored in single mode)
-# 547 rows split across 8 tasks: first 3 tasks get 69 rows, remaining 5 get 68
+# 318 rows split across 8 tasks: first 6 tasks get 40 rows, remaining 2 get 39
 # ---------------------------------------------------------------------------
 case "$TASK_ID" in
-    0) ROW_START=0;   ROW_LIMIT=69 ;;
-    1) ROW_START=69;  ROW_LIMIT=69 ;;
-    2) ROW_START=138; ROW_LIMIT=69 ;;
-    3) ROW_START=207; ROW_LIMIT=68 ;;
-    4) ROW_START=275; ROW_LIMIT=68 ;;
-    5) ROW_START=343; ROW_LIMIT=68 ;;
-    6) ROW_START=411; ROW_LIMIT=68 ;;
-    7) ROW_START=479; ROW_LIMIT=68 ;;
+    0) ROW_START=0;   ROW_LIMIT=40 ;;
+    1) ROW_START=40;  ROW_LIMIT=40 ;;
+    2) ROW_START=80;  ROW_LIMIT=40 ;;
+    3) ROW_START=120; ROW_LIMIT=40 ;;
+    4) ROW_START=160; ROW_LIMIT=40 ;;
+    5) ROW_START=200; ROW_LIMIT=40 ;;
+    6) ROW_START=240; ROW_LIMIT=39 ;;
+    7) ROW_START=279; ROW_LIMIT=39 ;;
     *) ROW_START=0;   ROW_LIMIT=0  ;;
 esac
 
