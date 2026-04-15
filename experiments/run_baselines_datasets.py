@@ -126,19 +126,28 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
         )
     elif name == "ace":
         from baselines.ace_baseline import ACEBaseline
+        from baselines.shared.llm import LLMBackend
+        llm = LLMBackend(
+            model=getattr(args, "ace_model", "openai/gpt-4o-mini"),
+            temperature=args.temperature,
+            max_tokens=getattr(args, "ace_max_tokens", 4096),
+        )
         playbook = getattr(args, "ace_playbook", None)
         return ACEBaseline(
-            model=getattr(args, "ace_model", "openai/gpt-4o-mini"),
-            max_tokens=getattr(args, "ace_max_tokens", 4096),
+            llm=llm,
             playbook=playbook if playbook else None,
-            temperature=args.temperature,
         )
     elif name == "react":
         from baselines.react_baseline import ReActBaseline
-        return ReActBaseline(
+        from baselines.shared.llm import LLMBackend
+        llm = LLMBackend(
             model=getattr(args, "react_model", "openai/gpt-4o-mini"),
-            max_steps=getattr(args, "react_max_steps", 10),
             temperature=args.temperature,
+            max_tokens=2048,
+        )
+        return ReActBaseline(
+            llm=llm,
+            max_steps=getattr(args, "react_max_steps", 10),
             search_backend=getattr(args, "react_search_backend", "web"),
         )
     else:

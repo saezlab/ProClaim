@@ -45,6 +45,7 @@ from langchain_litellm import ChatLiteLLM
 from langgraph.prebuilt import create_react_agent
 
 from baselines.shared.cost_tracker import CostTracker
+from baselines.shared.llm import LLMBackend
 from baselines.shared.label_utils import (
     normalize_label,
     validate_verdict,
@@ -269,15 +270,13 @@ class ReActBaseline:
 
     Parameters
     ----------
-    model:
-        Any litellm model string, e.g. ``"anthropic/claude-sonnet-4-6"``,
-        ``"openai/gpt-4o-mini"``.
+    llm:
+        Shared ``LLMBackend`` instance.  Model and temperature are read
+        from it to configure the underlying ``ChatLiteLLM``.
     max_steps:
         Maximum number of agent steps (LLM calls) before the agent must stop.
     num_search_results:
         Number of search results per query.
-    temperature:
-        LLM sampling temperature.
     search_backend:
         ``"web"`` (default) for Serper/DuckDuckGo, ``"s2"`` for Semantic
         Scholar.
@@ -285,19 +284,19 @@ class ReActBaseline:
 
     def __init__(
         self,
-        model: str = "openai/gpt-4o-mini",
+        llm: LLMBackend,
+        *,
         max_steps: int = 10,
         num_search_results: int = 3,
-        temperature: float = 0.0,
         search_backend: str = "web",
     ) -> None:
         if search_backend not in ("web", "s2"):
             raise ValueError(f"search_backend must be 'web' or 's2', got {search_backend!r}")
 
-        self.model = model
+        self.model = llm.model
         self.max_steps = max_steps
         self.num_search_results = num_search_results
-        self.temperature = temperature
+        self.temperature = llm.temperature
         self.search_backend = search_backend
         self.name = "react"
         self.log_dir: Path | None = None
@@ -316,9 +315,9 @@ class ReActBaseline:
 
         # Build LangChain LLM via ChatLiteLLM
         self._llm = ChatLiteLLM(
-            model=model,
-            temperature=temperature,
-            max_tokens=2048,
+            model=llm.model,
+            temperature=llm.temperature,
+            max_tokens=llm.max_tokens,
         )
 
         # Build the LangGraph ReAct agent
@@ -330,7 +329,7 @@ class ReActBaseline:
         )
 
         # Cost estimation
-        model_key = model.split("/", 1)[-1] if "/" in model else model
+        model_key = self.model.split("/", 1)[-1] if "/" in self.model else self.model
         in_price, out_price = CostTracker.DEFAULT_PRICING.get(
             model_key, CostTracker.FALLBACK_PRICING,
         )
