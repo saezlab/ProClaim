@@ -97,13 +97,90 @@ def _no_retrieval_description(name: str, retrieval_desc: str) -> str:
 VERIFICATION_SYSTEM_PROMPT = build_verification_system_prompt()
 VERIFICATION_SYSTEM_PROMPT_NO_RETRIEVAL = build_verification_system_prompt_no_retrieval()
 
+# ================================================================================
+# Shortest possible prompts for final verdict, to minimize token usage and cost in the LLM-only baseline.
+# ================================================================================
+
+# VERIFICATION_SYSTEM_PROMPT = """You are a scientific claim verification expert.
+
+# Given a claim and retrieved evidence, determine whether the claim is:
+# - SUPPORT: The evidence supports the claim
+# - REFUTE: The evidence contradicts the claim
+# - UNCERTAIN: The evidence is ambiguous or conflicting
+
+# Respond in JSON format:
+# {
+#     "label": "SUPPORT" | "REFUTE" | "UNCERTAIN",
+#     "reasoning": "Brief explanation",
+#     "evidence": ["PMID1", "PMID2", ...]
+# }"""
+
+# VERIFICATION_SYSTEM_PROMPT_NO_RETRIEVAL = """You are a scientific claim verification expert.
+
+# Given a claim, determine whether it is:
+# - SUPPORT: Your knowledge supports the claim
+# - REFUTE: Your knowledge contradicts the claim
+# - UNCERTAIN: Your knowledge is insufficient to determine
+
+# Respond in JSON format:
+# {
+#     "label": "SUPPORT" | "REFUTE" | "UNCERTAIN",
+#     "reasoning": "Brief explanation"
+# }"""
+
+# ================================================================================
+# Short, more detailed prompts with clarifications of label definitions
+# ================================================================================
+
+# VERIFICATION_SYSTEM_PROMPT = """You are a scientific claim verification expert.
+
+# Given a claim and retrieved evidence, determine whether the claim is:
+# - SUPPORT: The evidence supports the claim
+# - REFUTE: The evidence contradicts the claim, or no evidence substantiates it
+# - UNCERTAIN: The evidence is ambiguous or conflicting
+
+# Respond in JSON format:
+# {
+#     "label": "SUPPORT" | "REFUTE" | "UNCERTAIN",
+#     "reasoning": "Brief explanation",
+#     "evidence": ["PMID1", "PMID2", ...]
+# }"""
+
+# VERIFICATION_SYSTEM_PROMPT_NO_RETRIEVAL = """You are a scientific claim verification expert.
+
+# Given a claim, determine whether it is:
+# - SUPPORT: Your knowledge supports the claim
+# - REFUTE: Your knowledge contradicts the claim, or the claim lacks known evidence
+# - UNCERTAIN: Your knowledge is insufficient to determine
+
+# Respond in JSON format:
+# {
+#     "label": "SUPPORT" | "REFUTE" | "UNCERTAIN",
+#     "reasoning": "Brief explanation"
+# }"""
+
+# ================================================================================
+# User prompts for LLM-only and retrieval-based baselines
+# ================================================================================
+
 VERIFICATION_USER_TEMPLATE = """Claim: {claim}
 
 Retrieved Evidence:
 {evidence}
 
-Classify the claim based solely on the evidence passages above. Output JSON."""
+Based on the above evidence, classify the claim."""
 
 LLM_ONLY_USER_TEMPLATE = """Claim: {claim}
 
-Classify this claim based on your scientific knowledge. Output JSON."""
+Based on your scientific knowledge, classify the claim."""
+
+VERIFICATION_USER_TEMPLATE = """Claim: {claim}
+
+Retrieved Evidence:
+{evidence}
+
+Based on the above evidence, classify the claim. Output JSON."""
+
+LLM_ONLY_USER_TEMPLATE = """Claim: {claim}
+
+Based on your scientific knowledge, classify the claim. Output JSON."""

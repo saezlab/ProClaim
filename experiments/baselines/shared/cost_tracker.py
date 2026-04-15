@@ -38,6 +38,7 @@ class CostTracker:
         # --- Gemini 3 (standard tier, per 1M tokens) ---
         "gemini-3.1-pro-preview": (2.00, 12.00),
         "gemini-3-pro-preview": (2.00, 12.00),
+        "gemini-2.5-pro": (1.25, 10.00),
     }
     FALLBACK_PRICING = (3.00, 15.00)
 

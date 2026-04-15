@@ -44,6 +44,8 @@ fulltext = [
 baselines = [
     # DuckDuckGo search fallback for FIRE and ReAct baselines.
     "ddgs",
+    # Google Cloud SDK for Vertex AI / Gemini models via LiteLLM.
+    "litellm[google]",
 ]
 
 [build-system]

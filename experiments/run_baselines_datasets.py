@@ -154,16 +154,16 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
         raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, s2_retrieval, open_scholar, fire, ace, react")
 
 
-def _mean_std(values: list[float]) -> dict[str, float]:
+def _mean_std(values: list[float], decimals: int = 2) -> dict[str, float]:
     n = len(values)
     mean = sum(values) / n
     variance = sum((v - mean) ** 2 for v in values) / n
-    return {"mean": round(mean, 4), "std": round(math.sqrt(variance), 4)}
+    return {"mean": round(mean, decimals), "std": round(math.sqrt(variance), decimals)}
 
 
 def aggregate_metrics(all_runs: list[dict]) -> dict:
     """Aggregate a list of per-repeat metric dicts into mean ± std."""
-    scalar_keys = ["accuracy", "macro_f1", "macro_fpr", "macro_fnr", "weighted_fpr", "weighted_fnr"]
+    scalar_keys = ["accuracy", "macro_f1", "macro_fpr", "macro_fnr", "weighted_fpr", "weighted_fnr", "weighted_tpr", "weighted_tnr"]
     per_class_labels = ["SUPPORT", "REFUTE", "UNCERTAIN"]
     per_class_subkeys = ["precision", "recall", "f1"]
 
@@ -183,8 +183,8 @@ def aggregate_metrics(all_runs: list[dict]) -> dict:
                 [r["per_class"][label][sub] for r in all_runs]
             )
 
-    agg["total_cost_usd"] = _mean_std([r["total_cost_usd"] for r in all_runs])
-    agg["avg_cost_usd"] = _mean_std([r["avg_cost_usd"] for r in all_runs])
+    agg["total_cost_usd"] = _mean_std([r["total_cost_usd"] for r in all_runs], decimals=3)
+    agg["avg_cost_usd"] = _mean_std([r["avg_cost_usd"] for r in all_runs], decimals=3)
     return agg
 
 
@@ -323,9 +323,10 @@ def main() -> None:
             m = EvaluationHarness.metrics(results)
             repeat_metrics.append(m)
             logger.info(
-                "  [repeat %d/%d seed=%d]  accuracy=%.4f  macro_f1=%.4f  w_fpr=%.4f  w_fnr=%.4f",
+                "  [repeat %d/%d seed=%d]  accuracy=%.2f  macro_f1=%.2f  w_fpr=%.2f  w_fnr=%.2f  w_tpr=%.2f  w_tnr=%.2f",
                 rep + 1, n_repeats, seed,
                 m["accuracy"], m["macro_f1"], m["weighted_fpr"], m["weighted_fnr"],
+                m["weighted_tpr"], m["weighted_tnr"],
             )
 
             # Rewrite the JSONL in canonical (claims-order) form after full completion
@@ -340,12 +341,14 @@ def main() -> None:
             json.dump(agg, f, indent=2)
 
         logger.info(
-            "  AGGREGATED (%d repeats): accuracy=%.4f±%.4f  macro_f1=%.4f±%.4f  w_fpr=%.4f±%.4f  w_fnr=%.4f±%.4f",
+            "  AGGREGATED (%d repeats): accuracy=%.2f±%.2f  macro_f1=%.2f±%.2f  w_fpr=%.2f±%.2f  w_fnr=%.2f±%.2f  w_tpr=%.2f±%.2f  w_tnr=%.2f±%.2f",
             n_repeats,
             agg["accuracy"]["mean"], agg["accuracy"]["std"],
             agg["macro_f1"]["mean"], agg["macro_f1"]["std"],
             agg["weighted_fpr"]["mean"], agg["weighted_fpr"]["std"],
             agg["weighted_fnr"]["mean"], agg["weighted_fnr"]["std"],
+            agg["weighted_tpr"]["mean"], agg["weighted_tpr"]["std"],
+            agg["weighted_tnr"]["mean"], agg["weighted_tnr"]["std"],
         )
         logger.info("  Metrics saved to %s", metrics_path)
 
@@ -353,18 +356,22 @@ def main() -> None:
 
     # Print summary
     print("\n=== SUMMARY ===")
-    print(f"\n{'Dataset':<16} {'Macro F1':>12} {'W-FPR':>12} {'W-FNR':>12} {'Cost (USD)':>12}")
-    print("-" * 64)
+    print(f"\n{'Dataset':<16} {'Macro F1':>12} {'W-FPR':>12} {'W-FNR':>12} {'W-TPR':>12} {'W-TNR':>12} {'Cost (USD)':>14}")
+    print("-" * 90)
     for dataset_name, agg in all_metrics.items():
         mf1  = agg["macro_f1"]
         fpr  = agg["weighted_fpr"]
         fnr  = agg["weighted_fnr"]
+        tpr  = agg["weighted_tpr"]
+        tnr  = agg["weighted_tnr"]
         cost = agg["total_cost_usd"]
         print(
             f"{dataset_name.upper():<16}"
-            f" {mf1['mean']:.3f}±{mf1['std']:.3f}"
-            f" {fpr['mean']:.3f}±{fpr['std']:.3f}"
-            f" {fnr['mean']:.3f}±{fnr['std']:.3f}"
+            f" {mf1['mean']:.2f}±{mf1['std']:.2f}"
+            f" {fpr['mean']:.2f}±{fpr['std']:.2f}"
+            f" {fnr['mean']:.2f}±{fnr['std']:.2f}"
+            f" {tpr['mean']:.2f}±{tpr['std']:.2f}"
+            f" {tnr['mean']:.2f}±{tnr['std']:.2f}"
             f" {cost['mean']:.3f}±{cost['std']:.3f}"
         )
 

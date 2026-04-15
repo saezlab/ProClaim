@@ -180,11 +180,11 @@ class EvaluationHarness:
             fpr = fp[label] / (fp[label] + tn[label]) if (fp[label] + tn[label]) > 0 else 0.0
             fnr = fn[label] / (fn[label] + tp[label]) if (fn[label] + tp[label]) > 0 else 0.0
             per_class[label] = {
-                "precision": round(p, 4),
-                "recall": round(r, 4),
-                "f1": round(f, 4),
-                "fpr": round(fpr, 4),
-                "fnr": round(fnr, 4),
+                "precision": round(p, 2),
+                "recall": round(r, 2),
+                "f1": round(f, 2),
+                "fpr": round(fpr, 2),
+                "fnr": round(fnr, 2),
                 "tp": tp[label],
                 "fp": fp[label],
                 "fn": fn[label],
@@ -202,6 +202,8 @@ class EvaluationHarness:
         total_support = total  # sum of (tp[l]+fn[l]) over all labels == total
         weighted_fpr = sum((tp[l] + fn[l]) * per_class[l]["fpr"] for l in labels) / total_support if total_support > 0 else 0.0
         weighted_fnr = sum((tp[l] + fn[l]) * per_class[l]["fnr"] for l in labels) / total_support if total_support > 0 else 0.0
+        weighted_tpr = 1.0 - weighted_fnr
+        weighted_tnr = 1.0 - weighted_fpr
 
         # Cost aggregates
         total_cost = sum(r.cost_usd for r in results)
@@ -211,15 +213,17 @@ class EvaluationHarness:
 
         return {
             "n": total,
-            "accuracy": round(accuracy, 4),
-            "macro_f1": round(macro_f1, 4),
-            "macro_fpr": round(macro_fpr, 4),
-            "macro_fnr": round(macro_fnr, 4),
-            "weighted_fpr": round(weighted_fpr, 4),
-            "weighted_fnr": round(weighted_fnr, 4),
+            "accuracy": round(accuracy, 2),
+            "macro_f1": round(macro_f1, 2),
+            "macro_fpr": round(macro_fpr, 2),
+            "macro_fnr": round(macro_fnr, 2),
+            "weighted_fpr": round(weighted_fpr, 2),
+            "weighted_fnr": round(weighted_fnr, 2),
+            "weighted_tpr": round(weighted_tpr, 2),
+            "weighted_tnr": round(weighted_tnr, 2),
             "per_class": per_class,
-            "total_cost_usd": round(total_cost, 6),
-            "avg_cost_usd": round(avg_cost, 6),
+            "total_cost_usd": round(total_cost, 3),
+            "avg_cost_usd": round(avg_cost, 3),
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
         }
