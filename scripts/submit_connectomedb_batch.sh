@@ -20,6 +20,8 @@
 #   bash scripts/submit_connectomedb_batch.sh --status         # Check job status
 #   bash scripts/submit_connectomedb_batch.sh --cancel         # Cancel running jobs
 #   bash scripts/submit_connectomedb_batch.sh --logs           # View job logs
+#   bash scripts/submit_connectomedb_batch.sh --resume               # Resume last failed run
+#   bash scripts/submit_connectomedb_batch.sh --run-tag 20260414_160003  # Resume specific run
 # =============================================================================
 set -euo pipefail
 
@@ -47,6 +49,7 @@ ACTION="submit"
 MODE="parallel"     # "parallel" (8-chunk array) or "single"
 REPS_ARG=""
 LIMIT_ARG=""
+RESUME_TAG=""       # set by --resume or --run-tag; empty = generate fresh tag
 
 # ---- Parse arguments --------------------------------------------------------
 while [[ $# -gt 0 ]]; do
@@ -58,12 +61,26 @@ while [[ $# -gt 0 ]]; do
         --single)    MODE="single";    shift ;;
         --reps)      REPS_ARG="--reps $2";  shift 2 ;;
         --limit)     LIMIT_ARG="--limit $2"; shift 2 ;;
+        --resume)    RESUME_TAG="__auto__"; shift ;;  # resolved to last RUN_TAG after ssh_login is defined
+        --run-tag)
+            RESUME_TAG="$2"
+            if [[ -z "$RESUME_TAG" ]]; then
+                echo "ERROR: --run-tag requires a non-empty value"
+                exit 1
+            fi
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $(basename "$0") [OPTIONS]"
             echo ""
             echo "Submission modes:"
             echo "  (default)          8-chunk parallel: 8 GPUs, auto-merged results"
             echo "  --single           Single-GPU mode: all rows on one GPU"
+            echo ""
+            echo "Resume:"
+            echo "  --resume           Reuse RUN_TAG from last run (reads .connectomedb_job_info)"
+            echo "  --run-tag TAG      Reuse an explicit RUN_TAG (e.g. 20260414_160003)"
+            echo "  Both modes append to existing chunk CSVs and skip already-completed cases."
             echo ""
             echo "Actions:"
             echo "  --status     Check job status"
@@ -160,7 +177,22 @@ if [[ "$ACTION" == "logs" ]]; then
 fi
 
 # ---- SUBMIT -----------------------------------------------------------------
-RUN_TAG=$(date +%Y%m%d_%H%M%S)
+# Resolve --resume: look up the last RUN_TAG from the job info file
+if [[ "$RESUME_TAG" == "__auto__" ]]; then
+    RESUME_TAG=$(ssh_login "awk '{print \$3}' ${JOB_INFO_FILE} 2>/dev/null || echo ''")
+    if [[ -z "$RESUME_TAG" ]]; then
+        echo "ERROR: --resume requested but ${JOB_INFO_FILE} not found or empty on ${LOGIN_HOST}"
+        exit 1
+    fi
+fi
+
+if [[ -n "$RESUME_TAG" ]]; then
+    RUN_TAG="$RESUME_TAG"
+    echo "Resuming run: ${RUN_TAG}"
+    echo "  (skipping completed cases found in existing chunk CSVs)"
+else
+    RUN_TAG=$(date +%Y%m%d_%H%M%S)
+fi
 
 # Build EXTRA_ARGS to pass through to run_connectomedb_eval.py
 EXTRA_ARGS="${REPS_ARG}"
