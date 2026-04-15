@@ -444,9 +444,9 @@ class VerificationSettings(BaseSettings):
             extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
         return make_llm(
-            base_url=self.subagent_base_url,
-            api_key=self.api_key,
             model=self.subagent_model,
+            api_key=self.api_key,
+            base_url=self.subagent_base_url,
             temperature=self.temperature,
             extra_body=extra_body,
         )

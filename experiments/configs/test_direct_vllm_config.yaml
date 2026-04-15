@@ -1,0 +1,34 @@
+# ──────────────────────────────────────────────────────────────────────
+# Test config for evidence_programming_direct with local vLLM subagent
+#
+# Agent: Claude Sonnet (outer orchestrator via LiteLLM)
+# Subagent: Qwen3-8B on local vLLM (http://localhost:8000/v1/)
+#
+# Usage:
+#   uv run python -m pkevolve.verification.evidence_programming_direct \
+#       --config experiments/configs/test_direct_vllm_config.yaml \
+#       --claim "GNAS directly activates ADCY1 ..."
+# ──────────────────────────────────────────────────────────────────────
+
+# Verification workflow parameters
+max_iterations: 2
+sufficiency_threshold: 0.80
+max_turns: 30
+
+# LLM configuration
+llm:
+  # Agent model: LiteLLM model string (outer orchestrator)
+  model: anthropic/claude-sonnet-4-20250514
+
+  # Subagent model: Qwen3-8B on local vLLM
+  subagent_model: Qwen/Qwen3-8B
+  subagent_base_url: "http://localhost:8000/v1/"
+
+  temperature: 0.2
+  disable_thinking: true
+
+# Output paths
+mlp_model_dir: results/ablation/models/tau_0.50_seed_42
+
+# Logging
+verbose: true

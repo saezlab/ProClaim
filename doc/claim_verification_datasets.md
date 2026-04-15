@@ -154,10 +154,10 @@ Two source files from `connectome_dir` are merged into the consolidated `connect
 | File | Rows | Labels |
 |------|------|--------|
 | `cdb25_direct_multipub_unique.csv` | 184 | SUPPORT (all 184) |
-| `ConnectomeDB2020_rejected_labeled.csv` | 363 | REFUTE: 120 · UNCERTAIN: 243 |
-| **Total** | **547** | **SUPPORT: 184 · REFUTE: 120 · UNCERTAIN: 243** |
+| `ConnectomeDB2020_rejected_labeled.csv` | 134 | REFUTE: 121 · UNCERTAIN: 13 |
+| **Total** | **318** | **SUPPORT: 184 · REFUTE: 121 · UNCERTAIN: 13** |
 
-Species breakdown (positives only; negatives have no species field and default to `human` in the claim template): human 145, mouse 36, rat 3.
+The negative set excludes 228 "No primary evidence" pairs (may have indirect support) and 1 species-specific artefact. Species breakdown (positives only): human 145, mouse 36, rat 3.
 
 **Key positive columns:** `LR Pair` (e.g. `TGFB1 TGFBR1`), `Ligand Symbols`, `Receptor Symbols`, `AI summary` (Perplexity URL embedding PMIDs), `Species`.
 
@@ -173,10 +173,10 @@ output_dir = Path(cfg["output_dir"])
 
 # Load the pre-built consolidated dataset
 df = pd.read_csv(output_dir / "connectomedb.csv")
-# df['label'] values: SUPPORT (184), REFUTE (120), UNCERTAIN (243)
+# df['label'] values: SUPPORT (184), REFUTE (121), UNCERTAIN (13)
 ```
 
-**Claim string:** all 547 entries use the affirmative template `"{Ligand} is a ligand that directly interacts with receptor {Receptor} for cell-cell communication in {Species}"`. The `label` column carries the verdict (SUPPORT / REFUTE / UNCERTAIN).
+**Claim string:** all entries use the affirmative template `"In the context of protein-protein interactions, {Ligand} as ligand directly interacts with {Receptor} as receptor."`. The `label` column carries the verdict (SUPPORT / REFUTE / UNCERTAIN).
 
 ---
 
@@ -258,7 +258,7 @@ for _, row in df.iterrows():
 
 | Dataset | Role | Evaluation subset | Size | Labels |
 |---------|------|-------------------|------|--------|
-| **ConnectomeDB** | **Primary** | `cdb25_direct_multipub_unique.csv` + `ConnectomeDB2020_rejected_labeled.csv` → `connectomedb.csv` | 547 rows (SUPPORT: 184, REFUTE: 120, UNCERTAIN: 243) | SUPPORT / REFUTE / UNCERTAIN |
+| **ConnectomeDB** | **Primary** | `cdb25_direct_multipub_unique.csv` + `ConnectomeDB2020_rejected_labeled.csv` → `connectomedb.csv` | 318 rows (SUPPORT: 184, REFUTE: 121, UNCERTAIN: 13) | SUPPORT / REFUTE / UNCERTAIN |
 | **SIGNOR** | **Primary** | All 67 forward + 44 negated (up-regulates only) | 111 variants | SUPPORT / REFUTE / UNCERTAIN |
 | SciFact-Open | Secondary | 20 % stratified test split of annotated claims | ~42 claims | SUPPORT / REFUTE |
 | CIViC-Fact | Secondary | `partition == "test"`, `flagged != True` | ~2 014 rows | SUPPORT / REFUTE / UNCERTAIN |

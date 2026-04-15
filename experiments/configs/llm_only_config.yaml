@@ -32,7 +32,7 @@ model: anthropic/claude-sonnet-4-6
 
 # ── Reproducibility ───────────────────────────────────────────────────
 seed: 100      # base seed; repeat i uses seed + i
-repeats: 3     # number of independent runs (temperature=0 so variance comes from API non-determinism)
+repeats: 1     # number of independent runs (temperature=0 so variance comes from API non-determinism)
 
 # ── Sampling ──────────────────────────────────────────────────────────
 limit: 0       # 0 = all claims
