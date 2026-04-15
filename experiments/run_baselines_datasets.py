@@ -201,6 +201,8 @@ def aggregate_metrics(all_runs: list[dict]) -> dict:
 
     agg["total_cost_usd"] = _mean_std([r["total_cost_usd"] for r in all_runs])
     agg["avg_cost_usd"] = _mean_std([r["avg_cost_usd"] for r in all_runs])
+    agg["total_input_tokens"] = _mean_std([r["total_input_tokens"] for r in all_runs])
+    agg["total_output_tokens"] = _mean_std([r["total_output_tokens"] for r in all_runs])
     return agg
 
 

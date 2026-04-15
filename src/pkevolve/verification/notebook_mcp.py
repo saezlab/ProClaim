@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("notebook-tools")
 
 # ---------------------------------------------------------------------------
-# Output truncation
+# Output truncation (per-tool-call truncation limit)
 # ---------------------------------------------------------------------------
 
 _MAX_OUTPUT = int(os.environ.get("NB_MAX_OUTPUT_CHARS", "12000"))

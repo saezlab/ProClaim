@@ -26,6 +26,7 @@ Usage::
 
 import json
 import logging
+import os
 import re
 from typing import Callable, Optional
 
@@ -35,8 +36,18 @@ from pkevolve.verification.data_models import (
     Gap,
     Stance,
 )
+from pkevolve.verification.prompts import (
+    EXTRACT_FACTS,
+    SYNTHESIZE_SUBCLAIM,
+    DETECT_CONFLICTS,
+    IDENTIFY_GAPS,
+    FORMULATE_GAP_QUERIES,
+    REFINE_SEARCH_QUERY,
+)
 
 logger = logging.getLogger(__name__)
+
+_EVIDENCE_DEBUG = os.environ.get("EVIDENCE_DEBUG", "0") == "1"
 
 # Type alias for the LLM callable
 LLMCallable = Callable[[str], str]
@@ -136,40 +147,19 @@ def extract_facts(
     subclaims_str = "\n".join(f"  - {sc}" for sc in subclaims)
     stance_block = label_cfg.stance_prompt_block()
     stance_options = label_cfg.stance_options_str()
-    prompt = f"""\
-You are a scientific fact extraction specialist.
-
-Given a paper and a claim with subclaims, extract every atomic fact that addresses the claim, accounting for varying terminology, synonyms, or aliases used in the text.
-
-For each fact provide a JSON object with:
-- "text": factual statement (one sentence, self-contained)
-- "stance": one of {stance_options}
-- "source_pmid": "{source_pmid}"
-- "relevant_subclaims": list of subclaim strings this fact addresses
-- "confidence": 0.0-1.0, how clearly the paper states this
-
-Stance definitions:
-{stance_block}
-
-Rules:
-- Base facts strictly on the provided text. Recognize equivalent terms, but do not hallucinate logical leaps not present in the paper.
-- If a paper does not address a subclaim, do not manufacture facts.
-- Each fact must be independently verifiable from the source paper.
-Now extract facts for the following:
-
-Claim: {claim}
-
-Subclaims:
-{subclaims_str}
-
-Paper (PMID: {source_pmid}):
-{paper_text[:50000]}
-
-Output ONLY a JSON array of fact objects. No other text."""
+    prompt = EXTRACT_FACTS.format(
+        stance_options=stance_options,
+        stance_block=stance_block,
+        claim=claim,
+        subclaims_str=subclaims_str,
+        source_pmid=source_pmid,
+        paper_text=paper_text[:50000],
+    )
 
     response = llm(prompt)
     if not response or response.strip() == "[]":
-        logger.debug("extract_facts: No facts found for PMID %s", source_pmid)
+        if _EVIDENCE_DEBUG:
+            print(f"extract_facts: No facts found for PMID {source_pmid}")
         return []
     return _parse_facts_response(response, source_pmid)
 
@@ -231,24 +221,10 @@ def synthesize_subclaim(
         f"  [{f.stance}] {f.text} (PMID:{f.source_pmid}, conf:{f.confidence:.2f})"
         for f in facts
     )
-    prompt = f"""\
-You are an evidence synthesis specialist.
-
-Given a subclaim and relevant facts, produce a synthesis that:
-1. States weight of evidence (mostly supporting, mostly refuting, mixed, insufficient)
-2. Summarizes key supporting facts with PMID citations
-3. Summarizes contradicting facts with PMID citations
-4. Notes quality and diversity of sources
-5. Identifies what additional evidence would strengthen the assessment
-
-Keep synthesis under 200 words. Be precise about what evidence does and does not show.
-
-Subclaim: {subclaim}
-
-Facts:
-{facts_str}
-
-Output the synthesis as plain text."""
+    prompt = SYNTHESIZE_SUBCLAIM.format(
+        subclaim=subclaim,
+        facts_str=facts_str,
+    )
 
     return llm(prompt).strip()
 
@@ -279,20 +255,9 @@ def detect_conflicts(
         f"  [{f.id}] [{f.stance}] {f.text} (PMID:{f.source_pmid})"
         for f in facts
     )
-    prompt = f"""\
-You are a scientific conflict detection specialist.
-
-Given a list of extracted facts, identify pairs that contradict each other.
-For each conflict, provide a JSON object with:
-- "fact_a_id": ID of first fact
-- "fact_b_id": ID of second fact
-- "description": nature of the contradiction
-- "severity": 0.0-1.0 (0 = minor methodological difference, 1 = direct contradiction)
-
-Facts:
-{facts_str}
-
-Output ONLY a JSON array of conflict objects. If no conflicts, output []."""
+    prompt = DETECT_CONFLICTS.format(
+        facts_str=facts_str,
+    )
 
     response = llm(prompt).strip()
 
@@ -358,40 +323,14 @@ def identify_gaps(
     unique_sources = len(set(f.source_pmid for f in facts))
     counts_str = ", ".join(f"{name.lower()}: {cnt}" for name, cnt in stance_counts.items())
 
-    prompt = f"""\
-You are an evidence gap analyst for scientific claim verification.
-
-The current evidence has been judged INSUFFICIENT. Your task: inspect the
-extracted facts and identify specific gaps — what is missing, conflicting,
-or weak — so the system can search for additional evidence.
-
-Claim: {claim}
-
-Subclaims:
-{subclaims_str}
-
-Extracted facts ({len(facts)} total — {counts_str}, from {unique_sources} unique sources):
-{facts_str}
-
-Gap types to choose from:
-- missing_subclaim_evidence: a subclaim lacks supporting facts
-- contradictory_evidence: conflicting evidence needs resolution
-- low_source_diversity: too few independent sources
-- weak_stance_evidence: evidence exists but is weak/indirect
-- missing_mechanism: mechanistic explanation is missing
-- missing_quantitative: quantitative data (dose-response, effect sizes) is missing
-- missing_temporal: temporal/longitudinal data is missing
-- missing_population: population-specific evidence is missing
-
-Output ONLY a JSON array of gap objects. Each gap:
-{{
-  "subclaim": "the relevant subclaim text",
-  "gap_type": "one of the gap types above",
-  "description": "specific description of what is missing",
-  "priority": "high" | "medium" | "low"
-}}
-
-Identify 1-4 gaps, ordered from highest to lowest priority. Output [] if no specific gaps."""
+    prompt = IDENTIFY_GAPS.format(
+        claim=claim,
+        subclaims_str=subclaims_str,
+        num_facts=len(facts),
+        counts_str=counts_str,
+        unique_sources=unique_sources,
+        facts_str=facts_str,
+    )
 
     response = llm(prompt)
     if not response:
@@ -412,6 +351,11 @@ def _parse_gaps_response(
             "Could not parse gaps JSON from LLM response (first 500 chars): %s",
             response[:500],
         )
+        if _EVIDENCE_DEBUG:
+            print(
+                f"[identify_gaps] JSON parse failed. Raw response (first 300 chars):\n"
+                f"{response[:300]}"
+            )
         return _fallback_gaps(claim, subclaims, facts)
 
     from pkevolve.verification.data_models import GapType, GapPriority
@@ -482,26 +426,9 @@ def formulate_gap_queries(
         f"  [{g.gap_type.value}] Subclaim: {g.subclaim} | Priority: {g.priority.value} | {g.description}"
         for g in gaps
     )
-    prompt = f"""\
-You are an evidence retrieval query specialist.
-
-Given gap predictions from the sufficiency classifier, formulate targeted PubMed
-search queries (3-8 words each) to close each gap. Do NOT re-analyze the evidence.
-
-Gap types and query strategies:
-- missing_subclaim_evidence: search directly for the subclaim topic
-- contradictory_evidence: search for meta-analyses or reviews
-- low_source_diversity: use different terminology or adjacent fields
-- weak_stance_evidence: search for RCTs, large cohorts
-- missing_mechanism: search for mechanistic or pathway studies
-- missing_quantitative: search for dose-response, effect size studies
-- missing_temporal: search for longitudinal or time-course studies
-- missing_population: search for studies in the specific population
-
-Gaps:
-{gaps_str}
-
-Output ONLY a JSON array of query strings. Example: ["MAPK1 phosphorylation mechanism", "H3 histone modification review"]"""
+    prompt = FORMULATE_GAP_QUERIES.format(
+        gaps_str=gaps_str,
+    )
 
     response = llm(prompt).strip()
 
@@ -557,43 +484,11 @@ def refine_search_query(
         for p in failed_papers[:5]  # Limit to first 5 to avoid token overflow
     )
 
-    prompt = f"""\
-You are an evidence retrieval specialist for scientific claim verification.
-
-The system attempted to extract facts from the following papers but found NO relevant evidence.
-Your task: analyze why these papers are irrelevant to the claim, then generate MORE PRECISE
-PubMed search queries to find papers that actually contain relevant evidence.
-
-Claim: {claim}
-
-Subclaims:
-{subclaims_str}
-
-Papers that yielded 0 facts:
-{papers_str}
-
-Common reasons for irrelevance:
-- Papers discuss similar topics but in different contexts or domains
-- Papers mention the subject matter only indirectly or as background
-- Papers study related but distinct phenomena or mechanisms
-- Initial query was too broad and retrieved tangentially related papers
-- Papers lack the specific type of evidence needed for verification
-
-Your task:
-1. Analyze why the above papers were irrelevant to the claim
-2. Generate 5-10 MORE SPECIFIC PubMed queries that:
-   - Keep queries SHORT (2-4 key terms max) to maximize recall
-   - Add ONE contextual constraint that distinguishes relevant papers
-   - Use OR operators for synonyms rather than long AND chains
-   - Avoid overly specific methodology terms (e.g., "co-immunoprecipitation")
-   - Use proper PubMed Boolean operators sparingly
-
-CRITICAL: PubMed interprets space-separated terms as AND. Keep queries SHORT.
-Too specific = 0 results. Balance precision with recall.
-
-Output ONLY a JSON array of query strings (2-4 words each).
-Example for a PPI claim: ["MAPK1 H3F3A phosphorylation", "ERK2 histone H3.3"]
-Example for a clinical claim: ["JAK2 V617F lymphoid leukemia", "JAK2 mutation B-ALL"]"""
+    prompt = REFINE_SEARCH_QUERY.format(
+        claim=claim,
+        subclaims_str=subclaims_str,
+        papers_str=papers_str,
+    )
 
     response = llm(prompt).strip()
 
