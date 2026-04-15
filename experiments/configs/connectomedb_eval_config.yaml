@@ -1,13 +1,14 @@
 # ──────────────────────────────────────────────────────────────────────
-# SIGNOR Evaluation Config
+# ConnectomeDB Evaluation Config
 #
-# This config is designed for batch SIGNOR evaluation via run_signor_batch.sh.
+# This config is designed for batch ConnectomeDB evaluation via
+# run_connectomedb_batch.sh / submit_connectomedb_batch.sh.
 # The subagent_base_url is intentionally omitted so it defaults to the
-# LLM_BASE_URL environment variable set by run_signor_batch.sh.
+# LLM_BASE_URL environment variable set by run_connectomedb_batch.sh.
 #
 # Usage:
-#   bash scripts/submit_signor_batch.sh --limit 1
-#   bash scripts/run_signor_batch.sh --limit 10
+#   bash scripts/submit_connectomedb_batch.sh --limit 1
+#   bash scripts/run_connectomedb_batch.sh --limit 10
 # ──────────────────────────────────────────────────────────────────────
 
 # Orchestration mode: "sdk" (Claude Agent SDK + nb_execute)
@@ -25,25 +26,19 @@ llm:
 
   # Subagent configuration
   # subagent_model MUST match the vLLM model ID exactly (no ./ prefix)
-  # Common options:
-  #   - qwen3-8b (for Qwen 3 8B)
-  #   - qwen3.5-9b (for Qwen 3.5 9B)
-  #   - Qwen/Qwen3-8B (for full model path)
   subagent_model: qwen3.5-9b
 
   # subagent_base_url is NOT set here - it will use the LLM_BASE_URL
-  # environment variable set by run_signor_batch.sh, which reads from
+  # environment variable set by run_connectomedb_batch.sh, which reads from
   # .vllm_server_info automatically.
   # This allows the batch script to dynamically discover the vLLM server.
 
-  temperature: 0.7
+  temperature: 0.0
 
-# sufficiency_backend: mlp
-# sufficiency_backend: llm
-sufficiency_backend: haiku
+sufficiency_backend: mlp
 
-# Output paths (will be overridden by run_signor_eval.py for each claim)
-output_dir: results/signor_eval_prompt
+# Output paths (will be overridden by run_connectomedb_eval.py for each claim)
+output_dir: results/connectomedb_eval_prompt
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
 # Logging

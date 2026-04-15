@@ -401,15 +401,18 @@ def search_pubmed_llm(
 
     # Generate comprehensive query using LLM
     query = generate_search_query(claim, llm)
-    print(f"[LLM Query] {query}")
+    logger.debug("[LLM Query] %s", query)
 
     # Search PubMed with the LLM-generated query
     found, added, added_pmids = _search_and_add(query, state, max_results)
-    print(f"  → Found {found}, added {added} new papers")
 
     if len(added_pmids) == 0:
-        print("⚠️ No papers found in initial search. Gap handling will refine if needed.")
+        logger.warning("search_pubmed_llm: no papers found in initial search")
 
+    print(
+        f"search_pubmed_llm: found {found}, added {added} new. "
+        f"PMIDs: {', '.join(added_pmids) if added_pmids else 'none'}"
+    )
     return added_pmids
 
 
@@ -481,10 +484,10 @@ def refine_search_for_failed_papers(
     )
 
     if not refined_queries:
-        print("refine_search_for_failed_papers: no refined queries generated.")
+        logger.info("refine_search_for_failed_papers: no refined queries generated")
         return []
 
-    print(f"Refined queries: {', '.join(refined_queries)}")
+    logger.info("refine_search_for_failed_papers: queries=%s", ', '.join(refined_queries))
 
     # Execute searches with refined queries
     all_new_pmids: list[str] = []
@@ -498,7 +501,7 @@ def refine_search_for_failed_papers(
     # Deduplicate
     unique_new_pmids = list(dict.fromkeys(all_new_pmids))
 
-    print(f"Refined search: found {len(unique_new_pmids)} new papers.")
+    print(f"refine_search_for_failed_papers: queries={len(refined_queries)} new_pmids={len(unique_new_pmids)}")
     return unique_new_pmids
 
 
@@ -527,7 +530,7 @@ def find_related_articles(
         link_resp = requests.get(_ELINK_URL, params=link_params, timeout=30)
         link_resp.raise_for_status()
     except requests.RequestException as e:
-        print(f"Error querying elink for PMID {pmid}: {e}")
+        logger.warning("Error querying elink for PMID %s: %s", pmid, e)
         return []
 
     link_root = ET.fromstring(link_resp.content)
@@ -540,7 +543,7 @@ def find_related_articles(
             break
 
     if not related_pmids:
-        print(f"No related articles found for PMID {pmid}.")
+        logger.debug("No related articles found for PMID %s", pmid)
         return []
 
     # Step 2: Fetch metadata
@@ -551,7 +554,7 @@ def find_related_articles(
         fetch_resp = requests.get(_EFETCH_URL, params=fetch_params, timeout=30)
         fetch_resp.raise_for_status()
     except requests.RequestException as e:
-        print(f"Error fetching related article metadata: {e}")
+        logger.warning("Error fetching related article metadata: %s", e)
         return []
 
     fetch_root = ET.fromstring(fetch_resp.content)
@@ -587,9 +590,9 @@ def find_related_articles(
             logger.warning("Error parsing related article: %s", e)
 
     state.token_estimate = state.token_count()
-    print(
-        f"Related articles for PMID {pmid}: found {len(related_pmids)}, "
-        f"added {len(added_pmids)} new."
+    logger.info(
+        "Related articles for PMID %s: found %d, added %d new.",
+        pmid, len(related_pmids), len(added_pmids),
     )
     return added_pmids
 
@@ -692,9 +695,9 @@ def search_semantic_scholar(
     client = S2Client()
     results = client.search(query, limit=max_results)
     added = _add_s2_records(results, state)
-    print(
-        f"S2 Search: found {len(results)}, added {len(added)} new. "
-        f"IDs: {', '.join(added) if added else 'none'}"
+    logger.info(
+        "S2 Search: found %d, added %d new. IDs: %s",
+        len(results), len(added), ', '.join(added) if added else 'none',
     )
     return added
 
@@ -759,7 +762,7 @@ def search_semantic_scholar_recommendations(
         ]
 
     if not positive_pmids:
-        print(
+        logger.warning(
             "S2 Recommendations: no positive seeds available yet "
             "(call after extracting facts from initial papers)."
         )
@@ -778,9 +781,9 @@ def search_semantic_scholar_recommendations(
     client = S2Client()
     results = client.recommendations(pos_ids, neg_ids or None, limit=max_results)
     added = _add_s2_records(results, state)
-    print(
-        f"S2 Recommendations: {len(positive_pmids)} positive seeds, "
-        f"{len(negative_pmids)} negative seeds → added {len(added)} papers."
+    logger.info(
+        "S2 Recommendations: %d positive seeds, %d negative seeds → added %d papers.",
+        len(positive_pmids), len(negative_pmids), len(added),
     )
     return added
 
@@ -822,7 +825,7 @@ def expand_via_citations(
         p for p in state.papers.values() if p.reference_dois
     ]
     if not papers_with_refs:
-        print("Citation chaining: no papers have reference DOIs yet.")
+        logger.info("Citation chaining: no papers have reference DOIs yet")
         return []
 
     client = S2Client()
@@ -856,9 +859,9 @@ def expand_via_citations(
     if all_added:
         state.token_estimate = state.token_count()
 
-    print(
-        f"Citation chaining: {len(papers_with_refs)} papers scanned, "
-        f"added {len(all_added)} new papers."
+    logger.info(
+        "Citation chaining: %d papers scanned, added %d new papers.",
+        len(papers_with_refs), len(all_added),
     )
     return all_added
 
@@ -885,7 +888,7 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
 
     paper = state.papers.get(pmid)
     if not paper:
-        print(f"Paper {pmid} not found in evidence state.")
+        logger.warning("Paper %s not found in evidence state.", pmid)
         return ""
 
     if paper.full_text:
@@ -902,11 +905,11 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
         if ref_dois:
             paper.reference_dois = ref_dois
         state.token_estimate = state.token_count()
-        print(f"Full text retrieved for PMID {pmid}: {len(full_text)} chars")
+        logger.info("Full text retrieved for PMID %s: %d chars", pmid, len(full_text))
         return full_text
 
     # Final fallback: plain abstract already stored on the paper record
-    print(f"No text available for PMID {pmid} (all layers failed). Using stored abstract.")
+    logger.info("No text available for PMID %s (all layers failed). Using stored abstract.", pmid)
     return paper.abstract
 
 
@@ -914,7 +917,7 @@ def get_paper_text(pmid: str, state: EvidenceState) -> str:
     """Get the abstract/text for a paper by PMID."""
     paper = state.papers.get(pmid)
     if not paper:
-        print(f"Paper {pmid} not found in evidence state.")
+        logger.warning("Paper %s not found in evidence state.", pmid)
         return ""
     return (
         f"PMID: {paper.pmid}\nTitle: {paper.title}\n"
@@ -1023,10 +1026,10 @@ def add_facts_from_dicts(
                 f"Fact cites PMID {source_pmid} which is not in state.papers. "
                 f"Rejecting to prevent fabricated evidence."
             )
-            print(
-                f"REJECTED: source_pmid '{source_pmid}' not found in "
-                f"state.papers ({list(state.papers.keys())[:5]}…). "
-                f"Fact text: {text[:80]}…"
+            logger.warning(
+                "REJECTED: source_pmid '%s' not found in state.papers (%s…). "
+                "Fact text: %s…",
+                source_pmid, list(state.papers.keys())[:5], text[:80],
             )
             skipped_empty += 1  # reuse counter for rejected facts
             continue
@@ -1064,7 +1067,7 @@ def add_facts_from_dicts(
     if skipped_dup:
         parts.append(f"Skipped {skipped_dup} duplicates.")
     parts.append("Coverage updated.")
-    print(" ".join(parts))
+    logger.info(" ".join(parts))
     return added
 
 
@@ -1086,7 +1089,7 @@ def update_synthesis(
     """Update the evidence synthesis for a subclaim."""
     state.synthesis[subclaim] = synthesis_text
     state._auto_save()  # Persist synthesis update to disk
-    print(f"Synthesis updated for: {subclaim}")
+    logger.info("Synthesis updated for: %s", subclaim)
 
 
 def add_conflict(
@@ -1105,7 +1108,7 @@ def add_conflict(
         severity=severity,
     )
     state.add_conflict(conflict)
-    print(f"Conflict recorded: {conflict.id}")
+    logger.info("Conflict recorded: %s", conflict.id)
     return conflict.id
 
 
@@ -1147,11 +1150,14 @@ def _extract_and_add_facts_single(
         paper_text = get_paper_text(pmid, state)
 
     if not paper_text:
-        print(f"_extract_and_add_facts_single: no text available for PMID {pmid}.")
+        logger.debug("_extract_and_add_facts_single: no text available for PMID %s", pmid)
         return 0
 
     text_kind = "full text" if len(paper_text) > 2000 else "abstract"
-    print(f"_extract_and_add_facts_single: using {text_kind} ({len(paper_text)} chars) for PMID {pmid}.")
+    logger.debug(
+        "_extract_and_add_facts_single: using %s (%d chars) for PMID %s",
+        text_kind, len(paper_text), pmid,
+    )
 
     facts = extract_facts(
         llm=llm,
@@ -1162,7 +1168,7 @@ def _extract_and_add_facts_single(
     )
 
     if not facts:
-        print(f"_extract_and_add_facts_single: subagent returned 0 facts for PMID {pmid}.")
+        logger.debug("_extract_and_add_facts_single: subagent returned 0 facts for PMID %s", pmid)
         return 0
 
     # Convert Fact objects to dicts and add through the validated path
@@ -1230,8 +1236,7 @@ def extract_and_add_facts(
             count = _extract_and_add_facts_single(llm, pmid, state)
             return pmid, count
         except Exception as e:
-            logger.error(f"Error extracting facts from PMID {pmid}: {e}")
-            print(f"⚠ extract_and_add_facts: error processing PMID {pmid}: {e}")
+            logger.warning("extract_and_add_facts: error processing PMID %s: %s", pmid, e)
             return pmid, 0
 
     if not pmids:
@@ -1241,10 +1246,13 @@ def extract_and_add_facts(
     pmids_to_process = [p for p in pmids if p not in state.extracted_pmids]
 
     if not pmids_to_process:
-        print(f"extract_and_add_facts: all {len(pmids)} papers already extracted.")
+        logger.info("extract_and_add_facts: all %d papers already extracted", len(pmids))
         return {p: 0 for p in pmids}
 
-    print(f"extract_and_add_facts: processing {len(pmids_to_process)} papers with {max_workers} workers...")
+    logger.info(
+        "extract_and_add_facts: processing %d papers with %d workers",
+        len(pmids_to_process), max_workers,
+    )
 
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1257,9 +1265,9 @@ def extract_and_add_facts(
             pmid, count = future.result()
             results[pmid] = count
             if count > 0:
-                print(f"  ✓ PMID {pmid}: extracted {count} facts")
+                logger.debug("  ✓ PMID %s: extracted %d facts", pmid, count)
             else:
-                print(f"  ✗ PMID {pmid}: no facts extracted")
+                logger.debug("  ✗ PMID %s: no facts extracted", pmid)
 
     # Add already-processed PMIDs with 0 count
     for pmid in pmids:
@@ -1267,7 +1275,7 @@ def extract_and_add_facts(
             results[pmid] = 0
 
     total_facts = sum(results.values())
-    print(f"extract_and_add_facts: completed. Total facts extracted: {total_facts}")
+    print(f"extract_and_add_facts: done. facts={total_facts} papers={len(pmids_to_process)}")
 
     return results
 
@@ -1635,7 +1643,7 @@ def get_evidence_summary(state: EvidenceState) -> str:
             lines.append(f"  - [{gap.gap_type.value}] {gap.description}")
 
     summary = "\n".join(lines)
-    print(summary)
+    logger.debug("get_evidence_summary:\n%s", summary)
     return summary
 
 
@@ -1678,10 +1686,31 @@ def check_sufficiency(
                           are present in total, force INSUFFICIENT to
                           encourage more retrieval. Set to 0 to disable.
                           (default: 3)
+    The backend is selected via the SUFFICIENCY_BACKEND environment variable
+    (propagated by VerificationSettings.build_sdk_env):
+      'mlp' (default): trained MLP classifier — original behaviour.
+      'llm': Qwen subagent reads paper titles, abstracts, and NLP features.
+      'haiku': Claude Haiku via Anthropic API — Qwen still used for gap identification.
 
     Appends result to state.sufficiency_history and increments iteration.
     Raises MaxIterationsExceeded if the iteration limit is reached.
     """
+    import os
+    backend = os.environ.get("SUFFICIENCY_BACKEND", "mlp").lower()
+    if backend == "haiku":
+        return _check_sufficiency_haiku(state, llm, threshold, min_total_papers)
+    if backend == "llm":
+        return _check_sufficiency_llm(state, llm, threshold, min_total_papers)
+    return _check_sufficiency_mlp(state, llm, threshold, min_total_papers)
+
+
+def _check_sufficiency_mlp(
+    state: EvidenceState,
+    llm,
+    threshold: float,
+    min_total_papers: int,
+) -> SufficiencyResult:
+    """MLP-based sufficiency check (original implementation)."""
 
     if state.iteration >= state.MAX_ITERATIONS:
         raise MaxIterationsExceeded(
@@ -1795,22 +1824,199 @@ def check_sufficiency(
     state.iteration += 1
     state._auto_save()  # Persist sufficiency check result to disk
 
-    # Print structured feedback for the agent
-    print(f"=== SUFFICIENCY CHECK (iteration {state.iteration}) ===")
-    print(f"Papers: {current_paper_count} total (+{papers_added_this_iteration} this iteration)")
-    print(f"MLP Prediction: {mlp_label} (confidence: {prob:.6f})")
+    logger.info(
+        "check_sufficiency[mlp] iter=%d papers=%d(+%d) mlp=%s prob=%.6f label=%s threshold=%s",
+        state.iteration, current_paper_count, papers_added_this_iteration,
+        mlp_label, prob, label, threshold,
+    )
     if override_reason:
-        print(f"⚠️  Override: sufficient → insufficient")
-        print(f"Reason: Need at least {min_total_papers} total papers, currently have {current_paper_count} papers")
-    print(f"Final Label: {label}")
-    print(f"Threshold: {threshold}")
-    print(f"Decision: {'PASS — evidence is sufficient' if label == 'sufficient' else 'FAIL — more evidence needed'}")
+        logger.info("check_sufficiency[mlp] override: %s", override_reason)
     if gaps:
-        print(f"\nGaps ({len(gaps)}):")
-        for i, gap in enumerate(gaps, 1):
-            print(f"  {i}. [{gap.priority.value}] {gap.gap_type.value}")
-            print(f"     Subclaim: {gap.subclaim}")
-            print(f"     Action: {gap.description}")
+        logger.info(
+            "check_sufficiency[mlp] gaps=%d: %s", len(gaps),
+            "; ".join(f"[{g.priority.value}] {g.description}" for g in gaps),
+        )
+    print(
+        f"check_sufficiency[mlp]: label={label} prob={prob:.3f} "
+        f"papers={current_paper_count} gaps={len(gaps)}"
+    )
+
+    return result
+
+
+def _check_sufficiency_llm(
+    state: EvidenceState,
+    llm,
+    threshold: float,
+    min_total_papers: int,
+) -> SufficiencyResult:
+    """LLM-based sufficiency check (Qwen subagent backend)."""
+    from pkevolve.verification.llm_sufficiency import check_sufficiency_llm
+    from pkevolve.verification.subagents import identify_gaps
+
+    if state.iteration >= state.MAX_ITERATIONS:
+        raise MaxIterationsExceeded(
+            f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
+            "Call emit_verdict() to produce your final verdict.",
+            state=state,
+        )
+
+    # Track paper count for this iteration
+    current_paper_count = len(state.papers)
+    previous_paper_count = (
+        state.papers_per_iteration[-1] if state.papers_per_iteration else 0
+    )
+    papers_added_this_iteration = current_paper_count - previous_paper_count
+    state.papers_per_iteration.append(current_paper_count)
+
+    # LLM scoring
+    label, score, raw_response = check_sufficiency_llm(state, llm, threshold)
+
+    # Override to INSUFFICIENT if minimum paper requirement not met
+    override_reason = None
+    if (
+        label == "sufficient"
+        and min_total_papers > 0
+        and current_paper_count < min_total_papers
+        and state.iteration < state.MAX_ITERATIONS
+    ):
+        override_reason = (
+            f"Minimum paper requirement not met: only {current_paper_count} papers "
+            f"(need at least {min_total_papers}). Continue searching."
+        )
+        label = "insufficient"
+
+    # Gap identification
+    gaps: list = []
+    if label == "insufficient":
+        if override_reason:
+            from pkevolve.verification.data_models import Gap, GapType, GapPriority
+            gaps = [Gap(
+                subclaim=state.claim,
+                gap_type=GapType.LOW_DIVERSITY,
+                description=override_reason,
+                priority=GapPriority.HIGH,
+            )]
+        else:
+            gaps = identify_gaps(
+                llm=llm, claim=state.claim,
+                subclaims=state.subclaims, facts=state.facts,
+            )
+
+    result = SufficiencyResult(label=label, confidence=score, gaps=gaps)
+    state.sufficiency_history.append(result)
+    state.iteration += 1
+    state._auto_save()
+
+    logger.info(
+        "check_sufficiency[llm] iter=%d papers=%d(+%d) score=%.6f label=%s threshold=%s",
+        state.iteration, current_paper_count, papers_added_this_iteration,
+        score, label, threshold,
+    )
+    if override_reason:
+        logger.info("check_sufficiency[llm] override: %s", override_reason)
+    if gaps:
+        logger.info(
+            "check_sufficiency[llm] gaps=%d: %s", len(gaps),
+            "; ".join(f"[{g.priority.value}] {g.description}" for g in gaps),
+        )
+    print(
+        f"check_sufficiency[llm]: label={label} prob={score:.3f} "
+        f"papers={current_paper_count} gaps={len(gaps)}"
+    )
+
+    return result
+
+
+def _check_sufficiency_haiku(
+    state: EvidenceState,
+    llm,
+    threshold: float,
+    min_total_papers: int,
+) -> SufficiencyResult:
+    """Haiku-based sufficiency check (Claude Haiku via native Anthropic API).
+
+    Uses Claude Haiku exclusively for the sufficiency scoring step.
+    Gap identification, fact extraction, and all other subagent calls
+    continue to use the general-purpose ``llm`` (Qwen3.5-9B).
+    """
+    from pkevolve.verification.llm_sufficiency import check_sufficiency_llm
+    from pkevolve.verification.subagents import identify_gaps
+    from pkevolve.verification.model_registry import get_haiku_llm
+
+    if state.iteration >= state.MAX_ITERATIONS:
+        raise MaxIterationsExceeded(
+            f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
+            "Call emit_verdict() to produce your final verdict.",
+            state=state,
+        )
+
+    # Track paper count for this iteration
+    current_paper_count = len(state.papers)
+    previous_paper_count = (
+        state.papers_per_iteration[-1] if state.papers_per_iteration else 0
+    )
+    papers_added_this_iteration = current_paper_count - previous_paper_count
+    state.papers_per_iteration.append(current_paper_count)
+
+    # Haiku scoring — dedicated Claude Haiku callable (cached singleton)
+    haiku_llm = get_haiku_llm()
+    label, score, raw_response = check_sufficiency_llm(state, haiku_llm, threshold)
+
+    # Override to INSUFFICIENT if minimum paper requirement not met
+    override_reason = None
+    if (
+        label == "sufficient"
+        and min_total_papers > 0
+        and current_paper_count < min_total_papers
+        and state.iteration < state.MAX_ITERATIONS
+    ):
+        override_reason = (
+            f"Minimum paper requirement not met: only {current_paper_count} papers "
+            f"(need at least {min_total_papers}). Continue searching."
+        )
+        label = "insufficient"
+
+    # Gap identification — uses Qwen (llm), NOT Haiku
+    gaps: list = []
+    if label == "insufficient":
+        if override_reason:
+            from pkevolve.verification.data_models import Gap, GapType, GapPriority
+            gaps = [Gap(
+                subclaim=state.claim,
+                gap_type=GapType.LOW_DIVERSITY,
+                description=override_reason,
+                priority=GapPriority.HIGH,
+            )]
+        else:
+            gaps = identify_gaps(
+                llm=llm,  # Qwen, not Haiku
+                claim=state.claim,
+                subclaims=state.subclaims,
+                facts=state.facts,
+            )
+
+    result = SufficiencyResult(label=label, confidence=score, gaps=gaps)
+    state.sufficiency_history.append(result)
+    state.iteration += 1
+    state._auto_save()
+
+    logger.info(
+        "check_sufficiency[haiku] iter=%d papers=%d(+%d) score=%.6f label=%s threshold=%s",
+        state.iteration, current_paper_count, papers_added_this_iteration,
+        score, label, threshold,
+    )
+    if override_reason:
+        logger.info("check_sufficiency[haiku] override: %s", override_reason)
+    if gaps:
+        logger.info(
+            "check_sufficiency[haiku] gaps=%d: %s", len(gaps),
+            "; ".join(f"[{g.priority.value}] {g.description}" for g in gaps),
+        )
+    print(
+        f"check_sufficiency[haiku]: label={label} prob={score:.3f} "
+        f"papers={current_paper_count} gaps={len(gaps)}"
+    )
 
     return result
 
@@ -1862,17 +2068,17 @@ def get_sufficiency_history(
         for i, r in enumerate(state.sufficiency_history)
     ]
 
-    # --- Print history table -------------------------------------------------
-    print("=== SUFFICIENCY HISTORY ===")
+    # --- Log history table ---------------------------------------------------
     if not history:
-        print("  (no sufficiency checks yet)")
+        logger.debug("get_sufficiency_history: no sufficiency checks yet")
     else:
-        print(f"  {'Iter':>4}  {'Label':<12}  {'Confidence':>10}")
+        table_lines = [f"  {'Iter':>4}  {'Label':<12}  {'Confidence':>10}"]
         for row in history:
-            print(
+            table_lines.append(
                 f"  {row['iteration']:>4}  {row['label']:<12}  "
                 f"{row['confidence']:>10.6f}"
             )
+        logger.debug("get_sufficiency_history:\n%s", "\n".join(table_lines))
 
     # --- Trend analysis ------------------------------------------------------
     if len(history) < window:
@@ -1889,10 +2095,9 @@ def get_sufficiency_history(
         else:
             trend = "improving"
 
-    print(f"\nTrend: {trend}")
+    print(f"get_sufficiency_history: trend={trend} iterations={len(history)}")
 
     # Return only trend to prevent LLM from over-analyzing the data
-    # The full history is still printed above for human inspection
     return {
         "trend": trend,
     }
@@ -1977,14 +2182,14 @@ def filter_papers_by_stance(
     # Auto-save
     state._auto_save()
 
-    # Print summary
-    print(f"=== PAPER FILTERING ===")
-    print(f"Keep stances: {', '.join(keep_stances)}")
-    print(f"Papers before: {len(papers_to_keep) + len(papers_to_remove)}")
-    print(f"Papers after: {len(papers_to_keep)}")
-    print(f"Removed {len(papers_to_remove)} papers with only excluded stances")
-    if papers_to_remove:
-        print(f"Removed PMIDs: {', '.join(sorted(papers_to_remove))}")
+    logger.info(
+        "filter_papers_by_stance: keep_stances=%s before=%d after=%d removed_pmids=%s",
+        keep_stances,
+        len(papers_to_keep) + len(papers_to_remove),
+        len(papers_to_keep),
+        sorted(papers_to_remove) if papers_to_remove else [],
+    )
+    print(f"filter_papers_by_stance: kept {len(papers_to_keep)}, removed {len(papers_to_remove)}")
 
 
 # ---------------------------------------------------------------------------
@@ -2055,7 +2260,7 @@ def emit_verdict(
         confidence = min(confidence, 0.30)
 
     for w in quality_warnings:
-        print(w)
+        logger.warning(w)
 
     v = VerificationVerdict(
         verdict=verdict,
@@ -2107,6 +2312,66 @@ def setup_kernel(
             workspace_path="/path/to/workspace",
         )
     """
+    # ---------------------------------------------------------------
+    # Silence INFO/DEBUG logging in the kernel so it does not pollute
+    # nb_execute cell outputs.
+    #
+    # Problem: ML libraries (transformers, spaCy, tqdm, mlx-lm …) reset
+    # the root logger's *level* to NOTSET/INFO when their modules are first
+    # imported (often in a later cell), undoing any setLevel(WARNING) done
+    # here.  Setting only the level is therefore not robust.
+    #
+    # Robust fix: replace any existing StreamHandlers on the root logger
+    # with a single WARNING-gated one.  Handler-level filtering survives
+    # root-level resets because the handler checks its OWN level *after*
+    # the root check, not instead of it.  And by ensuring root already has
+    # at least one handler, logging.basicConfig() (called by many libs on
+    # import) becomes a no-op and cannot inject a promiscuous handler.
+    # ---------------------------------------------------------------
+    import logging as _logging
+    import os as _os
+    import warnings as _warnings
+
+    # Set ML library verbosity env vars before any lazy imports trigger them.
+    # HF_HUB_VERBOSITY / TRANSFORMERS_VERBOSITY are read by each library's
+    # _configure_library_root_logger() on first import, so setting them here
+    # ensures their logger level is ERROR even when they install their own
+    # StreamHandler.  TQDM_DISABLE suppresses all progress bars (model-load
+    # "Loading weights" bars etc.) since tqdm reads this env var on import.
+    _os.environ.setdefault("HF_HUB_VERBOSITY", "error")
+    _os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    _os.environ.setdefault("TQDM_DISABLE", "1")
+
+    _root = _logging.getLogger()
+    # Remove any StreamHandler that might have been added by transitive
+    # imports before this call (e.g. from requests, httpx, urllib3).
+    for _h in list(_root.handlers):
+        if isinstance(_h, _logging.StreamHandler) and not isinstance(_h, _logging.FileHandler):
+            _root.removeHandler(_h)
+    # Add a single WARNING-filtered StreamHandler.  Even if a library
+    # subsequently calls logging.root.setLevel(DEBUG), this handler won't
+    # let INFO/DEBUG through.
+    _sh = _logging.StreamHandler()
+    _sh.setLevel(_logging.WARNING)
+    _sh.setFormatter(_logging.Formatter("%(levelname)s: %(message)s"))
+    _root.addHandler(_sh)
+    _root.setLevel(_logging.WARNING)
+
+    # Silence noisy named loggers regardless of root level.
+    # huggingface_hub and transformers add their own StreamHandlers; setting
+    # level to ERROR here is belt-and-suspenders alongside the env vars above.
+    _logging.getLogger("httpx").setLevel(_logging.WARNING)
+    _logging.getLogger("httpcore").setLevel(_logging.WARNING)
+    _logging.getLogger("urllib3").setLevel(_logging.WARNING)
+    _logging.getLogger("huggingface_hub").setLevel(_logging.ERROR)
+    _logging.getLogger("transformers").setLevel(_logging.ERROR)
+
+    # Suppress irrelevant third-party Python warnings.
+    # Note: TqdmWarning extends Warning (not UserWarning), so no category arg.
+    _warnings.filterwarnings("ignore", message=r".*\[W095\].*", category=UserWarning)
+    _warnings.filterwarnings("ignore", message=r".*IProgress.*")
+    _warnings.filterwarnings("ignore", category=FutureWarning, module=r"spacy|transformers|tqdm|mlx")
+
     import os
 
     ws = Path(workspace_path)
