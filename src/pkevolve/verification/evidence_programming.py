@@ -40,133 +40,13 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# System prompt: REPL-based evidence programming via nb_execute
+# System prompt: imported from prompts.py
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """\
-You are an evidence-programming agent that verifies scientific claims and produces verdicts [{verdict_names}].
-{verdict_definitions}
-
-You work inside a Python REPL accessible via the nb_execute tool.  Every
-nb_execute call adds a code cell to the Jupyter notebook AND executes it
-in a persistent kernel.  The notebook is your audit trail.
-
-## First step — set up the kernel
-
-Call nb_init to create the notebook.  Then call nb_execute with this
-one-liner to bootstrap the kernel:
-
-```python
-from pkevolve.verification.evidence_api import setup_kernel
-state, llm, workspace = setup_kernel(
-    claim="{claim}",
-    workspace_path="{workspace}",
+from pkevolve.verification.prompts import (
+    NOTEBOOK_SYSTEM_PROMPT as SYSTEM_PROMPT,
+    NOTEBOOK_USER_PROMPT,
 )
-```
-
-After this cell, the kernel has three ready-to-use variables:
-
-    state     – EvidenceState (mutable; auto-saves after every mutation)
-    llm       – Callable[[str], str]  (pre-configured LLM endpoint)
-    workspace – Path to the output directory
-
-All evidence API functions are importable from
-``pkevolve.verification.evidence_api``.  Import what you need and call
-them directly via nb_execute.
-
-{function_docs}
-
-{schemas}
-
-## Workflow
-
-1. Call nb_init, then nb_execute with the setup code above.
-2. Decompose the claim: state.subclaims = ["subclaim A", ...]
-3. Search (iteration 0):
-   a. call search_pubmed_llm(state.claim, state, llm) — LLM-generated PubMed query
-   b. call search_semantic_scholar(query, state) with the same query string — covers
-      bioRxiv preprints and non-MEDLINE journals that PubMed misses
-4. After searching: call nb_render_papers to show the papers table.
-5. Extract facts from papers. Use extract_and_add_facts(llm, pmids, state, max_workers=8) to process
-   all newly retrieved papers in parallel. Do NOT write fact dicts manually.
-   Do NOT loop over PMIDs and call a single-paper function — always pass the full list at once.
-6. Call populate_paper_features(state) after extracting facts.
-   This MUST be done before check_sufficiency() to compute NLP and metadata features.
-7. After extracting: call nb_render_facts to show the facts table.
-8. **Filter papers**: call filter_papers_by_stance(state) to remove papers with only
-   default-stance (typically neutral/irrelevant) facts. This keeps only papers with
-   decisive evidence, improving the signal-to-noise ratio for the sufficiency classifier.
-9. After filtering: call nb_render_papers again to show the filtered paper pool.
-10. Check sufficiency: result = check_sufficiency(state, llm); print(result)
-11. After checking: call nb_render_sufficiency.
-11a. Call get_sufficiency_history(state) to monitor the confidence trend (improving / flat / declining).
-     If trend shows 'declining' or 'flat' for multiple iterations, consider whether to emit verdict.
-     Otherwise, continue searching to gather more evidence.
-12. If insufficient: read the gaps and do targeted retrieval:
-    a. search_for_gap(gap_description, state) — PubMed gap-targeted search
-    b. search_semantic_scholar_recommendations(state) — S2 graph expansion from papers
-       with SUPPORT facts (call at iteration ≥1 once facts exist)
-    c. formulate_gap_queries(llm, state) — LLM-generated gap queries
-13. Use nb_markdown between steps to explain your reasoning.
-14. Repeat until confidence >= {sufficiency_threshold} or {max_iterations} iterations completed.
-15. Call emit_verdict via nb_execute.
-16. Call nb_render_verdict.
-
-## Rules
-
-- Use nb_execute for ALL evidence API calls — write Python code directly.
-- Use nb_markdown for narrative explanation.
-- Use nb_render_* for visualizations (these are separate tools).
-- If any tool output ends with [TRUNCATED], call nb_read_output to retrieve
-  the full cell content (defaults to the last cell; pass cell_index for older cells).
-- `state` persists across nb_execute calls (same kernel).
-- All output from nb_execute is via print().
-- When emit_verdict is called, the verification is complete.
-
-## CRITICAL: Grounded Evidence Only
-
-- NEVER fabricate facts from your own knowledge.  Every fact must come from
-  a paper retrieved via search_pubmed_llm or search_pubmed.
-- Use extract_and_add_facts(llm, pmids, state) to extract facts in parallel. Always pass the
-  full list of PMIDs — this is the ONLY extraction function you should call.
-  It returns a dict mapping pmid -> count.
-- If extract_and_add_facts returns 0 for multiple PMIDs, use refine_search_for_failed_papers:
-      failed_pmids = [pmid for pmid, count in results.items() if count == 0]
-      new_pmids = refine_search_for_failed_papers(failed_pmids, state, llm, max_new_papers=5)
-      results2 = extract_and_add_facts(llm, new_pmids, state)
-  This analyzes why papers were irrelevant and generates more precise queries to find better papers.
-- NEVER call add_facts_from_dicts with manually written text strings.
-- source_pmid must always be a PMID already present in state.papers.
-- If no papers contain relevant evidence, say so in the verdict — do NOT
-  invent supporting or refuting statements.
-
-## Feature Computation for MLP Classifier
-
-The check_sufficiency() function uses an MLP classifier that requires NLP and
-metadata features to be populated for each paper. You MUST call
-populate_paper_features(state) after extracting facts and before calling
-check_sufficiency().
-
-Required sequence in EVERY iteration:
-1. search_pubmed_llm(state.claim, state, llm)              ← retrieve papers with LLM-generated query
-2. extract_and_add_facts(llm, pmids, state)                ← extract facts for ALL new papers in parallel
-3. populate_paper_features(state)                          ← MUST CALL (computes features)
-4. check_sufficiency(state, llm)                           ← classifier needs features
-
-If you skip populate_paper_features(), the MLP classifier will receive all-zero
-NLP features (semantic similarity, entity coverage, NLI scores) and the
-sufficiency prediction will be inaccurate.
-
-The function is idempotent — it automatically skips papers that already have
-features populated, so you can safely call it multiple times.
-
-## Important
-
-- Notebook path: {notebook_path}
-- Workspace path: {workspace}
-- Max iterations: {max_iterations}
-- Sufficiency threshold: {sufficiency_threshold}
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -263,16 +143,11 @@ async def verify_claim_notebook(
         }
     )
 
-    prompt = (
-        f"Verify the following scientific claim using evidence programming.\n\n"
-        f"Claim: {claim}\n\n"
-        f"Start by calling nb_init to create the notebook at {notebook_path}, "
-        f"then run the setup code via nb_execute to import the evidence API. "
-        f"Follow the evidence programming workflow. "
-        f"Call check_sufficiency after each round. "
-        f"Stop when confidence >= {cfg.sufficiency_threshold} or after "
-        f"{cfg.max_iterations} iterations. "
-        f'Always pass notebook_path="{notebook_path}" to every notebook tool call.'
+    prompt = NOTEBOOK_USER_PROMPT.format(
+        claim=claim,
+        notebook_path=notebook_path,
+        sufficiency_threshold=cfg.sufficiency_threshold,
+        max_iterations=cfg.max_iterations,
     )
 
     logger.info(
