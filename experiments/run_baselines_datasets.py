@@ -91,6 +91,22 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             temperature=args.temperature,
         )
         return LLMOnly(llm=llm)
+    elif name == "single_paper":
+        from baselines.single_paper import SinglePaper
+        from baselines.shared.llm import LLMBackend
+        llm = LLMBackend(
+            model=args.model,
+            temperature=args.temperature,
+        )
+        return SinglePaper(llm=llm)
+    elif name == "single_paper":
+        from baselines.single_paper import SinglePaper
+        from baselines.shared.llm import LLMBackend
+        llm = LLMBackend(
+            model=args.model,
+            temperature=args.temperature,
+        )
+        return SinglePaper(llm=llm)
     elif name == "s2_retrieval":
         from baselines.s2_retrieval import S2Retrieval
         from baselines.shared.llm import LLMBackend
@@ -185,6 +201,9 @@ def aggregate_metrics(all_runs: list[dict]) -> dict:
 
     agg["total_cost_usd"] = _mean_std([r["total_cost_usd"] for r in all_runs], decimals=3)
     agg["avg_cost_usd"] = _mean_std([r["avg_cost_usd"] for r in all_runs], decimals=3)
+    agg["total_input_tokens"] = _mean_std([r["total_input_tokens"] for r in all_runs], decimals=3)
+    agg["total_output_tokens"] = _mean_std([r["total_output_tokens"] for r in all_runs], decimals=3)
+
     return agg
 
 
@@ -202,7 +221,7 @@ def parse_args() -> argparse.Namespace:
         default=["signor", "connectomedb"],
         help="Dataset names (without .csv extension).",
     )
-    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "s2_retrieval", "open_scholar", "fire", "ace", "react"], help="Baseline to run.")
+    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "single_paper", "s2_retrieval", "open_scholar", "fire", "ace", "react"], help="Baseline to run.")
     p.add_argument("--seed", type=int, default=100, help="Base random seed. Each repeat i uses seed+i.")
     p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats. Each repeat i uses seed+i.")
     p.add_argument("--model", default="zai/glm-4-plus", help="LiteLLM model string for llm_only, e.g. 'zai/glm-4-plus' or 'openai/gpt-4o'.")
@@ -253,12 +272,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     datasets_dir = Path(args.datasets_dir)
-    output_dir = PROJECT_ROOT / args.output_dir
+    output_dir = Path(args.output_dir)
 
     # For llm_only / open_scholar, append a sanitised model name so runs for
     # different models don't overwrite each other.
     baseline_subdir = args.baseline
     if args.baseline == "llm_only":
+        model_slug = args.model.replace("/", "--")
+        baseline_subdir = f"{args.baseline}/{model_slug}"
+    elif args.baseline == "single_paper":
         model_slug = args.model.replace("/", "--")
         baseline_subdir = f"{args.baseline}/{model_slug}"
     elif args.baseline == "s2_retrieval":
