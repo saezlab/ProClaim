@@ -23,9 +23,8 @@ import re
 import time
 from pathlib import Path
 
-import litellm
-
 from baselines.shared.cost_tracker import CostTracker
+from baselines.shared.llm import LLMBackend
 from baselines.shared.label_utils import normalize_label, verdict_names, verdict_options_str
 from baselines.shared.verdict import BaselineResult
 
@@ -136,17 +135,12 @@ def _extract_answer(response: str) -> str:
 
 
 class ACEBaseline:
-    """Verify claims via the ACE Generator agent (in-process, litellm).
+    """Verify claims via the ACE Generator agent (in-process, LLMBackend).
 
     Parameters
     ----------
-    model:
-        Any litellm model string, e.g. ``"anthropic/claude-sonnet-4-20250514"``,
-        ``"openai/gpt-4o-mini"``.
-    max_tokens:
-        Maximum generation tokens per call.
-    temperature:
-        LLM sampling temperature (ACE default is 0.0).
+    llm:
+        Shared ``LLMBackend`` instance.
     playbook:
         Optional playbook text or path to a ``.txt`` playbook file.
         Defaults to the built-in claim verification playbook.
@@ -156,14 +150,12 @@ class ACEBaseline:
 
     def __init__(
         self,
-        model: str = "openai/gpt-4o-mini",
-        max_tokens: int = 4096,
-        temperature: float = 0.0,
+        llm: LLMBackend,
+        *,
         playbook: str | None = None,
     ) -> None:
-        self.model = model
-        self.max_tokens = max_tokens
-        self.temperature = temperature
+        self._llm = llm
+        self.model = llm.model
         self.log_dir: Path | None = None
 
         # Resolve playbook
@@ -177,7 +169,7 @@ class ACEBaseline:
             self._playbook = _CLAIM_VERIFICATION_PLAYBOOK
 
         # Cost estimation — reuse CostTracker pricing table
-        model_key = model.split("/", 1)[-1] if "/" in model else model
+        model_key = self.model.split("/", 1)[-1] if "/" in self.model else self.model
         in_price, out_price = CostTracker.DEFAULT_PRICING.get(
             model_key, CostTracker.FALLBACK_PRICING,
         )
@@ -209,29 +201,9 @@ class ACEBaseline:
             context=context_text,
         )
 
-        try:
-            resp = litellm.completion(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-            )
-            gen_response = resp.choices[0].message.content or ""
-            input_tokens = resp.usage.prompt_tokens if resp.usage else 0
-            output_tokens = resp.usage.completion_tokens if resp.usage else 0
-        except Exception as exc:
-            logger.error("ACE LLM error for %s: %s", claim_id, exc)
-            latency = time.monotonic() - t0
-            return BaselineResult(
-                claim_id=claim_id,
-                claim=claim,
-                gold_label=normalize_label(gold_label),
-                predicted_label="UNCERTAIN",
-                reasoning=f"ERROR: {exc}",
-                baseline_name=self.name,
-                model=self.model,
-                latency_seconds=latency,
-            )
+        gen_response, input_tokens, output_tokens = self._llm.complete_text(
+            system="", user=prompt,
+        )
 
         latency = time.monotonic() - t0
         final_answer = _extract_answer(gen_response)

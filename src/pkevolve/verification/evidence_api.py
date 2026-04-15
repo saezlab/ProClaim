@@ -425,6 +425,10 @@ def search_pubmed_llm(
     if len(added_pmids) == 0:
         print("⚠️ No papers found in initial search.")
 
+    print(
+        f"search_pubmed_llm: found {found}, added {added} new. "
+        f"PMIDs: {', '.join(added_pmids) if added_pmids else 'none'}"
+    )
     return added_pmids
 
 
@@ -496,7 +500,7 @@ def refine_search_for_failed_papers(
     )
 
     if not refined_queries:
-        print("refine_search_for_failed_papers: no refined queries generated.")
+        logger.info("refine_search_for_failed_papers: no refined queries generated")
         return []
 
     _debug_print(f"Refined queries: {', '.join(refined_queries)}")
@@ -513,7 +517,7 @@ def refine_search_for_failed_papers(
     # Deduplicate
     unique_new_pmids = list(dict.fromkeys(all_new_pmids))
 
-    print(f"Refined search: found {len(unique_new_pmids)} new papers.")
+    print(f"refine_search_for_failed_papers: queries={len(refined_queries)} new_pmids={len(unique_new_pmids)}")
     return unique_new_pmids
 
 
@@ -707,9 +711,9 @@ def search_semantic_scholar(
     client = S2Client()
     results = client.search(query, limit=max_results)
     added = _add_s2_records(results, state)
-    print(
-        f"S2 Search: found {len(results)}, added {len(added)} new. "
-        f"IDs: {', '.join(added) if added else 'none'}"
+    logger.info(
+        "S2 Search: found %d, added %d new. IDs: %s",
+        len(results), len(added), ', '.join(added) if added else 'none',
     )
     return added
 
@@ -793,9 +797,9 @@ def search_semantic_scholar_recommendations(
     client = S2Client()
     results = client.recommendations(pos_ids, neg_ids or None, limit=max_results)
     added = _add_s2_records(results, state)
-    print(
-        f"S2 Recommendations: {len(positive_pmids)} positive seeds, "
-        f"{len(negative_pmids)} negative seeds → added {len(added)} papers."
+    logger.info(
+        "S2 Recommendations: %d positive seeds, %d negative seeds → added %d papers.",
+        len(positive_pmids), len(negative_pmids), len(added),
     )
     return added
 
@@ -871,9 +875,9 @@ def expand_via_citations(
     if all_added:
         state.token_estimate = state.token_count()
 
-    print(
-        f"Citation chaining: {len(papers_with_refs)} papers scanned, "
-        f"added {len(all_added)} new papers."
+    logger.info(
+        "Citation chaining: %d papers scanned, added %d new papers.",
+        len(papers_with_refs), len(all_added),
     )
     return all_added
 
@@ -1079,7 +1083,7 @@ def add_facts_from_dicts(
     if skipped_dup:
         parts.append(f"Skipped {skipped_dup} duplicates.")
     parts.append("Coverage updated.")
-    print(" ".join(parts))
+    logger.info(" ".join(parts))
     return added
 
 
@@ -1256,10 +1260,13 @@ def extract_and_add_facts(
     pmids_to_process = [p for p in pmids if p not in state.extracted_pmids]
 
     if not pmids_to_process:
-        print(f"extract_and_add_facts: all {len(pmids)} papers already extracted.")
+        logger.info("extract_and_add_facts: all %d papers already extracted", len(pmids))
         return {p: 0 for p in pmids}
 
-    print(f"extract_and_add_facts: processing {len(pmids_to_process)} papers with {max_workers} workers...")
+    logger.info(
+        "extract_and_add_facts: processing %d papers with %d workers",
+        len(pmids_to_process), max_workers,
+    )
 
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1282,7 +1289,7 @@ def extract_and_add_facts(
             results[pmid] = 0
 
     total_facts = sum(results.values())
-    print(f"extract_and_add_facts: completed. Total facts extracted: {total_facts}")
+    print(f"extract_and_add_facts: done. facts={total_facts} papers={len(pmids_to_process)}")
 
     return results
 
@@ -1650,7 +1657,7 @@ def get_evidence_summary(state: EvidenceState) -> str:
             lines.append(f"  - [{gap.gap_type.value}] {gap.description}")
 
     summary = "\n".join(lines)
-    print(summary)
+    logger.debug("get_evidence_summary:\n%s", summary)
     return summary
 
 
@@ -1693,10 +1700,31 @@ def check_sufficiency(
                           are present in total, force INSUFFICIENT to
                           encourage more retrieval. Set to 0 to disable.
                           (default: 3)
+    The backend is selected via the SUFFICIENCY_BACKEND environment variable
+    (propagated by VerificationSettings.build_sdk_env):
+      'mlp' (default): trained MLP classifier — original behaviour.
+      'llm': Qwen subagent reads paper titles, abstracts, and NLP features.
+      'haiku': Claude Haiku via Anthropic API — Qwen still used for gap identification.
 
     Appends result to state.sufficiency_history and increments iteration.
     Raises MaxIterationsExceeded if the iteration limit is reached.
     """
+    import os
+    backend = os.environ.get("SUFFICIENCY_BACKEND", "mlp").lower()
+    if backend == "haiku":
+        return _check_sufficiency_haiku(state, llm, threshold, min_total_papers)
+    if backend == "llm":
+        return _check_sufficiency_llm(state, llm, threshold, min_total_papers)
+    return _check_sufficiency_mlp(state, llm, threshold, min_total_papers)
+
+
+def _check_sufficiency_mlp(
+    state: EvidenceState,
+    llm,
+    threshold: float,
+    min_total_papers: int,
+) -> SufficiencyResult:
+    """MLP-based sufficiency check (original implementation)."""
 
     if state.iteration >= state.MAX_ITERATIONS:
         raise MaxIterationsExceeded(
@@ -1891,6 +1919,7 @@ def get_sufficiency_history(
                 f"  {row['iteration']:>4}  {row['label']:<12}  "
                 f"{row['confidence']:>10.6f}"
             )
+        logger.debug("get_sufficiency_history:\n%s", "\n".join(table_lines))
 
     # --- Trend analysis ------------------------------------------------------
     if len(history) < window:
@@ -1907,10 +1936,9 @@ def get_sufficiency_history(
         else:
             trend = "improving"
 
-    print(f"\nTrend: {trend}")
+    print(f"get_sufficiency_history: trend={trend} iterations={len(history)}")
 
     # Return only trend to prevent LLM from over-analyzing the data
-    # The full history is still printed above for human inspection
     return {
         "trend": trend,
     }
@@ -2072,7 +2100,7 @@ def emit_verdict(
         confidence = min(confidence, 0.30)
 
     for w in quality_warnings:
-        print(w)
+        logger.warning(w)
 
     v = VerificationVerdict(
         verdict=verdict,
@@ -2124,6 +2152,66 @@ def setup_kernel(
             workspace_path="/path/to/workspace",
         )
     """
+    # ---------------------------------------------------------------
+    # Silence INFO/DEBUG logging in the kernel so it does not pollute
+    # nb_execute cell outputs.
+    #
+    # Problem: ML libraries (transformers, spaCy, tqdm, mlx-lm …) reset
+    # the root logger's *level* to NOTSET/INFO when their modules are first
+    # imported (often in a later cell), undoing any setLevel(WARNING) done
+    # here.  Setting only the level is therefore not robust.
+    #
+    # Robust fix: replace any existing StreamHandlers on the root logger
+    # with a single WARNING-gated one.  Handler-level filtering survives
+    # root-level resets because the handler checks its OWN level *after*
+    # the root check, not instead of it.  And by ensuring root already has
+    # at least one handler, logging.basicConfig() (called by many libs on
+    # import) becomes a no-op and cannot inject a promiscuous handler.
+    # ---------------------------------------------------------------
+    import logging as _logging
+    import os as _os
+    import warnings as _warnings
+
+    # Set ML library verbosity env vars before any lazy imports trigger them.
+    # HF_HUB_VERBOSITY / TRANSFORMERS_VERBOSITY are read by each library's
+    # _configure_library_root_logger() on first import, so setting them here
+    # ensures their logger level is ERROR even when they install their own
+    # StreamHandler.  TQDM_DISABLE suppresses all progress bars (model-load
+    # "Loading weights" bars etc.) since tqdm reads this env var on import.
+    _os.environ.setdefault("HF_HUB_VERBOSITY", "error")
+    _os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    _os.environ.setdefault("TQDM_DISABLE", "1")
+
+    _root = _logging.getLogger()
+    # Remove any StreamHandler that might have been added by transitive
+    # imports before this call (e.g. from requests, httpx, urllib3).
+    for _h in list(_root.handlers):
+        if isinstance(_h, _logging.StreamHandler) and not isinstance(_h, _logging.FileHandler):
+            _root.removeHandler(_h)
+    # Add a single WARNING-filtered StreamHandler.  Even if a library
+    # subsequently calls logging.root.setLevel(DEBUG), this handler won't
+    # let INFO/DEBUG through.
+    _sh = _logging.StreamHandler()
+    _sh.setLevel(_logging.WARNING)
+    _sh.setFormatter(_logging.Formatter("%(levelname)s: %(message)s"))
+    _root.addHandler(_sh)
+    _root.setLevel(_logging.WARNING)
+
+    # Silence noisy named loggers regardless of root level.
+    # huggingface_hub and transformers add their own StreamHandlers; setting
+    # level to ERROR here is belt-and-suspenders alongside the env vars above.
+    _logging.getLogger("httpx").setLevel(_logging.WARNING)
+    _logging.getLogger("httpcore").setLevel(_logging.WARNING)
+    _logging.getLogger("urllib3").setLevel(_logging.WARNING)
+    _logging.getLogger("huggingface_hub").setLevel(_logging.ERROR)
+    _logging.getLogger("transformers").setLevel(_logging.ERROR)
+
+    # Suppress irrelevant third-party Python warnings.
+    # Note: TqdmWarning extends Warning (not UserWarning), so no category arg.
+    _warnings.filterwarnings("ignore", message=r".*\[W095\].*", category=UserWarning)
+    _warnings.filterwarnings("ignore", message=r".*IProgress.*")
+    _warnings.filterwarnings("ignore", category=FutureWarning, module=r"spacy|transformers|tqdm|mlx")
+
     import os
 
     ws = Path(workspace_path)

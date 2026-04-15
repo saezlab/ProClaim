@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================================
-# submit_signor_batch.sh
+# submit_connectomedb_batch.sh
 #
-# One-click SIGNOR evaluation from your local laptop.
+# One-click ConnectomeDB evaluation from your local laptop.
 # Submits a self-contained SLURM job (vLLM + eval on same GPU).
 #
-# Default mode: 4-chunk parallel (--array=0-3), one GPU per task, followed by
+# Default mode: 8-chunk parallel (--array=0-7), one GPU per task, followed by
 # an auto-merge job that concatenates the chunk CSVs.
 # Use --single to run a single job (all rows, one GPU).
 #
@@ -13,13 +13,13 @@
 #   - SSH access to EBI HPC configured
 #
 # Usage:
-#   bash scripts/submit_signor_batch.sh                  # 4-GPU parallel (default)
-#   bash scripts/submit_signor_batch.sh --single         # Single-GPU mode
-#   bash scripts/submit_signor_batch.sh --single --limit 1   # Test with 1 claim
-#   bash scripts/submit_signor_batch.sh --reps 1         # 1 repetition only
-#   bash scripts/submit_signor_batch.sh --status         # Check job status
-#   bash scripts/submit_signor_batch.sh --cancel         # Cancel running jobs
-#   bash scripts/submit_signor_batch.sh --logs           # View job logs
+#   bash scripts/submit_connectomedb_batch.sh                  # 8-GPU parallel (default)
+#   bash scripts/submit_connectomedb_batch.sh --single         # Single-GPU mode
+#   bash scripts/submit_connectomedb_batch.sh --single --limit 1   # Test with 1 claim
+#   bash scripts/submit_connectomedb_batch.sh --reps 1         # 1 repetition only
+#   bash scripts/submit_connectomedb_batch.sh --status         # Check job status
+#   bash scripts/submit_connectomedb_batch.sh --cancel         # Cancel running jobs
+#   bash scripts/submit_connectomedb_batch.sh --logs           # View job logs
 # =============================================================================
 set -euo pipefail
 
@@ -29,22 +29,22 @@ LOGIN_HOST="ihpc.ebi.ac.uk"
 LOGIN_NODE="${EBI_USER}@${LOGIN_HOST}"
 
 # SLURM job settings
-JOB_NAME="signor-eval"
-TIME_LIMIT="24:00:00"
+JOB_NAME="connectomedb-eval"
+TIME_LIMIT="40:00:00"
 CPUS=8
 MEM="64G"
 GPU_TYPE="a100"
-GPU_COUNT=1  # per array task; parallel mode uses 4 GPUs total via --array=0-3 (do NOT set to 4)
+GPU_COUNT=1  # per array task; parallel mode uses 8 GPUs total via --array=0-7 (do NOT set to 8)
 
 # Project paths (on HPC)
 PROJECT_ROOT="/hps/nobackup/saezrodriguez/rain/workspace/grn-llm-correct"
-JOB_SCRIPT="${PROJECT_ROOT}/scripts/slurm_signor_job.sh"
-JOB_INFO_FILE="${PROJECT_ROOT}/.signor_job_info"
+JOB_SCRIPT="${PROJECT_ROOT}/scripts/slurm_connectomedb_job.sh"
+JOB_INFO_FILE="${PROJECT_ROOT}/.connectomedb_job_info"
 LOG_DIR="${PROJECT_ROOT}/results/slurm_logs"
 
 # Action / mode
 ACTION="submit"
-MODE="parallel"     # "parallel" (4-chunk array) or "single"
+MODE="parallel"     # "parallel" (8-chunk array) or "single"
 REPS_ARG=""
 LIMIT_ARG=""
 
@@ -62,7 +62,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $(basename "$0") [OPTIONS]"
             echo ""
             echo "Submission modes:"
-            echo "  (default)          4-chunk parallel: 4 GPUs, auto-merged results"
+            echo "  (default)          8-chunk parallel: 8 GPUs, auto-merged results"
             echo "  --single           Single-GPU mode: all rows on one GPU"
             echo ""
             echo "Actions:"
@@ -72,7 +72,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Job parameters:"
             echo "  --reps N     Number of repetitions per claim (default: 3)"
-            echo "  --limit N    Limit to N rows (single mode only; default: all 67)"
+            echo "  --limit N    Limit to N rows (single mode only; default: all 547)"
             echo "  --user USER  EBI username (default: wuy)"
             echo ""
             echo "  -h, --help   Show this help"
@@ -116,7 +116,7 @@ if [[ "$ACTION" == "status" ]]; then
     ssh_login "squeue -j ${ARRAY_JOB_ID},${MERGE_JOB_ID} -o '%.18i %.9P %.20j %.8u %.2t %.10M %.6D %R' 2>/dev/null || echo 'Jobs not in queue (may be complete)'"
     echo ""
 
-    RESULTS_DIR="${PROJECT_ROOT}/results/signor_eval_${RUN_TAG}"
+    RESULTS_DIR="${PROJECT_ROOT}/results/connectomedb_eval_${RUN_TAG}"
     echo "Results progress:"
     ssh_login "
         for f in ${RESULTS_DIR}/results*.csv; do
@@ -151,8 +151,7 @@ if [[ "$ACTION" == "logs" ]]; then
     fi
 
     ARRAY_JOB_ID=$(echo "$JOB_INFO" | awk '{print $1}')
-    # For array jobs, tail all task log files matching the pattern
-    LOG_PATTERN="${LOG_DIR}/signor-eval-${ARRAY_JOB_ID}*.out"
+    LOG_PATTERN="${LOG_DIR}/connectomedb-eval-${ARRAY_JOB_ID}*.out"
     echo "Following logs: ${LOG_PATTERN}"
     echo "Press Ctrl-C to stop"
     echo "============================================================"
@@ -163,7 +162,7 @@ fi
 # ---- SUBMIT -----------------------------------------------------------------
 RUN_TAG=$(date +%Y%m%d_%H%M%S)
 
-# Build EXTRA_ARGS to pass through to run_signor_eval.py
+# Build EXTRA_ARGS to pass through to run_connectomedb_eval.py
 EXTRA_ARGS="${REPS_ARG}"
 if [[ "$MODE" == "single" ]]; then
     EXTRA_ARGS="${EXTRA_ARGS} ${LIMIT_ARG}"
@@ -171,7 +170,7 @@ fi
 EXTRA_ARGS="${EXTRA_ARGS# }"  # trim leading space
 
 echo "============================================================"
-echo "  SIGNOR Evaluation Submission"
+echo "  ConnectomeDB Evaluation Submission"
 echo "============================================================"
 echo "  User:       ${EBI_USER}"
 echo "  Host:       ${LOGIN_HOST}"
@@ -192,9 +191,9 @@ echo ""
 
 # ---- Build and submit the main (array) job ----------------------------------
 if [[ "$MODE" == "parallel" ]]; then
-    ARRAY_FLAG="--array=0-3"
+    ARRAY_FLAG="--array=0-7"
     SINGLE_MODE_VAL="false"
-    echo "Submitting 4-task array job..."
+    echo "Submitting 8-task array job..."
 else
     ARRAY_FLAG=""
     SINGLE_MODE_VAL="true"
@@ -211,8 +210,8 @@ ARRAY_JOB_ID=$(ssh_login "
         --cpus-per-task=${CPUS} \
         --mem=${MEM} \
         --gres=gpu:${GPU_TYPE}:${GPU_COUNT} \
-        --output=${LOG_DIR}/signor-eval-%j_%a.out \
-        --error=${LOG_DIR}/signor-eval-%j_%a.err \
+        --output=${LOG_DIR}/connectomedb-eval-%j_%a.out \
+        --error=${LOG_DIR}/connectomedb-eval-%j_%a.err \
         --export=ALL \
         ${ARRAY_FLAG} \
         ${JOB_SCRIPT} \
@@ -229,7 +228,7 @@ echo "  Array job ID: ${ARRAY_JOB_ID}"
 MERGE_JOB_ID="none"
 if [[ "$MODE" == "parallel" ]]; then
     echo "Submitting merge job (depends on array job)..."
-    RESULTS_DIR="${PROJECT_ROOT}/results/signor_eval_${RUN_TAG}"
+    RESULTS_DIR="${PROJECT_ROOT}/results/connectomedb_eval_${RUN_TAG}"
     MERGE_JOB_ID=$(ssh_login "
         sbatch \
             --job-name=${JOB_NAME}-merge \
@@ -237,8 +236,8 @@ if [[ "$MODE" == "parallel" ]]; then
             --cpus-per-task=2 \
             --mem=8G \
             --dependency=afterok:${ARRAY_JOB_ID} \
-            --output=${LOG_DIR}/signor-eval-merge-%j.out \
-            --error=${LOG_DIR}/signor-eval-merge-%j.err \
+            --output=${LOG_DIR}/connectomedb-eval-merge-%j.out \
+            --error=${LOG_DIR}/connectomedb-eval-merge-%j.err \
             --wrap=\"cd ${PROJECT_ROOT} && uv run python -c \\\"
 import glob, pandas as pd, sys
 files = sorted(glob.glob('${RESULTS_DIR}/results_chunk*.csv'))
@@ -270,7 +269,7 @@ echo "============================================================"
 echo "  Array job ID: ${ARRAY_JOB_ID}"
 [[ "$MODE" == "parallel" ]] && echo "  Merge job ID: ${MERGE_JOB_ID}"
 echo "  Run tag:      ${RUN_TAG}"
-echo "  Results dir:  ${PROJECT_ROOT}/results/signor_eval_${RUN_TAG}/"
+echo "  Results dir:  ${PROJECT_ROOT}/results/connectomedb_eval_${RUN_TAG}/"
 echo "  Log dir:      ${LOG_DIR}/"
 echo "============================================================"
 echo ""
@@ -282,5 +281,5 @@ echo "Cancel:"
 echo "  bash $0 --cancel"
 echo ""
 echo "Download results when complete:"
-echo "  scp ${LOGIN_NODE}:${PROJECT_ROOT}/results/signor_eval_${RUN_TAG}/results.csv ."
+echo "  scp ${LOGIN_NODE}:${PROJECT_ROOT}/results/connectomedb_eval_${RUN_TAG}/results.csv ."
 echo ""

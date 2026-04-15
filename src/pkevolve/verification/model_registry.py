@@ -49,6 +49,7 @@ _NLI_COMPUTER = "nli_entailment_computer"
 _MLP_CLASSIFIER = "mlp_classifier"
 _FEATURE_AGGREGATOR = "feature_aggregator"
 _METADATA_EXTRACTOR = "metadata_extractor"
+_HAIKU_LLM = "haiku_sufficiency_llm"
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +212,43 @@ def get_metadata_extractor():
 
 
 # ---------------------------------------------------------------------------
+# Haiku LLM Singleton
+# ---------------------------------------------------------------------------
+
+
+def get_haiku_llm():
+    """Get or create the Claude Haiku LLM callable for sufficiency checks.
+
+    Reads the Anthropic API key from environment variables:
+        ANTHROPIC_API_KEY, CLAUDE_API_KEY, or LLM_API_KEY (in that order).
+
+    The callable is cached as a singleton — the Anthropic client is constructed
+    only once per kernel session to avoid repeated connection overhead.
+
+    Returns:
+        LLMCallable wrapping claude-haiku-4-5-20251001 via the native Anthropic API.
+    """
+    if _HAIKU_LLM in _MODEL_CACHE:
+        logger.debug("Using cached Haiku LLM callable")
+        return _MODEL_CACHE[_HAIKU_LLM]
+
+    import os
+    api_key = (
+        os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("CLAUDE_API_KEY")
+        or os.environ.get("LLM_API_KEY")
+        or "EMPTY"
+    )
+
+    from pkevolve.verification.llm_factory import make_anthropic_llm
+
+    logger.info("Creating Claude Haiku sufficiency LLM callable (model=claude-haiku-4-5-20251001)...")
+    haiku_llm = make_anthropic_llm(api_key=api_key)
+    _MODEL_CACHE[_HAIKU_LLM] = haiku_llm
+    return haiku_llm
+
+
+# ---------------------------------------------------------------------------
 # Pre-warming and Cache Management
 # ---------------------------------------------------------------------------
 
@@ -238,9 +276,14 @@ def prewarm_all_models() -> Dict[str, float]:
     get_nli_entailment_computer()
     load_times["nli_entailment"] = time.time() - start
 
-    start = time.time()
-    get_mlp_classifier()
-    load_times["mlp_classifier"] = time.time() - start
+    import os
+    backend = os.environ.get("SUFFICIENCY_BACKEND", "mlp").lower()
+    if backend not in ("llm", "haiku"):
+        start = time.time()
+        get_mlp_classifier()
+        load_times["mlp_classifier"] = time.time() - start
+    else:
+        logger.info("Skipping MLP classifier preload (SUFFICIENCY_BACKEND=%s)", backend)
 
     start = time.time()
     get_metadata_extractor()

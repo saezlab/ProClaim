@@ -42,6 +42,10 @@ fulltext = [
     # full_text.py gracefully skips Layer 2 if indra is not installed.
     "indra",
 ]
+baselines = [
+    # DuckDuckGo search fallback for FIRE and ReAct baselines.
+    "ddgs",
+]
 
 [build-system]
 requires = ["hatchling"]

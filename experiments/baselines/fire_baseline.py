@@ -201,11 +201,7 @@ class FIREBaseline:
     Parameters
     ----------
     llm:
-        Shared ``LLMBackend`` instance.  When provided, *model* and
-        *temperature* are ignored (taken from the backend instead).
-    model:
-        Any litellm model string, e.g. ``"anthropic/claude-sonnet-4-20250514"``,
-        ``"openai/gpt-4o-mini"``.  Used only when *llm* is ``None``.
+        Shared ``LLMBackend`` instance.
     max_steps:
         Maximum number of iterative search steps.
     max_retries:
@@ -215,24 +211,20 @@ class FIREBaseline:
         (FIRE default is 2).
     num_search_results:
         Number of search results per query.
-    temperature:
-        LLM sampling temperature (FIRE default is 0.5).  Used only when
-        *llm* is ``None``.
     """
 
     name = "fire"
 
     def __init__(
         self,
-        llm: LLMBackend | None = None,
+        llm: LLMBackend,
         *,
-        model: str = "openai/gpt-4o-mini",
         max_steps: int = 5,
         max_retries: int = 10,
         max_tolerance: int = 2,
         num_search_results: int = 3,
-        temperature: float = 0.0,
     ) -> None:
+        self._llm = llm
         self.model = self._llm.model
         self.temperature = self._llm.temperature
         self.max_steps = max_steps

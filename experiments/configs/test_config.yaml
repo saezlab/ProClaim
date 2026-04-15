@@ -35,12 +35,14 @@ llm:
 
   # Subagent configuration (shared by both Claude and GLM)
   subagent_model: qwen3.5-9b  # Must match vLLM model ID exactly
-  subagent_base_url: "http://codon-gpu-009.ebi.ac.uk:8001/v1/" # vLLM endpoint for subagent
+  subagent_base_url: "http://codon-gpu-008.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
   temperature: 0.7
   disable_thinking: true  # Disable Qwen thinking mode to save tokens
 
 # Output paths (relative paths resolve from cwd)
 # output_dir: results/verification/test_run
+# Sufficiency classifier backend: "mlp" (trained MLP) or "llm" (Qwen subagent)
+sufficiency_backend: mlp
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
 # Logging
