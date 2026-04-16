@@ -9,32 +9,12 @@ LLM-driven strategy that works for diverse claim types (PPI, diagnosis, drug res
 from typing import Callable
 import logging
 
+from pkevolve.verification.prompts import (
+    QUERY_GENERATION as QUERY_GENERATION_PROMPT,
+    GENERATE_GAP_QUERY,
+)
+
 logger = logging.getLogger(__name__)
-
-
-QUERY_GENERATION_PROMPT = """You are a biomedical search expert. Generate a comprehensive PubMed query for the following scientific claim:
-
-Claim: {claim}
-
-Requirements:
-- Include key entities (genes, mutations, diseases, drugs, proteins)
-- Add synonyms and common variants using OR operators where appropriate
-- Use appropriate field tags when beneficial (e.g., [Title/Abstract], [MeSH])
-- Keep query length reasonable (5-20 words)
-- Use proper PubMed syntax with Boolean operators (AND, OR, NOT)
-- Use parentheses to group related terms
-
-Examples:
-- Diagnosis claim: "JAK2 V617F is not associated with lymphoid leukemia"
-  → (JAK2 AND V617F) AND (lymphoid leukemia OR B-ALL OR T-ALL OR CLL)
-
-- Drug resistance claim: "NT5C2 K359Q mutation does not confer resistance to Nelarabine"
-  → (NT5C2 AND K359Q) AND (Nelarabine OR Arabinosylguanine) AND (resistance OR sensitivity)
-
-- PPI claim: "MAPK1 activates H3-3A through phosphorylation"
-  → (MAPK1 OR ERK2) AND (H3-3A OR HIST1H3A) AND (phosphorylation OR activation)
-
-Output ONLY the query string without any explanation or markdown formatting."""
 
 
 def _validate_query(query: str) -> bool:
@@ -197,13 +177,10 @@ def generate_gap_query(
     Returns:
         Targeted PubMed query string
     """
-    prompt = f"""Generate a focused PubMed query to find evidence for this gap:
-
-Claim: {claim}
-Gap: {gap_description}
-
-Generate a query that specifically targets this missing evidence. Keep it concise (3-10 words).
-Output ONLY the query string without explanation."""
+    prompt = GENERATE_GAP_QUERY.format(
+        claim=claim,
+        gap_description=gap_description,
+    )
 
     try:
         response = llm(prompt)

@@ -31,6 +31,7 @@ dependencies = [
     "sentence-transformers",
     "seaborn>=0.13.2",
     "litellm",
+    "jupytext>=1.16",
     "langchain-community>=0.4.1",
     "langchain-litellm>=0.6.1",
 ]
@@ -44,6 +45,8 @@ fulltext = [
 baselines = [
     # DuckDuckGo search fallback for FIRE and ReAct baselines.
     "ddgs",
+    # Google Cloud SDK for Vertex AI / Gemini models via LiteLLM.
+    "litellm[google]",
 ]
 
 [build-system]

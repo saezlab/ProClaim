@@ -20,10 +20,13 @@ Example::
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Callable
 
 logger = logging.getLogger(__name__)
+
+_EVIDENCE_DEBUG = os.environ.get("EVIDENCE_DEBUG", "0") == "1"
 
 # Type alias used throughout the verification package
 LLMCallable = Callable[[str], str]
@@ -213,7 +216,8 @@ def make_llm(
                     preview = display[:200].replace("\n", " ")
                     if len(display) > 200:
                         preview += "..."
-                    print(f"[LLM response: {len(display)} chars] {preview}")
+                    if _EVIDENCE_DEBUG:
+                        print(f"[LLM response: {len(display)} chars] {preview}")
                     return result
 
                 logger.warning(
