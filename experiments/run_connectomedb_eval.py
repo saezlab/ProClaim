@@ -25,6 +25,21 @@ uv run python -m pkevolve.verification.evidence_programming \
     --claim "In the context of protein-protein interactions, LY86 as ligand directly interacts with CD180 as receptor." \
     --output-dir results/test_LY86_CD180 \
     --notebook-path results/test_LY86_CD180/evidence_report.ipynb
+uv run python -m pkevolve.verification.evidence_programming \
+    --config experiments/configs/test_config.yaml \
+    --claim "In the context of protein-protein interactions, B2M as ligand directly interacts with CD1A as receptor." \
+    --output-dir results/test_B2M_CD1A \
+    --notebook-path results/test_B2M_CD1A/evidence_report.ipynb
+uv run python -m pkevolve.verification.evidence_programming \
+    --config experiments/configs/test_config.yaml \
+    --claim "B2M as ligand directly interacts with CD1A as receptor." \
+    --output-dir results/test_B2M_CD1A_no_context \
+    --notebook-path results/test_B2M_CD1A_no_context/evidence_report.ipynb
+uv run python -m pkevolve.verification.evidence_programming \
+    --config experiments/configs/test_config.yaml \
+    --claim "AANAT as ligand directly interacts with MTNR1A as receptor." \
+    --output-dir results/test_AANAT_MTNR1A_no_context \
+    --notebook-path results/test_AANAT_MTNR1A_no_context/evidence_report.ipynb
 """
 
 import argparse

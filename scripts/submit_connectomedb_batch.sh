@@ -21,7 +21,8 @@
 #   bash scripts/submit_connectomedb_batch.sh --cancel         # Cancel running jobs
 #   bash scripts/submit_connectomedb_batch.sh --logs           # View job logs
 #   bash scripts/submit_connectomedb_batch.sh --resume               # Resume last failed run
-#   bash scripts/submit_connectomedb_batch.sh --run-tag 20260414_160003  # Resume specific run
+#   bash scripts/submit_connectomedb_batch.sh --run-tag 20260414_160003 --reps 1 # Resume specific run
+
 # =============================================================================
 set -euo pipefail
 
