@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from baselines.shared.cost_tracker import CostTracker
@@ -33,6 +34,48 @@ from baselines.shared.verdict import BaselineResult
 from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Query processors — transform (claim, context) into a focused S2 search query
+# ---------------------------------------------------------------------------
+
+def query_process_signor(claim: str) -> str:
+    """Strip parenthetical boilerplate from SIGNOR claims.
+
+    SIGNOR claims look like:
+        "GNAS directly activates ADCY1 (either through post-translational
+         modification, complex formation, or direct regulation of expression)."
+    The parenthetical drowns out the entity names in S2 keyword search.
+    """
+    return re.sub(r"\s*\([^)]*\)\s*", " ", claim).strip()
+
+
+def query_process_connectomedb(claim: str) -> str:
+    """Extract entity names from ConnectomeDB claims.
+
+    ConnectomeDB claims look like:
+        "In the context of protein-protein interactions, A2M as ligand
+         directly interacts with HSPA5 as receptor."
+    Even after stripping the prefix, the remaining boilerplate ("as ligand
+    directly interacts with ... as receptor") drowns out entity names in S2
+    keyword search.  Extract just the two protein names.
+    """
+    m = re.search(
+        r"(\S+)\s+as\s+ligand\s+directly\s+interacts\s+with\s+(\S+)\s+as\s+receptor",
+        claim,
+    )
+    if m:
+        return f"{m.group(1)} {m.group(2)} protein interaction"
+    # Last resort: strip the prefix before the comma
+    _, _, rest = claim.partition(",")
+    return rest.strip() if rest else claim
+
+
+# Registry for convenient lookup by dataset name
+QUERY_PROCESSORS: dict[str, Callable[[str, dict | None], str]] = {
+    "signor": query_process_signor,
+    "connectomedb": query_process_connectomedb,
+}
 
 
 def _format_passages(papers: list[dict]) -> str:
@@ -65,11 +108,11 @@ class S2Retrieval:
         self,
         llm: LLMBackend,
         top_k: int = 5,
-        strip_parens: bool = True,
+        query_process: Callable[[str, dict | None], str] | None = None,
     ) -> None:
         self.llm = llm
         self.top_k = top_k
-        self.strip_parens = strip_parens
+        self.query_process = query_process
         self.tracker = CostTracker(model=llm.model)
         self._s2 = S2Client()
         self.log_dir: Path | None = None
@@ -86,12 +129,12 @@ class S2Retrieval:
         t0 = time.monotonic()
 
         # 1. Retrieve from Semantic Scholar
-        # Optionally strip parenthetical boilerplate so the query focuses on
-        # key entities.  Long parenthetical clauses (e.g. SIGNOR mechanism
-        # descriptions) dominate S2's relevance ranking and drown out the
-        # entity names that actually distinguish one claim from another.
-        if self.strip_parens:
-            query = re.sub(r"\s*\([^)]*\)\s*", " ", claim).strip()
+        # Apply query processor to simplify the claim into an effective S2
+        # search query.  Different datasets need different strategies (e.g.
+        # SIGNOR: strip parenthetical boilerplate; ConnectomeDB: extract
+        # entity names from verbose claim template).
+        if self.query_process is not None:
+            query = self.query_process(claim)
         else:
             query = claim
         try:

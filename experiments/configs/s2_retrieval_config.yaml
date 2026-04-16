@@ -24,9 +24,9 @@ datasets:
 # ── Baseline ──────────────────────────────────────────────────────────
 baseline: s2_retrieval
 
-# ── S2 Retrieval settings ────────────────────────────────────────────
-s2_model: anthropic/claude-sonnet-4-6   # LiteLLM model string
-s2_top_k: 5                              # number of S2 abstracts to retrieve
+# ── Model & retrieval ─────────────────────────────────────────────────
+model: anthropic/claude-sonnet-4-6   # LiteLLM model string
+top_k: 5                              # number of S2 abstracts to retrieve
 
 # ── Reproducibility ───────────────────────────────────────────────────
 seed: 100      # base seed; repeat i uses seed + i

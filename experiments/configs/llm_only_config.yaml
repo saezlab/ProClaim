@@ -24,7 +24,7 @@ datasets:
 # ── Baseline ──────────────────────────────────────────────────────────
 baseline: llm_only
 
-# LiteLLM model string, e.g.:
+# ── Model (LiteLLM format: "provider/model-id") ──────────────────────
 #   vertex_ai/gemini-3.1-pro-preview (Google Gemini 3.1 Pro)
 #   zai/glm-4-plus          (Z.AI GLM)
 #   openai/gpt-4o           (OpenAI GPT-4o)

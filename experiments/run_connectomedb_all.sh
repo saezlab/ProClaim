@@ -74,42 +74,41 @@ run "LLM-only: Gemini-3.1-Pro-Preview" \
 # 3. S2 Retrieval: Claude Sonnet 4.6
 run "S2 Retrieval: Claude-Sonnet-4.6" \
     --baseline s2_retrieval \
-    --s2-model "anthropic/claude-sonnet-4-6"
+    --model "anthropic/claude-sonnet-4-6"
 
 # 4. S2 Retrieval: Gemini 3.1 Pro Preview
 run "S2 Retrieval: Gemini-3.1-Pro-Preview" \
     --baseline s2_retrieval \
-    --s2-model "vertex_ai/gemini-3.1-pro-preview"
+    --model "vertex_ai/gemini-3.1-pro-preview"
 
 # 5. ReAct + web search: Claude Sonnet 4.6
 run "ReAct + web: Claude-Sonnet-4.6" \
     --baseline react \
-    --react-model "anthropic/claude-sonnet-4-6" \
-    --react-search-backend web
+    --model "anthropic/claude-sonnet-4-6" \
+    --search-backend web
 
 # 6. ReAct + S2: Claude Sonnet 4.6
 run "ReAct + S2: Claude-Sonnet-4.6" \
     --baseline react \
-    --react-model "anthropic/claude-sonnet-4-6" \
-    --react-search-backend s2
+    --model "anthropic/claude-sonnet-4-6" \
+    --search-backend s2
 
 # 7. ACE: Claude Sonnet 4.6
 run "ACE: Claude-Sonnet-4.6" \
     --baseline ace \
-    --ace-model "anthropic/claude-sonnet-4-6"
+    --model "anthropic/claude-sonnet-4-6"
 
 # 8. FIRE: Claude Sonnet 4.6
 run "FIRE: Claude-Sonnet-4.6" \
     --baseline fire \
-    --fire-model "anthropic/claude-sonnet-4-6"
+    --model "anthropic/claude-sonnet-4-6"
 
 # 9. OpenScholar: Claude Sonnet 4.6 (S2 retrieval, no oracle evidence)
 run "OpenScholar: Claude-Sonnet-4.6 (no oracle)" \
     --baseline open_scholar \
-    --os-model "claude-sonnet-4-6" \
-    --os-api "anthropic" \
-    --os-retrieval \
-    --os-top-n 10
+    --model "anthropic/claude-sonnet-4-6" \
+    --retrieval \
+    --top-k 10
 
 echo ""
 echo "========================================"

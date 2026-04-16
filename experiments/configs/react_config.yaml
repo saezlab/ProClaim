@@ -27,17 +27,11 @@ datasets:
 # ── Baseline ──────────────────────────────────────────────────────────
 baseline: react
 
-# ── ReAct model ───────────────────────────────────────────────────────
-# Format: litellm model string "<provider>/<model_id>"
-# Examples:
-#   openai/gpt-4o-mini
-#   openai/gpt-4o
-#   anthropic/claude-sonnet-4-20250514
-react_model: anthropic/claude-sonnet-4-6
+# ── Model (LiteLLM format: "provider/model-id") ──────────────────────
+model: anthropic/claude-sonnet-4-6
 
-# Maximum number of search steps (tune so median token usage is
-# comparable to Evidence Programming; FIRE default is 5)
-react_max_steps: 10
+# Maximum number of search steps
+max_steps: 10
 
 # ── Reproducibility ───────────────────────────────────────────────────
 seed: 100

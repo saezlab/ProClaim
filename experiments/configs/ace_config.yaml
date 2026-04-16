@@ -25,18 +25,14 @@ datasets:
 # ── Baseline ──────────────────────────────────────────────────────────
 baseline: ace
 
-# ── ACE model ─────────────────────────────────────────────────────────
-# LiteLLM model string: "<provider>/<model_id>"
-# Examples:
-#   openai/gpt-4o-mini
-#   anthropic/claude-sonnet-4-20250514
-ace_model: anthropic/claude-sonnet-4-6
+# ── Model (LiteLLM format: "provider/model-id") ──────────────────────
+model: anthropic/claude-sonnet-4-6
 
-# Max generation tokens
-ace_max_tokens: 4096
+# ── Generation ────────────────────────────────────────────────────────
+max_tokens: 4096
 
 # Optional: path to a pre-trained playbook .txt file
-# ace_playbook: /path/to/best_playbook.txt
+# playbook: /path/to/best_playbook.txt
 
 # ── Reproducibility ───────────────────────────────────────────────────
 seed: 100
