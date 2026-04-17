@@ -230,3 +230,5 @@ data/signor/
 # HPC runtime state files
 .vllm_server_info
 .signor_job_info
+update_venv.sbatch
+vis_example.py

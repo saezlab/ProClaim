@@ -49,7 +49,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $(basename "$0") [--baselines B1 B2 ...] [--datasets D1 D2 ...] [--limit N] [--repeats N] [--time HH:MM:SS]"
             echo ""
-            echo "Available baselines: llm_only s2_retrieval react_web react_s2 ace fire open_scholar"
+            echo "Available baselines: llm_only retrieval react_web react_s2 ace fire open_scholar"
             echo "  (default: all)"
             exit 0 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
@@ -64,7 +64,7 @@ DATASETS_STR="${DATASETS[*]}"
 
 # If no baselines specified, run all
 if [[ ${#BASELINES[@]} -eq 0 ]]; then
-    BASELINES=(llm_only s2_retrieval react_web react_s2 ace fire open_scholar)
+    BASELINES=(llm_only retrieval react_web react_s2 ace fire open_scholar)
 fi
 
 # Helper: check if a baseline is in the selected list
@@ -163,13 +163,12 @@ echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 
 # ---------------------------------------------------------------------------
-# 2. LLM-only: Gemini 3.1 Pro Preview
+# 2. LLM-only: Gemini
 # ---------------------------------------------------------------------------
-
-echo "Submitting: LLM-only: Gemini-3.1-Pro-Preview ..."
-JID=$(submit_job "llm-only-gemini" "LLM-only: Gemini-3.1-Pro-Preview" \
+echo "Submitting: LLM-only: gemini-2.5-flash ..."
+JID=$(submit_job "llm-only-gemini" "LLM-only: gemini-2.5-flash" \
     "$GEMINI_ENV" \
-    --baseline llm_only --model "vertex_ai/gemini-3.1-pro-preview")
+    --baseline llm_only --model "vertex_ai/gemini-2.5-flash" --thinking-budget 0)
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -177,21 +176,21 @@ fi
 # ---------------------------------------------------------------------------
 # 3. S2 Retrieval: Claude Sonnet 4.6
 # ---------------------------------------------------------------------------
-if baseline_selected s2_retrieval; then
+if baseline_selected retrieval; then
 echo "Submitting: S2 Retrieval: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "s2-retrieval-claude" "S2 Retrieval: Claude-Sonnet-4.6" \
     "# ANTHROPIC_API_KEY loaded from .env" \
-    --baseline s2_retrieval --s2-model "anthropic/claude-sonnet-4-6")
+    --baseline retrieval --search-backend s2 --model "anthropic/claude-sonnet-4-6")
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 
 # ---------------------------------------------------------------------------
-# 4. S2 Retrieval: Gemini 3.1 Pro Preview
+# 4. S2 Retrieval: Gemini
 # ---------------------------------------------------------------------------
-echo "Submitting: S2 Retrieval: Gemini-3.1-Pro-Preview ..."
-JID=$(submit_job "s2-retrieval-gemini" "S2 Retrieval: Gemini-3.1-Pro-Preview" \
+echo "Submitting: S2 Retrieval: gemini-2.5-flash ..."
+JID=$(submit_job "s2-retrieval-gemini" "S2 Retrieval: gemini-2.5-flash" \
     "$GEMINI_ENV" \
-    --baseline s2_retrieval --s2-model "vertex_ai/gemini-3.1-pro-preview")
+    --baseline retrieval --search-backend s2 --model "vertex_ai/gemini-2.5-flash" --thinking-budget 0)
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -203,7 +202,7 @@ if baseline_selected react_web; then
 echo "Submitting: ReAct + web: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "react-web-claude" "ReAct + web: Claude-Sonnet-4.6" \
     "# ANTHROPIC_API_KEY + SERPER_API_KEY loaded from .env" \
-    --baseline react --react-model "anthropic/claude-sonnet-4-6" --react-search-backend web)
+    --baseline react --model "anthropic/claude-sonnet-4-6" --search-backend web)
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -215,7 +214,7 @@ if baseline_selected react_s2; then
 echo "Submitting: ReAct + S2: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "react-s2-claude" "ReAct + S2: Claude-Sonnet-4.6" \
     "# ANTHROPIC_API_KEY loaded from .env" \
-    --baseline react --react-model "anthropic/claude-sonnet-4-6" --react-search-backend s2)
+    --baseline react --model "anthropic/claude-sonnet-4-6" --search-backend s2)
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -227,7 +226,7 @@ if baseline_selected ace; then
 echo "Submitting: ACE: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "ace-claude" "ACE: Claude-Sonnet-4.6" \
     "# ANTHROPIC_API_KEY loaded from .env" \
-    --baseline ace --ace-model "anthropic/claude-sonnet-4-6")
+    --baseline ace --model "anthropic/claude-sonnet-4-6")
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -239,7 +238,7 @@ if baseline_selected fire; then
 echo "Submitting: FIRE: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "fire-claude" "FIRE: Claude-Sonnet-4.6" \
     "# ANTHROPIC_API_KEY + SERPER_API_KEY loaded from .env" \
-    --baseline fire --fire-model "anthropic/claude-sonnet-4-6")
+    --baseline fire --model "anthropic/claude-sonnet-4-6")
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -251,7 +250,7 @@ if baseline_selected open_scholar; then
 echo "Submitting: OpenScholar: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "openscholar-claude" "OpenScholar: Claude-Sonnet-4.6 (no oracle)" \
     "# ANTHROPIC_API_KEY loaded from .env" \
-    --baseline open_scholar --os-model "claude-sonnet-4-6" --os-api "anthropic" --os-retrieval --os-top-n 10)
+    --baseline open_scholar --model "claude-sonnet-4-6" --os-api "anthropic" --os-retrieval --os-top-n 10)
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi

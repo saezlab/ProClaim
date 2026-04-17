@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────
-# S2 Retrieval Baseline Config
+# Retrieval Baseline Config (S2 backend)
 #
 # Fixed-k RAG: search Semantic Scholar with the raw claim, retrieve
 # top-k abstracts, pass them to the LLM in a single call.
@@ -22,7 +22,10 @@ datasets:
   - connectomedb
 
 # ── Baseline ──────────────────────────────────────────────────────────
-baseline: s2_retrieval
+baseline: retrieval
+
+# ── Search backend ────────────────────────────────────────────────────
+search_backend: s2                     # 'web' or 's2' (Semantic Scholar)
 
 # ── Model & retrieval ─────────────────────────────────────────────────
 model: anthropic/claude-sonnet-4-6   # LiteLLM model string

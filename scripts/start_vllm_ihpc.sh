@@ -31,9 +31,10 @@ MODEL="qwen3.5-9b"
 ACTION="start"
 DETACH=false
 
-REMOTE_PROJECT_ROOT="/hps/nobackup/saezrodriguez/rain/workspace/grn-llm-correct"
+REMOTE_PROJECT_ROOT="/hps/nobackup/saezrodriguez/ail/workspace/grn-llm-correct"
 REMOTE_NODE_SCRIPT="${REMOTE_PROJECT_ROOT}/scripts/vllm_node_setup.sh"
 REMOTE_INFO_FILE="${REMOTE_PROJECT_ROOT}/.vllm_server_info"
+REMOTE_LOG_FILE="${REMOTE_PROJECT_ROOT}/.vllm_server.log"
 TMUX_SESSION="vllm-srun"
 
 # ---- Usage ------------------------------------------------------------------
@@ -166,9 +167,19 @@ if [[ "$ACTION" == "logs" ]]; then
         echo "No vLLM server info found. Start a server first."
         exit 1
     fi
-    echo "Attaching to tmux session '${TMUX_SESSION}' on ${LOGIN_HOST}..."
-    echo "  (Detach with Ctrl-B then D)"
-    ssh -t -o ConnectTimeout=10 "$LOGIN_NODE" "tmux attach-session -t ${TMUX_SESSION}"
+    if ssh_login "tmux has-session -t ${TMUX_SESSION} 2>/dev/null"; then
+        echo "Attaching to tmux session '${TMUX_SESSION}' on ${LOGIN_HOST}..."
+        echo "  (Detach with Ctrl-B then D)"
+        ssh -t "${SSH_OPTS[@]}" "$LOGIN_NODE" "tmux attach-session -t ${TMUX_SESSION}"
+    else
+        echo "Session '${TMUX_SESSION}' has ended — the server may have crashed."
+        echo "Showing last 80 lines of server log (${REMOTE_LOG_FILE}):"
+        echo ""
+        ssh_login "tail -n 80 ${REMOTE_LOG_FILE} 2>/dev/null || echo '  (no log file found — server may not have started)'"
+        echo ""
+        echo "  Start a new server: bash $0 --user ${EBI_USER}"
+        exit 1
+    fi
     exit 0
 fi
 
@@ -186,7 +197,7 @@ if [[ "$ACTION" == "reconnect" ]]; then
     echo "  Setting up port forwarding..."
     echo "  Press Ctrl-C to disconnect (server keeps running)."
     echo ""
-    ssh -N -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    ssh -N "${SSH_OPTS[@]}" \
         -L "${LOCAL_PORT}:${COMPUTE_HOST}:${REMOTE_PORT}" "$LOGIN_NODE"
     exit 0
 fi
@@ -235,7 +246,7 @@ echo "Submitting SLURM job..."
 ssh_login "tmux kill-session -t ${TMUX_SESSION} 2>/dev/null || true; \
     tmux new-session -d -s ${TMUX_SESSION} \
     'srun -t ${SRUN_TIME} -N1 --gres=gpu:${GPU_TYPE}:${GPU_COUNT} --cpus-per-task=${CPUS} --mem=${MEM} \
-     bash ${REMOTE_NODE_SCRIPT} ${REMOTE_INFO_FILE} ${MODEL}'"
+     bash ${REMOTE_NODE_SCRIPT} ${REMOTE_INFO_FILE} ${MODEL} 2>&1 | tee ${REMOTE_LOG_FILE}'"
 
 echo "Waiting for compute node allocation..."
 
@@ -319,18 +330,24 @@ while true; do
         break
     fi
 
-    # Check tunnel is alive
+    # Check tunnel is alive. With ControlMaster=auto the client process may
+    # exit after handing off the port-forward to the mux master, so we also
+    # check whether the local port is still bound before declaring it dead.
     if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
-        echo ""
-        # Tunnel dropped — check if the server is still running on the compute node
-        if ssh_login "tmux has-session -t ${TMUX_SESSION} 2>/dev/null"; then
-            echo "  SSH tunnel closed, but vLLM server is still running on ${COMPUTE_HOST}."
-            echo ""
-            echo "  Use --reconnect to re-establish port forwarding, or --logs to view server output."
-            exit 0
+        if ss -tln 2>/dev/null | grep -q ":${LOCAL_PORT}"; then
+            : # mux master owns the forwarding; keep waiting
         else
-            echo "ERROR: SSH tunnel died and server session is gone. Check your connection."
-            exit 1
+            echo ""
+            # Tunnel dropped — check if the server is still running on the compute node
+            if ssh_login "tmux has-session -t ${TMUX_SESSION} 2>/dev/null"; then
+                echo "  SSH tunnel closed, but vLLM server is still running on ${COMPUTE_HOST}."
+                echo ""
+                echo "  Use --reconnect to re-establish port forwarding, or --logs to view server output."
+                exit 0
+            else
+                echo "ERROR: SSH tunnel died and server session is gone. Check your connection."
+                exit 1
+            fi
         fi
     fi
 

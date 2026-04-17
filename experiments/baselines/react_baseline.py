@@ -6,7 +6,7 @@ loop and ``ChatLiteLLM`` so that any litellm model string works (consistent
 with the other baselines).
 
 The agent has access to one search tool (configured at init time):
-  - ``search_web(query)`` — web search via Serper or DuckDuckGo
+  - ``search_web(query)`` — web search via DuckDuckGo
   - ``search_papers(query)`` — Semantic Scholar academic paper search
 
 The agent decides on its own when to stop — there is NO external sufficiency
@@ -19,9 +19,8 @@ Key comparison points vs Evidence Programming:
   - No cross-paper synthesis (implicit in LLM context)
 
 Search backends:
-  ``search_backend="web"`` (default, checked in order):
-    1. If ``SERPER_API_KEY`` is set → Serper API (paid, higher quality).
-    2. Otherwise → ``ddgs`` (free, DuckDuckGo search).
+  ``search_backend="web"`` (default):
+    DuckDuckGo search via ``ddgs`` (free, no API key).
   ``search_backend="s2"``:
     Semantic Scholar relevance search (``S2_API_KEY`` optional but recommended).
 
@@ -31,14 +30,12 @@ Cost: 1–N LLM calls per claim (N ≤ max_steps) + searches.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 import time
 import warnings
 from pathlib import Path
 
-import requests
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool as lc_tool
 from langchain_litellm import ChatLiteLLM
@@ -105,39 +102,10 @@ Strategy:
 """
 
 
-# ── Web search backends ──────────────────────────────────────────────
+# ── Web search backend ───────────────────────────────────────────────
 
-_SERPER_URL = "https://google.serper.dev"
-
-# Module-level default; updated by ReActBaseline.__init__
-_NUM_SEARCH_RESULTS = 3
-
-
-def _serper_search(query: str, api_key: str, k: int = 3) -> str:
-    """Query Google via Serper API and return concatenated snippets."""
-    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
-    params = {"q": query, "num": k, "gl": "us", "hl": "en"}
-    resp = requests.post(
-        f"{_SERPER_URL}/search", headers=headers, params=params, timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    snippets: list[str] = []
-    if data.get("answerBox"):
-        ab = data["answerBox"]
-        for f in ("answer", "snippet", "snippetHighlighted"):
-            val = ab.get(f)
-            if val and isinstance(val, str):
-                snippets.append(val.replace("\n", " "))
-    if data.get("knowledgeGraph"):
-        kg = data["knowledgeGraph"]
-        if kg.get("description"):
-            snippets.append(kg["description"])
-    for item in data.get("organic", [])[:k]:
-        if "snippet" in item:
-            snippets.append(item["snippet"])
-    return " ".join(snippets) if snippets else "No relevant search results found."
+# Module-level default; updated by ReActBaseline.__init__ from --top-k
+_NUM_SEARCH_RESULTS = 5
 
 
 # Serialize DuckDuckGo calls — ddgs hangs when called concurrently
@@ -168,12 +136,9 @@ def _ddg_search(query: str, k: int = 3) -> str:
 
 def _do_search(query: str, k: int = 3, _max_retries: int = 3) -> str:
     """Execute a web search with retries on transient errors."""
-    serper_key = os.environ.get("SERPER_API_KEY", "")
     last_exc: Exception | None = None
     for attempt in range(_max_retries):
         try:
-            if serper_key:
-                return _serper_search(query, serper_key, k=k)
             return _ddg_search(query, k=k)
         except Exception as exc:
             last_exc = exc
@@ -276,9 +241,9 @@ class ReActBaseline:
     max_steps:
         Maximum number of agent steps (LLM calls) before the agent must stop.
     num_search_results:
-        Number of search results per query.
+        Number of search results per query (driven by ``--top-k``).
     search_backend:
-        ``"web"`` (default) for Serper/DuckDuckGo, ``"s2"`` for Semantic
+        ``"web"`` (default) for DuckDuckGo, ``"s2"`` for Semantic
         Scholar.
     """
 
@@ -287,7 +252,7 @@ class ReActBaseline:
         llm: LLMBackend,
         *,
         max_steps: int = 10,
-        num_search_results: int = 3,
+        num_search_results: int = 5,
         search_backend: str = "web",
     ) -> None:
         if search_backend not in ("web", "s2"):
@@ -309,7 +274,7 @@ class ReActBaseline:
             self._search_backend = "s2"
             tools = [search_papers]
         else:
-            self._search_backend = "serper" if os.environ.get("SERPER_API_KEY") else "ddg"
+            self._search_backend = "ddg"
             tools = [search_web]
         logger.info("ReAct search backend: %s", self._search_backend)
 

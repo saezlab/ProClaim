@@ -39,6 +39,7 @@ class CostTracker:
         "gemini-3.1-pro-preview": (2.00, 12.00),
         "gemini-3-pro-preview": (2.00, 12.00),
         "gemini-2.5-pro": (1.25, 10.00),
+        "gemini-2.5-flash": (0.3, 2.50),
     }
     FALLBACK_PRICING = (3.00, 15.00)
 

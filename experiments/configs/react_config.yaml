@@ -30,6 +30,9 @@ baseline: react
 # ── Model (LiteLLM format: "provider/model-id") ──────────────────────
 model: anthropic/claude-sonnet-4-6
 
+# ── Search backend ────────────────────────────────────────────────────
+search_backend: web                    # 'web' (Serper/DuckDuckGo) or 's2' (Semantic Scholar)
+
 # Maximum number of search steps
 max_steps: 10
 
