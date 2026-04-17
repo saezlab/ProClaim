@@ -281,6 +281,14 @@ class LLMSettings(BaseSettings):
         default=True,
         description="Disable Qwen thinking mode to save tokens.",
     )
+    timeout: int = Field(
+        default=300,
+        description="Connection and read timeout in seconds.",
+    )
+    stream: bool = Field(
+        default=False,
+        description="Use streaming API to prevent timeouts.",
+    )
 
     @property
     def effective_subagent_model(self) -> str:
@@ -315,9 +323,13 @@ class VerificationSettings(BaseSettings):
         description="Scientific claim to verify. Always provided via CLI "
                     "(--claim).",
     )
-    mode: Literal["sdk"] = Field(
+    mode: Literal["sdk", "direct"] = Field(
         default="sdk",
-        description="Orchestration mode (Claude Agent SDK + nb_execute).",
+        description=(
+            "Orchestration mode. "
+            "'sdk': Claude Agent SDK + Jupyter kernel (nb_execute). "
+            "'direct': LiteLLM + bash + jupytext (no kernel, no MCP)."
+        ),
     )
 
     max_iterations: int = Field(
@@ -440,7 +452,7 @@ class VerificationSettings(BaseSettings):
         from pkevolve.verification.llm_factory import make_llm
 
         extra_body = None
-        if self.disable_thinking:
+        if self.llm.disable_thinking:
             extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
         return make_llm(
@@ -449,6 +461,8 @@ class VerificationSettings(BaseSettings):
             base_url=self.subagent_base_url,
             temperature=self.temperature,
             extra_body=extra_body,
+            timeout=self.llm.timeout,
+            stream=self.llm.stream,
         )
 
     # ── Builders ──────────────────────────────────────────────────────
@@ -480,6 +494,8 @@ class VerificationSettings(BaseSettings):
             "LLM_MODEL": self.subagent_model,
             "LLM_TEMPERATURE": str(self.llm.temperature),
             "LLM_DISABLE_THINKING": "1" if self.llm.disable_thinking else "0",
+            "LLM_TIMEOUT": str(self.llm.timeout),
+            "LLM_STREAM": "1" if self.llm.stream else "0",
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
             "MAX_ITERATIONS": str(self.max_iterations),
             # Label config for setup_kernel() inside the Jupyter kernel
@@ -612,7 +628,7 @@ class VerificationSettings(BaseSettings):
             help="Scientific claim to verify.",
         )
         parser.add_argument(
-            "--mode", choices=["sdk", "repl"], default=None,
+            "--mode", choices=["sdk", "direct"], default=None,
             help="Orchestration mode (default: sdk).",
         )
         parser.add_argument("--model", default=None, help="Model identifier for the outer agent.")

@@ -564,9 +564,12 @@ def verify_claim_direct(cfg) -> Path:
 
             logger.info("Tool result: %s", result[:200])
 
-        # Check stopping after tool dispatch
-        if should_stop(workspace, cfg.sufficiency_threshold):
-            logger.info("Stopping: verdict emitted or sufficiency reached.")
+        # Check stopping after tool dispatch.
+        # Only stop on an emitted verdict here — sufficiency alone is not enough
+        # because the agent still needs one more turn to call deliver_verdict.
+        verdict_path = workspace / "verdict.json"
+        if verdict_path.exists():
+            logger.info("Stopping: verdict emitted.")
             break
 
     else:

@@ -2251,12 +2251,17 @@ def setup_kernel(
         extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+    timeout = int(os.environ.get("LLM_TIMEOUT", "300"))
+    stream = os.environ.get("LLM_STREAM", "1") == "1"
+
     llm = make_llm(
         model=model,
         api_key=api_key,
         base_url=base_url,
         temperature=temperature,
         extra_body=extra_body,
+        timeout=timeout,
+        stream=stream,
     )
 
     # Initialize label config from environment (JSON-encoded, set by build_sdk_env)
@@ -2350,6 +2355,8 @@ def setup_workspace(
         extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+    timeout = int(os.environ.get("LLM_TIMEOUT", "300"))
+    stream = os.environ.get("LLM_STREAM", "1") == "1"
 
     from pkevolve.verification.llm_factory import make_llm
     llm = make_llm(
@@ -2358,6 +2365,8 @@ def setup_workspace(
         base_url=base_url,
         temperature=temperature,
         extra_body=extra_body,
+        timeout=timeout,
+        stream=stream,
     )
 
     # Initialize label config from environment

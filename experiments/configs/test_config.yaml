@@ -35,7 +35,7 @@ llm:
 
   # Subagent configuration (shared by both Claude and GLM)
   subagent_model: qwen3.5-9b  # Must match vLLM model ID exactly
-  subagent_base_url: "http://codon-gpu-007.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
+  subagent_base_url: "http://codon-gpu-010.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
   temperature: 0.7
   disable_thinking: true  # Disable Qwen thinking mode to save tokens
 
@@ -46,6 +46,6 @@ sufficiency_backend: mlp
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
 # Logging
-verbose: True
+verbose: false
 
 # uv run python -m pkevolve.verification.evidence_programming  --config experiments/test_config.yaml  --claim "PRKDC directly activates AKT1 (either through post-translational modification, complex formation, stabilization, or regulation of expression)."
