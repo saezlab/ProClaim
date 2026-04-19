@@ -1,37 +1,22 @@
 # ──────────────────────────────────────────────────────────────────────
-# Ligand-Receptor Direct Config
+# Ligand-Receptor Original Form Config — MLP sufficiency
 #
-# Test config for evidence_programming_direct with local vLLM subagent.
-# Targets the 12 ligand-receptor claims that were previously misclassified.
-#
-# Usage:
-#   bash scripts/run_ligand_receptor_batch.sh
+# Same claims in original dataset form, but with MLP sufficiency backend.
 # ──────────────────────────────────────────────────────────────────────
 
-# Verification workflow parameters
 max_iterations: 4
 sufficiency_threshold: 0.80
 max_turns: 30
 
-# LLM configuration
 llm:
-  # Agent model: Claude Sonnet via LiteLLM
   model: anthropic/claude-sonnet-4-20250514
-
-  # Subagent model: Qwen3-8B on local vLLM
   subagent_model: Qwen/Qwen3-8B
   subagent_base_url: "http://localhost:8000/v1/"
-
   temperature: 0.2
   disable_thinking: true
 
-# Sufficiency backend
 sufficiency_backend: mlp
-# sufficiency_backend: haiku
-
-# Output paths
-output_dir: results/ligand_receptor_eval
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
-# Logging
+output_dir: results/ligand_receptor_eval_original_mlp
 verbose: true

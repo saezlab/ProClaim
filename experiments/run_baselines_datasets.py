@@ -115,6 +115,14 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             temperature=args.temperature,
         )
         return S2Retrieval(llm=llm, top_k=getattr(args, "s2_top_k", 5), strip_parens=getattr(args, "s2_strip_parens", True))
+    elif name == "s2_plus_ref":
+        from baselines.s2_plus_ref import S2PlusRef
+        from baselines.shared.llm import LLMBackend
+        llm = LLMBackend(
+            model=getattr(args, "s2_model", "anthropic/claude-sonnet-4-6"),
+            temperature=args.temperature,
+        )
+        return S2PlusRef(llm=llm, top_k=getattr(args, "s2_top_k", 5), strip_parens=getattr(args, "s2_strip_parens", True))
     elif name == "open_scholar":
         from baselines.open_scholar_baseline import OpenScholarBaseline
         raw_max = getattr(args, "os_max_tokens", None)
@@ -221,7 +229,7 @@ def parse_args() -> argparse.Namespace:
         default=["signor", "connectomedb"],
         help="Dataset names (without .csv extension).",
     )
-    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "single_paper", "s2_retrieval", "open_scholar", "fire", "ace", "react"], help="Baseline to run.")
+    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "single_paper", "s2_retrieval", "s2_plus_ref", "open_scholar", "fire", "ace", "react"], help="Baseline to run.")
     p.add_argument("--seed", type=int, default=100, help="Base random seed. Each repeat i uses seed+i.")
     p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats. Each repeat i uses seed+i.")
     p.add_argument("--model", default="zai/glm-4-plus", help="LiteLLM model string for llm_only, e.g. 'zai/glm-4-plus' or 'openai/gpt-4o'.")
@@ -284,6 +292,9 @@ def main() -> None:
         model_slug = args.model.replace("/", "--")
         baseline_subdir = f"{args.baseline}/{model_slug}"
     elif args.baseline == "s2_retrieval":
+        model_slug = args.s2_model.replace("/", "--")
+        baseline_subdir = f"{args.baseline}/{model_slug}/top{args.s2_top_k}"
+    elif args.baseline == "s2_plus_ref":
         model_slug = args.s2_model.replace("/", "--")
         baseline_subdir = f"{args.baseline}/{model_slug}/top{args.s2_top_k}"
     elif args.baseline == "open_scholar":
