@@ -31,10 +31,14 @@ echo "============================================================"
 # Row range for this array task (ignored in single mode)
 # ---------------------------------------------------------------------------
 case "$TASK_ID" in
-    0) ROW_START=0;  ROW_LIMIT=16 ;;
-    1) ROW_START=16; ROW_LIMIT=16 ;;
-    2) ROW_START=32; ROW_LIMIT=16 ;;
-    3) ROW_START=48; ROW_LIMIT=16 ;;
+    0) ROW_START=0;  ROW_LIMIT=8 ;;
+    1) ROW_START=8;  ROW_LIMIT=8 ;;
+    2) ROW_START=16; ROW_LIMIT=8 ;;
+    3) ROW_START=24; ROW_LIMIT=8 ;;
+    4) ROW_START=32; ROW_LIMIT=8 ;;
+    5) ROW_START=40; ROW_LIMIT=8 ;;
+    6) ROW_START=48; ROW_LIMIT=8 ;;
+    7) ROW_START=56; ROW_LIMIT=8 ;;
     *) ROW_START=0;  ROW_LIMIT=0  ;;
 esac
 

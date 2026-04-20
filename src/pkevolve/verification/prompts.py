@@ -234,6 +234,30 @@ Examples:
 Output ONLY the query string without any explanation or markdown formatting."""
 
 # ---------------------------------------------------------------------------
+# Semantic Scholar Query Generation
+# Placeholders: claim, subclaims (optional section)
+# ---------------------------------------------------------------------------
+QUERY_GENERATION_S2 = """\
+You are a biomedical search expert. Generate a Semantic Scholar query for the following scientific claim:
+
+Claim: {claim}{subclaims_section}
+
+Requirements:
+- Use plain keyword phrases (Semantic Scholar does not support PubMed field tags)
+- Include alternative names, gene symbols, aliases, and common synonyms for key entities
+- Keep query concise (3-15 words)
+- Prefer terms that appear in titles and abstracts of relevant papers
+
+Examples:
+- PPI claim: "MAPK1 activates H3-3A through phosphorylation"
+  → MAPK1 ERK2 H3.3 phosphorylation activation
+
+- Drug resistance: "NT5C2 K359Q mutation does not confer resistance to Nelarabine"
+  → NT5C2 K359Q nelarabine arabinosylguanine resistance
+
+Output ONLY the query string without any explanation or markdown formatting."""
+
+# ---------------------------------------------------------------------------
 # Gap-targeted Query Generation
 # Placeholders: claim, gap_description
 # ---------------------------------------------------------------------------
@@ -295,11 +319,13 @@ them directly via nb_execute.
 ## Workflow
 
 1. Call nb_init, then nb_execute with the setup code above.
-2. Decompose the claim: state.subclaims = ["subclaim A", ...]
+2. Decompose the claim into 1–5 atomic subclaims, each a single independently
+   verifiable assertion. Use 1 (the original claim) if the claim is already simple
+   enough to search directly. Include alternative names or aliases for key entities.
+   Set subclaims before searching: state.subclaims = [...]; state._auto_save()
 3. Search (iteration 0):
-   a. call search_pubmed_llm(state.claim, state, llm) — LLM-generated PubMed query
-   b. call search_semantic_scholar(query, state) with the same query string — covers
-      bioRxiv preprints and non-MEDLINE journals that PubMed misses
+   a. call search_pubmed_llm(state.claim, state, llm) — runs two LLM-generated PubMed queries (claim-only and subclaim-enriched), deduplicated
+   b. call search_semantic_scholar_dual(state.claim, state, llm) — runs two S2 queries (claim-only and subclaim-enriched), covers bioRxiv preprints and non-MEDLINE journals
 4. After searching: call nb_render_papers to show the papers table.
 5. Extract facts from papers. Use extract_and_add_facts(llm, pmids, state, max_workers=8) to process
    all newly retrieved papers in parallel. Do NOT write fact dicts manually.
@@ -426,11 +452,13 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
 ## Workflow
 
 1. Call bash with the setup code above.
-2. Decompose the claim: `state.subclaims = ["subclaim A", ...]` then `state._auto_save()`.
+2. Decompose the claim into 1–5 atomic subclaims, each a single independently
+   verifiable assertion. Use 1 (the original claim) if the claim is already simple
+   enough to search directly. Include alternative names or aliases for key entities.
+   Set subclaims before searching: `state.subclaims = [...]` then `state._auto_save()`.
 3. Search (iteration 0):
-   a. call search_pubmed_llm(state.claim, state, llm) — LLM-generated PubMed query
-   b. call search_semantic_scholar(query, state) with the same query — covers
-      bioRxiv preprints and non-MEDLINE journals
+   a. call search_pubmed_llm(state.claim, state, llm) — runs two LLM-generated PubMed queries (claim-only and subclaim-enriched), deduplicated
+   b. call search_semantic_scholar_dual(state.claim, state, llm) — runs two S2 queries (claim-only and subclaim-enriched), covers bioRxiv preprints and non-MEDLINE journals
 4. Extract facts: call extract_and_add_facts(llm, pmids, state, max_workers=8)
    to process all newly retrieved papers in parallel.  Do NOT loop over PMIDs.
 5. Call populate_paper_features(state) — REQUIRED before check_sufficiency().

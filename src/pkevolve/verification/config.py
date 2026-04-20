@@ -281,6 +281,11 @@ class LLMSettings(BaseSettings):
         default=True,
         description="Disable Qwen thinking mode to save tokens.",
     )
+    thinking_budget_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Enable Claude extended thinking when > 0. Sets budget_tokens for the thinking block. Requires temperature=1.",
+    )
     timeout: int = Field(
         default=300,
         description="Connection and read timeout in seconds.",

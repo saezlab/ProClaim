@@ -417,11 +417,20 @@ def verify_claim_direct(cfg) -> Path:
     # Outer agent model (via LiteLLM)
     agent_model = cfg.llm.model  # e.g. "anthropic/claude-sonnet-4-20250514"
 
+    # Anthropic extended thinking: pass thinking block when budget_tokens > 0.
+    # Requires temperature=1 per Anthropic API requirements.
+    _thinking_budget = cfg.llm.thinking_budget_tokens
+    _thinking_kwargs: dict = {}
+    if _thinking_budget > 0:
+        _thinking_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _thinking_budget}
+        _thinking_kwargs["temperature"] = 1
+
     # Anthropic prompt caching: mark the system message and the last user
     # message with cache_control so repeated turns reuse cached prefixes.
     # LiteLLM passes this through to Anthropic's API.  For non-Anthropic
     # models the extra key is silently ignored.
-    _use_cache = agent_model.startswith("anthropic/")
+    # Note: prompt caching is disabled when thinking is active (Anthropic restriction).
+    _use_cache = agent_model.startswith("anthropic/") and _thinking_budget == 0
 
     def _cached_system_msg(text: str) -> dict:
         if _use_cache:
@@ -497,6 +506,7 @@ def verify_claim_direct(cfg) -> Path:
                 messages=messages,
                 tools=tools,
                 max_tokens=16384,
+                **_thinking_kwargs,
             )
         except Exception as e:
             logger.error("LiteLLM API error: %s", e)
@@ -507,6 +517,7 @@ def verify_claim_direct(cfg) -> Path:
                     messages=messages,
                     tools=tools,
                     max_tokens=16384,
+                    **_thinking_kwargs,
                 )
             except Exception as e2:
                 logger.error("LiteLLM retry failed: %s", e2)

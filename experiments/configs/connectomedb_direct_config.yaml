@@ -1,15 +1,14 @@
 # ──────────────────────────────────────────────────────────────────────
-# SIGNOR Evaluation Config — Direct mode (LiteLLM + bash + jupytext)
+# ConnectomeDB Evaluation Config — Direct mode (LiteLLM + bash + jupytext)
 #
 # Outer agent: Claude via LiteLLM (reads ANTHROPIC_API_KEY from .env)
 # Subagent:    vLLM local endpoint (set via LLM_BASE_URL env var)
 #
 # Usage:
-#   bash scripts/submit_signor_direct_batch.sh
-#   bash scripts/submit_signor_direct_batch.sh --single --limit 1
+#   bash scripts/submit_connectomedb_batch.sh --reps 1
+#   bash scripts/submit_connectomedb_batch.sh --single --limit 1
 # ──────────────────────────────────────────────────────────────────────
 
-# Orchestration mode: "direct" (LiteLLM + bash + jupytext, no Jupyter kernel)
 mode: direct
 
 # Verification workflow parameters
@@ -20,7 +19,6 @@ max_turns: 30
 # LLM configuration
 llm:
   # Outer agent: LiteLLM model string (anthropic/ prefix → Anthropic API)
-  # model: anthropic/claude-haiku-4-5-20251001
   model: anthropic/claude-sonnet-4-6
 
   # Subagent model: used inside bash for evidence_api calls (via vLLM)
@@ -31,17 +29,13 @@ llm:
   # (set dynamically by the SLURM job script from the vLLM server info file)
 
   temperature: 0.0
-  # temperature: 1  # required when thinking is enabled
-  disable_thinking: true # subagent does not use thinking
-  # thinking_budget_tokens: 10000  # enable Claude extended thinking
+  disable_thinking: true
 
 # Sufficiency backend
 sufficiency_backend: mlp
 
-# Output paths (overridden per-claim by run_signor_eval.py)
-output_dir: results/signor_direct_eval
-
-# MLP model dir (used if sufficiency_backend: mlp)
+# Output paths (overridden per-claim by run_connectomedb_eval.py)
+output_dir: results/connectomedb_direct_eval
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
 # Logging

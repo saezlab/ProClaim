@@ -35,6 +35,7 @@ class CostTracker:
         "claude-opus-4-6": (5.00, 25.00),
         "claude-sonnet-4-6": (3.00, 15.00),
         "claude-haiku-4-5": (1.00, 5.00),
+        "claude-haiku-4-5-20251001": (1.00, 5.00),
         # --- Gemini 3 (standard tier, per 1M tokens) ---
         "gemini-3.1-pro-preview": (2.00, 12.00),
         "gemini-3-pro-preview": (2.00, 12.00),

@@ -204,7 +204,7 @@ def function_docs() -> str:
     # Functions from evidence_api
     _api_funcs = [
         search_pubmed, search_pubmed_llm, find_related_articles,
-        search_semantic_scholar, search_semantic_scholar_recommendations,
+        search_semantic_scholar, search_semantic_scholar_dual, search_semantic_scholar_recommendations,
         get_full_text_article, get_paper_text, extract_and_add_facts,
         add_facts_from_dicts, update_synthesis, add_conflict,
         get_evidence_summary, check_sufficiency, get_sufficiency_history, compress_evidence,
@@ -397,39 +397,49 @@ def search_pubmed_llm(
     llm,
     max_results: int = 10,
 ) -> list[str]:
-    """PubMed search using single LLM-generated query.
+    """PubMed search using two independent LLM-generated queries, deduplicated.
 
-    Uses LLM to generate a comprehensive query from the claim, replacing
-    the entity-based progressive search approach. Works for diverse claim
-    types: PPI, diagnosis, drug resistance, disease mechanisms, etc.
+    Runs a claim-only query and a subclaim-enriched query in sequence so that
+    aliases and alternative names introduced during decomposition improve recall.
+    Deduplication is handled by ``_search_and_add`` (keyed on PMID).
 
     Args:
         claim: The scientific claim to verify
         state: EvidenceState to add papers to
         llm: LLM callable for query generation
-        max_results: Maximum papers to retrieve
+        max_results: Maximum papers to retrieve per query
 
     Returns:
-        List of added PMIDs
+        List of added PMIDs (union of both queries, deduplicated)
     """
     from pkevolve.search.llm_query_generator import generate_search_query
 
-    # Generate comprehensive query using LLM
-    query = generate_search_query(claim, llm)
-    _debug_print(f"[LLM Query] {query}")
+    all_added: list[str] = []
 
-    # Search PubMed with the LLM-generated query
-    found, added, added_pmids = _search_and_add(query, state, max_results)
-    print(f"PubMed LLM search: found {found}, added {added} new papers")
+    # Query A: claim-only (original behaviour)
+    query_a = generate_search_query(claim, llm)
+    _debug_print(f"[LLM Query A] {query_a}")
+    _, _, pmids_a = _search_and_add(query_a, state, max_results)
+    all_added.extend(pmids_a)
 
-    if len(added_pmids) == 0:
-        print("⚠️ No papers found in initial search.")
+    # Query B: subclaim-enriched (uses aliases from decomposition step)
+    if state.subclaims:
+        query_b = generate_search_query(claim, llm, subclaims=state.subclaims)
+        _debug_print(f"[LLM Query B] {query_b}")
+        _, _, pmids_b = _search_and_add(query_b, state, max_results)
+        all_added.extend(pmids_b)
+    else:
+        query_b = None
+
+    if not all_added:
+        print("⚠️ No papers found in initial PubMed search.")
 
     print(
-        f"search_pubmed_llm: found {found}, added {added} new. "
-        f"PMIDs: {', '.join(added_pmids) if added_pmids else 'none'}"
+        f"search_pubmed_llm: added {len(all_added)} new paper(s) across "
+        f"{'2 queries' if query_b else '1 query'}. "
+        f"PMIDs: {', '.join(all_added) if all_added else 'none'}"
     )
-    return added_pmids
+    return all_added
 
 
 
@@ -716,6 +726,57 @@ def search_semantic_scholar(
         len(results), len(added), ', '.join(added) if added else 'none',
     )
     return added
+
+
+def search_semantic_scholar_dual(
+    claim: str,
+    state: EvidenceState,
+    llm,
+    max_results: int = 10,
+) -> list[str]:
+    """Search Semantic Scholar with two independent LLM-generated queries, deduplicated.
+
+    Runs a claim-only query and a subclaim-enriched query so that aliases
+    introduced during decomposition improve recall beyond what the plain claim
+    provides.  Deduplication is handled by ``_search_and_add``.
+
+    Args:
+        claim: The scientific claim to verify
+        state: EvidenceState to add papers to
+        llm: LLM callable for query generation
+        max_results: Maximum papers to retrieve per query
+
+    Returns:
+        List of added paper IDs (union of both queries, deduplicated)
+    """
+    from pkevolve.search.llm_query_generator import generate_search_query_s2
+    from pkevolve.search.semantic_scholar import S2Client
+
+    client = S2Client()
+    all_added: list[str] = []
+
+    # Query C: claim-only
+    query_c = generate_search_query_s2(claim, llm)
+    _debug_print(f"[S2 Query C] {query_c}")
+    results_c = client.search(query_c, limit=max_results)
+    added_c = _add_s2_records(results_c, state)
+    all_added.extend(added_c)
+
+    # Query D: subclaim-enriched
+    if state.subclaims:
+        query_d = generate_search_query_s2(claim, llm, subclaims=state.subclaims)
+        _debug_print(f"[S2 Query D] {query_d}")
+        results_d = client.search(query_d, limit=max_results)
+        added_d = _add_s2_records(results_d, state)
+        all_added.extend(added_d)
+    else:
+        query_d = None
+
+    logger.info(
+        "S2 dual search: added %d new. IDs: %s",
+        len(all_added), ', '.join(all_added) if all_added else 'none',
+    )
+    return all_added
 
 
 def search_semantic_scholar_recommendations(

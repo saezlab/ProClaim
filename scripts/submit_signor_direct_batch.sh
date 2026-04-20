@@ -13,6 +13,8 @@
 #   bash scripts/submit_signor_direct_batch.sh --status
 #   bash scripts/submit_signor_direct_batch.sh --cancel
 #   bash scripts/submit_signor_direct_batch.sh --logs
+#   bash scripts/submit_signor_direct_batch.sh --resume               # Resume last failed run
+#   bash scripts/submit_signor_direct_batch.sh --run-tag 20260419_135117 --reps 1 # Resume specific run
 # =============================================================================
 set -euo pipefail
 
@@ -37,6 +39,7 @@ ACTION="submit"
 MODE="parallel"
 REPS_ARG=""
 LIMIT_ARG=""
+RESUME_TAG=""       # set by --resume or --run-tag; empty = generate fresh tag
 
 # ---- Parse arguments --------------------------------------------------------
 while [[ $# -gt 0 ]]; do
@@ -48,12 +51,26 @@ while [[ $# -gt 0 ]]; do
         --single)  MODE="single";    shift ;;
         --reps)    REPS_ARG="--reps $2"; shift 2 ;;
         --limit)   LIMIT_ARG="--limit $2"; shift 2 ;;
+        --resume)  RESUME_TAG="__auto__"; shift ;;
+        --run-tag)
+            RESUME_TAG="$2"
+            if [[ -z "$RESUME_TAG" ]]; then
+                echo "ERROR: --run-tag requires a non-empty value"
+                exit 1
+            fi
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $(basename "$0") [OPTIONS]"
             echo ""
             echo "Submission modes:"
-            echo "  (default)          4-chunk parallel: 4 GPUs, auto-merged results"
+            echo "  (default)          8-chunk parallel: 8 GPUs, auto-merged results"
             echo "  --single           Single-GPU mode: all rows on one GPU"
+            echo ""
+            echo "Resume:"
+            echo "  --resume           Reuse RUN_TAG from last run (reads .signor_direct_job_info)"
+            echo "  --run-tag TAG      Reuse an explicit RUN_TAG (e.g. 20260419_135117)"
+            echo "  Both modes append to existing chunk CSVs and skip already-completed cases."
             echo ""
             echo "Actions:"
             echo "  --status     Check job status"
@@ -142,7 +159,22 @@ if [[ "$ACTION" == "logs" ]]; then
 fi
 
 # ---- SUBMIT -----------------------------------------------------------------
-RUN_TAG=$(date +%Y%m%d_%H%M%S)
+# Resolve --resume: look up the last RUN_TAG from the job info file
+if [[ "$RESUME_TAG" == "__auto__" ]]; then
+    RESUME_TAG=$(ssh_login "awk '{print \$3}' ${JOB_INFO_FILE} 2>/dev/null || echo ''")
+    if [[ -z "$RESUME_TAG" ]]; then
+        echo "ERROR: --resume requested but ${JOB_INFO_FILE} not found or empty on ${LOGIN_HOST}"
+        exit 1
+    fi
+fi
+
+if [[ -n "$RESUME_TAG" ]]; then
+    RUN_TAG="$RESUME_TAG"
+    echo "Resuming run: ${RUN_TAG}"
+    echo "  (skipping completed cases found in existing chunk CSVs)"
+else
+    RUN_TAG=$(date +%Y%m%d_%H%M%S)
+fi
 
 EXTRA_ARGS="${REPS_ARG}"
 if [[ "$MODE" == "single" ]]; then
@@ -171,9 +203,9 @@ ssh_login "mkdir -p ${LOG_DIR}"
 echo ""
 
 if [[ "$MODE" == "parallel" ]]; then
-    ARRAY_FLAG="--array=0-3"
+    ARRAY_FLAG="--array=0-7"
     SINGLE_MODE_VAL="false"
-    echo "Submitting 4-task array job..."
+    echo "Submitting 8-task array job..."
 else
     ARRAY_FLAG=""
     SINGLE_MODE_VAL="true"

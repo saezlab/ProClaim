@@ -30,14 +30,14 @@ else
     echo "  Using LLM_BASE_URL=${LLM_BASE_URL}"
 fi
 
-echo "  Config will use LLM_BASE_URL environment variable (no YAML modification)"
+echo "  Config: experiments/configs/connectomedb_direct_config.yaml"
 
 echo "============================================================"
 echo ""
 
 # Execute the python batch orchestrator
 uv run python experiments/run_connectomedb_eval.py \
-    --config experiments/configs/connectomedb_eval_config.yaml \
+    --config experiments/configs/connectomedb_direct_config.yaml \
     "$@"
 
 echo ""
