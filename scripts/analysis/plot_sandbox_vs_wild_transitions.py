@@ -61,6 +61,11 @@ def compute_transitions(s1: dict, s2: dict) -> tuple[Counter, int]:
     return transitions, len(s1)
 
 
+def compute_accuracy(data: dict[str, dict]) -> float:
+    correct = sum(1 for row in data.values() if row["predicted_label"] == row["gold_label"])
+    return correct / len(data)
+
+
 # ── Panel 1: Alluvial / Sankey ───────────────────────────────────────────────
 
 def _draw_alluvial_pair(ax, transitions: Counter, n: int,
@@ -77,15 +82,15 @@ def _draw_alluvial_pair(ax, transitions: Counter, n: int,
         ax.barh(y0 + h / 2, bar_width, height=h, left=x_left - bar_width / 2,
                 color=COLORS[l], edgecolor="white", linewidth=0.5, zorder=3)
         if show_left_labels:
-            ax.text(x_left - bar_width / 2 - 0.02, y0 + h / 2,
-                    f"{l}\n({left_totals[l]})", ha="right", va="center", fontsize=8, fontweight="bold")
+            ax.text(x_left - bar_width / 2 - 0.012, y0 + h / 2,
+                f"{l}\n({left_totals[l]})", ha="right", va="center", fontsize=15, fontweight="bold")
 
         y0, h = right_positions[l]
         ax.barh(y0 + h / 2, bar_width, height=h, left=x_right - bar_width / 2,
                 color=COLORS[l], edgecolor="white", linewidth=0.5, zorder=3)
         if show_right_labels:
-            ax.text(x_right + bar_width / 2 + 0.02, y0 + h / 2,
-                    f"{l}\n({right_totals[l]})", ha="left", va="center", fontsize=8, fontweight="bold")
+            ax.text(x_right + bar_width / 2 + 0.012, y0 + h / 2,
+                f"{l}\n({right_totals[l]})", ha="left", va="center", fontsize=15, fontweight="bold")
 
     # Draw flows
     left_consumed = {l: 0.0 for l in LABELS}
@@ -135,14 +140,16 @@ def _compute_positions(totals: dict, n: int, gap: float = 0.02) -> dict:
 def draw_alluvial(ax, transitions: Counter, n: int, *,
                   title: str = "Effect of context for verification",
                   left_label: str = "Limited context\n(reference abstract)",
-                  right_label: str = "Context from 5\nretrieved abstracts"):
+                  right_label: str = "Context from 5\nretrieved abstracts",
+                  left_accuracy: float | None = None,
+                  right_accuracy: float | None = None):
     """Draw a two-column alluvial diagram."""
     left_totals = {l: sum(transitions.get((l, r), 0) for r in LABELS) for l in LABELS}
     right_totals = {l: sum(transitions.get((src, l), 0) for src in LABELS) for l in LABELS}
 
     bar_width = 0.12
     gap = 0.02
-    x_left, x_right = 0.0, 1.0
+    x_left, x_right = 0.12, 0.88
 
     left_positions = _compute_positions(left_totals, n, gap)
     right_positions = _compute_positions(right_totals, n, gap)
@@ -151,19 +158,26 @@ def draw_alluvial(ax, transitions: Counter, n: int, *,
                         left_positions, right_positions,
                         left_totals, right_totals, bar_width)
 
-    ax.set_xlim(-0.35, 1.35)
+    ax.set_xlim(0.0, 1.0)
     y_max = max(
         sum(h + gap for _, h in left_positions.values()),
         sum(h + gap for _, h in right_positions.values()),
     )
-    ax.set_ylim(-0.03, y_max + 0.05)
-    ax.set_title(title, fontsize=10, fontweight="bold")
-    ax.text(x_left, -0.025, left_label, ha="center", va="top", fontsize=8, style="italic")
-    ax.text(x_right, -0.025, right_label, ha="center", va="top", fontsize=8, style="italic")
+    ax.set_ylim(-0.06, y_max + 0.02)
+    ax.set_title(title, fontsize=16, fontweight="bold", pad=8)
+    if left_accuracy is not None:
+        left_label = f"{left_label}\nAcc={left_accuracy:.3f}"
+    if right_accuracy is not None:
+        right_label = f"{right_label}\nAcc={right_accuracy:.3f}"
+    ax.text(x_left, -0.03, left_label, ha="center", va="top", fontsize=15, style="italic")
+    ax.text(x_right, -0.03, right_label, ha="center", va="top", fontsize=15, style="italic")
     ax.axis("off")
 
 
-def draw_alluvial_three(ax, trans_12: Counter, trans_23: Counter, n: int):
+def draw_alluvial_three(ax, trans_12: Counter, trans_23: Counter, n: int,
+                        acc1: float | None = None,
+                        acc2: float | None = None,
+                        acc3: float | None = None):
     """Draw a three-column alluvial: Setting 1 → Setting 2 → Setting 3."""
     # Totals per column
     col1_totals = {l: sum(trans_12.get((l, r), 0) for r in LABELS) for l in LABELS}
@@ -172,7 +186,7 @@ def draw_alluvial_three(ax, trans_12: Counter, trans_23: Counter, n: int):
 
     bar_width = 0.10
     gap = 0.02
-    x1, x2, x3 = 0.0, 0.5, 1.0
+    x1, x2, x3 = 0.12, 0.50, 0.88
 
     pos1 = _compute_positions(col1_totals, n, gap)
     pos2 = _compute_positions(col2_totals, n, gap)
@@ -184,12 +198,12 @@ def draw_alluvial_three(ax, trans_12: Counter, trans_23: Counter, n: int):
                         col1_totals, col2_totals, bar_width,
                         show_left_labels=True, show_right_labels=False)
     # Draw count labels on centre column (between the two flow pairs)
-    for l in LABELS:
-        y0, h = pos2[l]
-        ax.text(x2, y0 + h / 2,
-                f"{l}\n({col2_totals[l]})", ha="center", va="center",
-                fontsize=7, fontweight="bold",
-                bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.7))
+    # for l in LABELS:
+    #     y0, h = pos2[l]
+    #     ax.text(x2, y0 + h / 2,
+    #             f"{l}\n({col2_totals[l]})", ha="center", va="center",
+    #         fontsize=15, fontweight="bold",
+    #             bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.7))
 
     # Draw Setting 2 → Setting 3
     _draw_alluvial_pair(ax, trans_23, n, x2, x3,
@@ -202,12 +216,21 @@ def draw_alluvial_three(ax, trans_12: Counter, trans_23: Counter, n: int):
         sum(h + gap for _, h in pos2.values()),
         sum(h + gap for _, h in pos3.values()),
     )
-    ax.set_xlim(-0.35, 1.35)
-    ax.set_ylim(-0.06, y_max + 0.05)
-    ax.set_title("Effect of context for verification", fontsize=10, fontweight="bold")
-    ax.text(x1, -0.025, "Reference\nabstract only", ha="center", va="top", fontsize=8, style="italic")
-    ax.text(x2, -0.025, "5 retrieved\nabstracts", ha="center", va="top", fontsize=8, style="italic")
-    ax.text(x3, -0.025, "5 retrieved +\nreference abstract", ha="center", va="top", fontsize=8, style="italic")
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(-0.06, y_max + 0.02)
+    ax.set_title("Effect of context for verification", fontsize=20, fontweight="bold", pad=8)
+    label1 = "Reference\nabstract only"
+    label2 = "5 retrieved\nabstracts"
+    label3 = "5 retrieved +\nreference abstract"
+    if acc1 is not None:
+        label1 = f"{label1}\nAcc={acc1:.3f}"
+    if acc2 is not None:
+        label2 = f"{label2}\nAcc={acc2:.3f}"
+    if acc3 is not None:
+        label3 = f"{label3}\nAcc={acc3:.3f}"
+    ax.text(x1, -0.03, label1, ha="center", va="top", fontsize=15, style="italic")
+    ax.text(x2, -0.03, label2, ha="center", va="top", fontsize=15, style="italic")
+    ax.text(x3, -0.03, label3, ha="center", va="top", fontsize=15, style="italic")
     ax.axis("off")
 
 
@@ -312,21 +335,27 @@ def main():
 
     s1 = load_jsonl(args.setting1)
     s2 = load_jsonl(args.setting2)
+    acc1 = compute_accuracy(s1)
+    acc2 = compute_accuracy(s2)
     transitions_12, n = compute_transitions(s1, s2)
 
     print(f"Loaded {n} claims. Verdicts changed (S1→S2) in "
           f"{sum(v for (a,b),v in transitions_12.items() if a != b)}/{n} claims.")
+    print(f"Accuracy (S1): {acc1:.3f}")
+    print(f"Accuracy (S2): {acc2:.3f}")
 
     # Load Setting 3 if available
     has_s3 = args.setting3.exists()
     if has_s3:
         s3 = load_jsonl(args.setting3)
+        acc3 = compute_accuracy(s3)
         transitions_23, _ = compute_transitions(s2, s3)
         transitions_13, _ = compute_transitions(s1, s3)
         print(f"Verdicts changed (S2→S3) in "
               f"{sum(v for (a,b),v in transitions_23.items() if a != b)}/{n} claims.")
         print(f"Verdicts changed (S1→S3) in "
               f"{sum(v for (a,b),v in transitions_13.items() if a != b)}/{n} claims.")
+        print(f"Accuracy (S3): {acc3:.3f}")
 
     out_dir = (args.output or PROJECT_ROOT / "results/analysis")
     if args.output and args.output.suffix:
@@ -335,7 +364,14 @@ def main():
 
     # Plot 1a: Two-column alluvial (Setting 1 → Setting 2)
     fig1, ax1 = plt.subplots(figsize=(7, 5))
-    draw_alluvial(ax1, transitions_12, n)
+    draw_alluvial(
+        ax1,
+        transitions_12,
+        n,
+        title=f"Effect of context for verification\nAccuracy: {acc1:.3f} → {acc2:.3f}",
+        left_accuracy=acc1,
+        right_accuracy=acc2,
+    )
     fig1.tight_layout()
     p1 = out_dir / "sandbox_vs_wild_alluvial.pdf"
     fig1.savefig(p1, bbox_inches="tight", dpi=200)
@@ -344,8 +380,8 @@ def main():
 
     # Plot 1b: Three-column alluvial (Setting 1 → Setting 2 → Setting 3)
     if has_s3:
-        fig1b, ax1b = plt.subplots(figsize=(10, 5))
-        draw_alluvial_three(ax1b, transitions_12, transitions_23, n)
+        fig1b, ax1b = plt.subplots(figsize=(11, 5.6))
+        draw_alluvial_three(ax1b, transitions_12, transitions_23, n, acc1=acc1, acc2=acc2, acc3=acc3)
         fig1b.tight_layout()
         p1b = out_dir / "sandbox_vs_wild_alluvial_three.pdf"
         fig1b.savefig(p1b, bbox_inches="tight", dpi=200)
@@ -356,9 +392,11 @@ def main():
     if has_s3:
         fig1c, ax1c = plt.subplots(figsize=(7, 5))
         draw_alluvial(ax1c, transitions_13, n,
-                      title="Reference only vs. retrieved + reference",
+                      title=f"Reference only vs. retrieved + reference\nAccuracy: {acc1:.3f} → {acc3:.3f}",
                       left_label="Reference\nabstract only",
-                      right_label="5 retrieved +\nreference abstract")
+                      right_label="5 retrieved +\nreference abstract",
+                      left_accuracy=acc1,
+                      right_accuracy=acc3)
         fig1c.tight_layout()
         p1c = out_dir / "sandbox_vs_s2plusref_alluvial.pdf"
         fig1c.savefig(p1c, bbox_inches="tight", dpi=200)
