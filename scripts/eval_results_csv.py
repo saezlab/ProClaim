@@ -3,7 +3,7 @@
 
 Usage
 -----
-uv run python scripts/eval_results_csv.py results/connectomedb_eval_20260420_012842/results_chunk6.csv
+uv run python scripts/eval_results_csv.py results/connectomedb_eval_20260420_012842/results.csv
 uv run python scripts/eval_results_csv.py results/connectomedb_eval_20260420_012842/results.csv --save
 """
 import argparse

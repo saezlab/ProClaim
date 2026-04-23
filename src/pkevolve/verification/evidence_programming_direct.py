@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +49,72 @@ _MAX_OUTPUT_CHARS = int(os.environ.get("NB_MAX_OUTPUT_CHARS", "12000"))
 # ---------------------------------------------------------------------------
 
 from pkevolve.verification.prompts import DIRECT_SYSTEM_PROMPT as SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Web search helpers (Serper → DuckDuckGo fallback)
+# ---------------------------------------------------------------------------
+
+_WEB_SEARCH_LOCK = threading.Lock()  # ddgs hangs on concurrent calls
+_SERPER_URL = "https://google.serper.dev"
+
+
+def _serper_search(query: str, api_key: str, k: int = 5) -> str:
+    import requests as _requests
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+    resp = _requests.post(
+        f"{_SERPER_URL}/search",
+        headers=headers,
+        params={"q": query, "num": k, "gl": "us", "hl": "en"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    snippets: list[str] = []
+    if data.get("answerBox"):
+        ab = data["answerBox"]
+        for field in ("answer", "snippet"):
+            val = ab.get(field)
+            if isinstance(val, str):
+                snippets.append(val.replace("\n", " "))
+    if data.get("knowledgeGraph", {}).get("description"):
+        snippets.append(data["knowledgeGraph"]["description"])
+    for item in data.get("organic", [])[:k]:
+        if "snippet" in item:
+            snippets.append(item["snippet"])
+    return "\n".join(snippets) if snippets else "No search results."
+
+
+def _ddg_search(query: str, k: int = 5) -> str:
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        return "[ERROR: ddgs not installed. Run: pip install ddgs]"
+    snippets: list[str] = []
+    try:
+        with _WEB_SEARCH_LOCK:
+            for result in DDGS().text(query, max_results=k):
+                body = result.get("body", "")
+                if body:
+                    snippets.append(body)
+    except Exception as exc:
+        logger.warning("DuckDuckGo search failed for %r: %s", query, exc)
+    return "\n".join(snippets) if snippets else "No search results."
+
+
+def _do_web_search(query: str, k: int = 5) -> str:
+    """Run web search via Serper (if key set) or DuckDuckGo fallback."""
+    serper_key = os.environ.get("SERPER_API_KEY", "")
+    for attempt in range(3):
+        try:
+            if serper_key:
+                return _serper_search(query, serper_key, k=k)
+            return _ddg_search(query, k=k)
+        except Exception as exc:
+            wait = 2 ** attempt * 2
+            logger.warning("Web search error (attempt %d/3), retrying in %ds: %s", attempt + 1, wait, exc)
+            time.sleep(wait)
+    return "Web search temporarily unavailable."
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +158,31 @@ def build_tool_schemas() -> list[dict]:
                         },
                     },
                     "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": (
+                    "Search the web for scientific evidence. Use specific queries "
+                    "targeting the entities and relationships in the claim. "
+                    "Returns snippets from top results."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query.",
+                        },
+                        "num_results": {
+                            "type": "integer",
+                            "description": "Number of results to return (default 5).",
+                        },
+                    },
+                    "required": ["query"],
                 },
             },
         },
@@ -311,6 +403,17 @@ def dispatch_tool(
             error_msg = f"[ERROR reading {fpath}: {e}]"
             append_to_jupytext_log(log_path, f"cat {fpath}", error_msg)
             return error_msg
+
+    elif name == "web_search":
+        query = arguments.get("query", "")
+        k = int(arguments.get("num_results", 5))
+        try:
+            result = _do_web_search(query, k=k)
+        except Exception as e:
+            result = f"[ERROR: web search failed: {e}]"
+        truncated = _smart_truncate(result)
+        append_to_jupytext_log(log_path, f"web_search({query!r})", truncated)
+        return truncated
 
     return f"[ERROR: Unknown tool '{name}']"
 

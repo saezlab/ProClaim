@@ -16,7 +16,8 @@ each constant.
 # ---------------------------------------------------------------------------
 # Fact Extraction
 # Placeholders: stance_options, stance_block, claim, subclaims_str,
-#               source_pmid, paper_text
+#               context_block, source_pmid, paper_text
+# context_block is either "" or a rendered "Supplementary extraction context" block.
 # ---------------------------------------------------------------------------
 EXTRACT_FACTS = """\
 You are a scientific fact extraction specialist.
@@ -43,7 +44,7 @@ Claim: {claim}
 
 Subclaims:
 {subclaims_str}
-
+{context_block}
 Paper (PMID: {source_pmid}):
 {paper_text}
 
@@ -469,6 +470,9 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
    a. search_for_gap(gap_description, state)
    b. search_semantic_scholar_recommendations(state) — S2 graph expansion
    c. formulate_gap_queries(llm, state) — LLM-generated gap queries
+   d. web_search(query) — call this tool directly (NOT via bash) to search the
+      web for evidence not found in PubMed/S2; use when academic databases
+      return few results or for recent findings not yet indexed.
 10. Repeat until confidence >= {sufficiency_threshold} or {max_iterations} iterations.
 11. Call emit_verdict(...) to produce the final verdict.
 

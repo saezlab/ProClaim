@@ -7,7 +7,10 @@ forward and flipped claims, and sequentially runs `evidence_programming.py`
 for multiple repetitions per claim. Results are appended incrementally to an
 output CSV. Token usage and cost estimates are parsed from the verdict artifacts.
 
-time uv run python -m pkevolve.verification.evidence_programming --config experiments/configs/test_config.yaml --claim "AURKA directly activates AR (either through post-translational modification, complex formation, or direct regulation of expression)." --output-dir results/test_signor_with_workflow_1 --notebook-path results/test_signor_with_workflow_1/evidence_report.ipynb
+Example command:
+    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \\
+        --claim "CRTC2 directly activates AKT1 (either through post-translational modification, complex formation, or direct regulation of expression)." \\
+        --output-dir results/test_direct_1
 """
 
 import argparse

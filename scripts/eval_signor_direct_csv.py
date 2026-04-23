@@ -3,7 +3,7 @@
 
 Usage
 -----
-uv run python scripts/eval_signor_direct_csv.py results/signor_direct_eval_20260417_181606/results.csv
+uv run python scripts/eval_signor_direct_csv.py results/signor_direct_eval_20260419_135117/results.csv
 uv run python scripts/eval_signor_direct_csv.py results/signor_direct_eval_20260419_135117/results.csv --save
 uv run python scripts/eval_signor_direct_csv.py results/... --model claude-haiku-4-5
 """
