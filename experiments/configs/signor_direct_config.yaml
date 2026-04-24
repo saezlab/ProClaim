@@ -15,7 +15,7 @@ mode: direct
 # Verification workflow parameters
 max_iterations: 4
 sufficiency_threshold: 0.80
-max_turns: 30
+max_turns: 10
 
 # LLM configuration
 llm:
@@ -43,6 +43,9 @@ output_dir: results/signor_direct_eval
 
 # MLP model dir (used if sufficiency_backend: mlp)
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
+
+# Prompt options
+include_subclaim_examples: false
 
 # Logging
 verbose: false

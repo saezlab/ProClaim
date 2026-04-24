@@ -98,6 +98,7 @@ def generate_search_query(
     llm: Callable,
     max_attempts: int = 2,
     subclaims: list[str] | None = None,
+    extraction_context: list[str] | None = None,
 ) -> str:
     """
     LLM-driven query formulation for initial PubMed search.
@@ -108,6 +109,8 @@ def generate_search_query(
         max_attempts: Maximum number of attempts to generate a valid query
         subclaims: Optional subclaims; when provided, the prompt includes them so
             the sub-agent can pick up aliases introduced during decomposition.
+        extraction_context: Optional disambiguation/synonym notes to incorporate
+            into the query generation prompt.
 
     Returns:
         PubMed query string
@@ -120,10 +123,15 @@ def generate_search_query(
         joined = "\n".join(f"- {s}" for s in subclaims)
         subclaims_section = f"\n\nSubclaims (use these to pick up aliases and alternative names):\n{joined}"
 
+    context_section = ""
+    if extraction_context:
+        notes = "\n".join(f"- {n}" for n in extraction_context)
+        context_section = f"\n\nSupplementary context (use to refine query terms):\n{notes}"
+
     for attempt in range(max_attempts):
         try:
             # Generate query using LLM
-            prompt = QUERY_GENERATION_PROMPT.format(claim=claim) + subclaims_section
+            prompt = QUERY_GENERATION_PROMPT.format(claim=claim) + subclaims_section + context_section
             response = llm(prompt)
 
             # Extract query from response (handle various formats)
@@ -169,6 +177,7 @@ def generate_search_query_s2(
     llm: Callable,
     subclaims: list[str] | None = None,
     max_attempts: int = 2,
+    extraction_context: list[str] | None = None,
 ) -> str:
     """LLM-driven query formulation for Semantic Scholar search.
 
@@ -177,6 +186,8 @@ def generate_search_query_s2(
         llm: LLM callable that takes a prompt string and returns a response string
         subclaims: Optional subclaims for alias-enriched query generation.
         max_attempts: Maximum number of attempts to generate a valid query
+        extraction_context: Optional disambiguation/synonym notes to incorporate
+            into the query generation prompt.
 
     Returns:
         Semantic Scholar query string (plain keywords, no PubMed field tags)
@@ -186,12 +197,17 @@ def generate_search_query_s2(
         joined = "\n".join(f"- {s}" for s in subclaims)
         subclaims_section = f"\n\nSubclaims (use these to pick up aliases and alternative names):\n{joined}"
 
+    context_section = ""
+    if extraction_context:
+        notes = "\n".join(f"- {n}" for n in extraction_context)
+        context_section = f"\n\nSupplementary context (use to refine query terms):\n{notes}"
+
     for attempt in range(max_attempts):
         try:
             prompt = QUERY_GENERATION_S2_PROMPT.format(
                 claim=claim,
                 subclaims_section=subclaims_section,
-            )
+            ) + context_section
             response = llm(prompt)
             query = _sanitize_query(response.strip())
             if _validate_query(query):

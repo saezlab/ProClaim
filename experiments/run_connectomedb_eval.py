@@ -3,43 +3,73 @@
 End-to-end evaluation script for the ConnectomeDB dataset using the RLM framework.
 
 This script iterates through the ConnectomeDB CSV, reads the pre-formed claim
-string from each row, and sequentially runs `evidence_programming.py` for
+string from each row, and sequentially runs evidence_programming_direct.py for
 multiple repetitions per claim. Results are appended incrementally to an
 output CSV. Token usage and cost estimates are parsed from the verdict artifacts.
 
 No flip variants are generated — each claim is run as-is.
 
 To test a single claim (e.g., AFDN EPHA7) directly from the terminal, you can use:
-uv run python -m pkevolve.verification.evidence_programming \
+Intracellular interaction:
+uv run python -m pkevolve.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
-    --claim "In the context of protein-protein interactions, AFDN as ligand directly interacts with EPHA7 as receptor." \
-    --output-dir results/test_AFDN_EPHA7 \
-    --notebook-path results/test_AFDN_EPHA7/evidence_report.ipynb
-uv run python -m pkevolve.verification.evidence_programming \
+    --claim "AFDN as ligand directly interacts with EPHA7 as receptor." \
+    --output-dir results/test_AFDN_EPHA7
+
+Wrong direction:
+uv run python -m pkevolve.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
-    --claim "In the context of protein-protein interactions, ITGB2 as ligand directly interacts with THY1 as receptor." \
-    --output-dir results/test_ITGB2_THY1 \
-    --notebook-path results/test_ITGB2_THY1/evidence_report.ipynb
-uv run python -m pkevolve.verification.evidence_programming \
+    --claim "ITGB2 as ligand directly interacts with THY1 as receptor." \
+    --output-dir results/test_ITGB2_THY1
+
+In-cis interaction:
+uv run python -m pkevolve.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
-    --claim "In the context of protein-protein interactions, LY86 as ligand directly interacts with CD180 as receptor." \
-    --output-dir results/test_LY86_CD180 \
-    --notebook-path results/test_LY86_CD180/evidence_report.ipynb
-uv run python -m pkevolve.verification.evidence_programming \
-    --config experiments/configs/test_config.yaml \
-    --claim "In the context of protein-protein interactions, B2M as ligand directly interacts with CD1A as receptor." \
-    --output-dir results/test_B2M_CD1A \
-    --notebook-path results/test_B2M_CD1A/evidence_report.ipynb
-uv run python -m pkevolve.verification.evidence_programming \
+    --claim "LY86 as ligand directly interacts with CD180 as receptor." \
+    --output-dir results/test_LY86_CD180
+
+Not a ligand-receptor pair:
+uv run python -m pkevolve.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "B2M as ligand directly interacts with CD1A as receptor." \
-    --output-dir results/test_B2M_CD1A_no_context \
-    --notebook-path results/test_B2M_CD1A_no_context/evidence_report.ipynb
-uv run python -m pkevolve.verification.evidence_programming \
+    --output-dir results/test_B2M_CD1A_no_context
+
+Not a protein-protein interaction:
+uv run python -m pkevolve.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "AANAT as ligand directly interacts with MTNR1A as receptor." \
-    --output-dir results/test_AANAT_MTNR1A_no_context \
-    --notebook-path results/test_AANAT_MTNR1A_no_context/evidence_report.ipynb
+    --output-dir results/test_AANAT_MTNR1A_no_context
+
+--- Claim-level modified variants (extracellular constraint baked in, for testing without ICL) ---
+Intracellular interaction (should REFUTE — AFDN-EPHA7 only interacts after endocytosis):
+uv run python -m pkevolve.verification.evidence_programming_direct \
+    --config experiments/configs/test_config.yaml \
+    --claim "AFDN as ligand directly interacts extracellularly with EPHA7 as receptor." \
+    --output-dir results/test_AFDN_EPHA7_extracellular
+
+Wrong direction:
+uv run python -m pkevolve.verification.evidence_programming_direct \
+    --config experiments/configs/test_config.yaml \
+    --claim "ITGB2 as ligand directly interacts extracellularly with THY1 as receptor." \
+    --output-dir results/test_ITGB2_THY1_extracellular
+
+In-cis interaction (should REFUTE — LY86-CD180 interact on the same cell surface):
+uv run python -m pkevolve.verification.evidence_programming_direct \
+    --config experiments/configs/test_config.yaml \
+    --claim "LY86 as ligand directly interacts extracellularly with CD180 as receptor." \
+    --output-dir results/test_LY86_CD180_extracellular
+
+Not a ligand-receptor pair:
+uv run python -m pkevolve.verification.evidence_programming_direct \
+    --config experiments/configs/test_config.yaml \
+    --claim "B2M as ligand directly interacts extracellularly with CD1A as receptor." \
+    --output-dir results/test_B2M_CD1A_extracellular
+
+Not a protein-protein interaction:
+uv run python -m pkevolve.verification.evidence_programming_direct \
+    --config experiments/configs/test_config.yaml \
+    --claim "AANAT as ligand directly interacts extracellularly with MTNR1A as receptor." \
+    --output-dir results/test_AANAT_MTNR1A_extracellular
 """
 
 import argparse

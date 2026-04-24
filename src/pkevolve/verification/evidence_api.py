@@ -210,6 +210,7 @@ def function_docs() -> str:
         get_evidence_summary, check_sufficiency, get_sufficiency_history, compress_evidence,
         emit_verdict, formulate_pubmed_query, search_for_gap, refine_search_for_failed_papers,
         populate_paper_features, populate_paper_features_parallel, filter_papers_by_stance,
+        add_extraction_context_note,
     ]
 
     # Import model registry function for documentation
@@ -416,15 +417,17 @@ def search_pubmed_llm(
 
     all_added: list[str] = []
 
+    ctx = state.extraction_context or None
+
     # Query A: claim-only (original behaviour)
-    query_a = generate_search_query(claim, llm)
+    query_a = generate_search_query(claim, llm, extraction_context=ctx)
     _debug_print(f"[LLM Query A] {query_a}")
     _, _, pmids_a = _search_and_add(query_a, state, max_results)
     all_added.extend(pmids_a)
 
     # Query B: subclaim-enriched (uses aliases from decomposition step)
     if state.subclaims:
-        query_b = generate_search_query(claim, llm, subclaims=state.subclaims)
+        query_b = generate_search_query(claim, llm, subclaims=state.subclaims, extraction_context=ctx)
         _debug_print(f"[LLM Query B] {query_b}")
         _, _, pmids_b = _search_and_add(query_b, state, max_results)
         all_added.extend(pmids_b)
@@ -755,8 +758,10 @@ def search_semantic_scholar_dual(
     client = S2Client()
     all_added: list[str] = []
 
+    ctx = state.extraction_context or None
+
     # Query C: claim-only
-    query_c = generate_search_query_s2(claim, llm)
+    query_c = generate_search_query_s2(claim, llm, extraction_context=ctx)
     _debug_print(f"[S2 Query C] {query_c}")
     results_c = client.search(query_c, limit=max_results)
     added_c = _add_s2_records(results_c, state)
@@ -764,7 +769,7 @@ def search_semantic_scholar_dual(
 
     # Query D: subclaim-enriched
     if state.subclaims:
-        query_d = generate_search_query_s2(claim, llm, subclaims=state.subclaims)
+        query_d = generate_search_query_s2(claim, llm, subclaims=state.subclaims, extraction_context=ctx)
         _debug_print(f"[S2 Query D] {query_d}")
         results_d = client.search(query_d, limit=max_results)
         added_d = _add_s2_records(results_d, state)
@@ -1239,7 +1244,15 @@ def _extract_and_add_facts_single(
         claim=state.claim,
         subclaims=state.subclaims,
         source_pmid=pmid,
+        extraction_context=state.extraction_context or None,
     )
+
+    # Always track as processed — prevents re-extraction unless add_extraction_context_note
+    # clears this list explicitly.  Must happen before the early return so 0-fact papers
+    # are not re-processed on every subsequent call.
+    if pmid not in state.extracted_pmids:
+        state.extracted_pmids.append(pmid)
+        state._auto_save()
 
     if not facts:
         _debug_print(f"_extract_and_add_facts_single: subagent returned 0 facts for PMID {pmid}.")
@@ -1257,11 +1270,6 @@ def _extract_and_add_facts_single(
         for f in facts
     ]
     added = add_facts_from_dicts(facts_dicts, state)
-
-    # Track this PMID as processed so the LLM doesn't re-extract
-    if pmid not in state.extracted_pmids:
-        state.extracted_pmids.append(pmid)
-
     return added
 
 
@@ -1353,6 +1361,42 @@ def extract_and_add_facts(
     print(f"extract_and_add_facts: done. facts={total_facts} papers={len(pmids_to_process)}")
 
     return results
+
+
+def add_extraction_context_note(state: EvidenceState, note: str) -> None:
+    """Append a supplementary note for fact extraction and clear the extraction cache.
+
+    Use this when new information (synonym mappings, disambiguation, scope
+    clarifications) is discovered during the workflow and should influence how
+    papers are re-extracted.  All previously extracted PMIDs are cleared so
+    that the next call to extract_and_add_facts re-runs with the updated prompt.
+
+    Args:
+        state: The live EvidenceState object.
+        note: A free-text note to inject into the EXTRACT_FACTS prompt.
+
+    Example:
+        >>> add_extraction_context_note(
+        ...     state,
+        ...     "CRTC2 (also called TORC2) is a CREB transcription coactivator. "
+        ...     "mTOR Complex 2 (mTORC2) is a distinct kinase complex that also appears "
+        ...     "in literature as 'TORC2'. Papers discussing mTORC2 phosphorylating AKT "
+        ...     "are NOT about CRTC2 unless they explicitly name CRTC2.",
+        ... )
+    """
+    n_cleared = len(state.extracted_pmids)
+    n_papers = len(state.papers)
+    state.add_extraction_context(note)
+    state.append_trace("add_extraction_context", {
+        "note": note,
+        "extracted_pmids_cleared": n_cleared,
+        "total_context_notes": len(state.extraction_context),
+    })
+    print(
+        f"Added extraction context note. Cleared all extracted_pmids ({n_cleared} → 0).\n"
+        f"NEXT STEP: re-extract ALL {n_papers} papers with the updated prompt:\n"
+        f"  extract_and_add_facts(llm, list(state.papers.keys()), state)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1980,7 +2024,6 @@ def get_sufficiency_history(
                 f"  {row['iteration']:>4}  {row['label']:<12}  "
                 f"{row['confidence']:>10.6f}"
             )
-        logger.debug("get_sufficiency_history:\n%s", "\n".join(table_lines))
 
     # --- Trend analysis ------------------------------------------------------
     if len(history) < window:
@@ -2071,9 +2114,7 @@ def filter_papers_by_stance(
         del state.papers[pmid]
 
     # Log the filtering operation
-    state.trace.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "operation": "filter_papers_by_stance",
+    state.append_trace("filter_papers_by_stance", {
         "keep_stances": keep_stances,
         "papers_before": len(papers_to_keep) + len(papers_to_remove),
         "papers_after": len(papers_to_keep),

@@ -8,9 +8,14 @@ for multiple repetitions per claim. Results are appended incrementally to an
 output CSV. Token usage and cost estimates are parsed from the verdict artifacts.
 
 Example command:
-    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \\
-        --claim "CRTC2 directly activates AKT1 (either through post-translational modification, complex formation, or direct regulation of expression)." \\
+    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
+        --claim "CRTC2 directly activates AKT1 (either through post-translational modification, complex formation, or direct regulation of expression)." \
         --output-dir results/test_direct_1
+
+Claim-level modified variant (directness constraint baked in, for testing without ICL):
+    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
+        --claim "CRTC2 directly activates AKT1 (direct physical interaction, not through intermediate proteins; either through post-translational modification, complex formation, or direct regulation of expression)." \
+        --output-dir results/test_direct_1_no_intermediary
 """
 
 import argparse
@@ -93,9 +98,9 @@ def construct_signor_claim(source: str, target: str, interaction: str, flip: boo
 
     # Formulate claim sentence
     if is_positive:
-        claim_str = f"{source} directly activates {target} (either through post-translational modification, complex formation, or direct regulation of expression)."
+        claim_str = f"{source} directly activates {target} (direct physical interaction, not through intermediate proteins; either through post-translational modification, complex formation, or direct regulation of expression)."
     elif is_negative:
-        claim_str = f"{source} directly inhibits {target} (either through post-translational modification, complex formation, or direct regulation of expression)."
+        claim_str = f"{source} directly inhibits {target} (direct physical interaction, not through intermediate proteins; either through post-translational modification, complex formation, or direct regulation of expression)."
     else:
         # Non-directional interactions (e.g., binding, complex formation)
         # These are never flipped

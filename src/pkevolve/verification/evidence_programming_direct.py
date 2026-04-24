@@ -48,7 +48,7 @@ _MAX_OUTPUT_CHARS = int(os.environ.get("NB_MAX_OUTPUT_CHARS", "12000"))
 # System prompt: imported from prompts.py
 # ---------------------------------------------------------------------------
 
-from pkevolve.verification.prompts import DIRECT_SYSTEM_PROMPT as SYSTEM_PROMPT
+from pkevolve.verification.prompts import DIRECT_SYSTEM_PROMPT as SYSTEM_PROMPT, SUBCLAIM_EXAMPLES
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +461,7 @@ def build_subprocess_env(cfg) -> dict:
     env["LLM_DISABLE_THINKING"] = "1" if cfg.llm.disable_thinking else "0"
     env["MLP_MODEL_DIR"] = cfg.mlp_model_dir or "results/models/classifier_best"
     env["MAX_ITERATIONS"] = str(cfg.max_iterations)
+    env["SUFFICIENCY_BACKEND"] = cfg.sufficiency_backend
     env["LABEL_CONFIG_JSON"] = cfg.labels.model_dump_json()
     env["NB_MAX_OUTPUT_CHARS"] = str(cfg.max_output_chars)
 
@@ -474,6 +475,138 @@ def build_subprocess_env(cfg) -> dict:
         env["PYTHONPATH"] = f"{src_dir}:{existing}" if existing else src_dir
 
     return env
+
+
+# ---------------------------------------------------------------------------
+# Forced verdict helper
+# ---------------------------------------------------------------------------
+
+def _force_verdict(workspace: Path, claim: str, sub_env: dict, log_path: Path) -> None:
+    """Force check_sufficiency + LLM-guided emit_verdict when the turn budget is exhausted.
+
+    Mirrors what the agent would do in its final turn: runs check_sufficiency, then
+    prompts the subagent LLM to evaluate the evidence and decide SUPPORT/REFUTE/UNCERTAIN,
+    then calls emit_verdict.  No hardcoded verdict defaults — the LLM makes the call.
+    """
+    abs_workspace = str(workspace.resolve())
+    script = textwrap.dedent(f"""\
+        from pkevolve.verification.evidence_api import (
+            setup_workspace, populate_paper_features, check_sufficiency, emit_verdict,
+            get_evidence_summary, MaxIterationsExceeded,
+        )
+        from pkevolve.verification.config import get_label_config
+
+        state, llm, workspace = setup_workspace(
+            claim={claim!r},
+            workspace_path={abs_workspace!r},
+        )
+        print(f"Forced verdict: {{len(state.papers)}} papers, {{len(state.facts)}} facts, iteration={{state.iteration}}")
+
+        populate_paper_features(state)
+
+        # Run or reuse sufficiency check for gaps.
+        if state.sufficiency_history:
+            suf = state.sufficiency_history[-1]
+            print(f"Reusing last sufficiency: {{suf.label}} (confidence={{suf.confidence:.3f}})")
+        else:
+            try:
+                suf = check_sufficiency(state, llm)
+            except MaxIterationsExceeded:
+                suf = None
+
+        gaps = [g.description for g in (suf.gaps if suf else [])]
+        suf_confidence = suf.confidence if suf else 0.0
+
+        # Prompt the subagent LLM to evaluate evidence and decide the verdict.
+        label_cfg = get_label_config()
+        summary = get_evidence_summary(state)
+        facts_text = "\\n".join(
+            f"  [{{f.stance}}] {{f.text[:200]}}" for f in state.facts[:20]
+        ) or "  (none)"
+
+        verdict_prompt = f\"\"\"You are a scientific evidence evaluator. Based on the evidence below,
+determine the verdict for this claim using exactly one of the defined labels.
+
+Claim: {{state.claim}}
+
+Verdict label definitions:
+{{label_cfg.verdict_prompt_block()}}
+
+Evidence summary:
+{{summary}}
+
+Extracted facts:
+{{facts_text}}
+
+Gaps identified:
+{{chr(10).join(f"  - {{g}}" for g in gaps[:5]) or "  (none)"}}
+
+Output your answer in this exact format:
+VERDICT: <one of {', '.join(label_cfg.verdict_names())}>
+CONFIDENCE: <0.0-1.0>
+REASONING: <one paragraph>
+KEY_EVIDENCE: <bullet 1> | <bullet 2> | <bullet 3>
+\"\"\"
+
+        response = llm(verdict_prompt)
+        print("LLM verdict response:", response[:600])
+
+        # Parse the LLM's structured response.
+        verdict_label = None
+        confidence = suf_confidence
+        reasoning = None
+        key_evidence = []
+
+        for line in response.splitlines():
+            line = line.strip()
+            if line.startswith("VERDICT:"):
+                raw = line.split(":", 1)[1].strip().upper()
+                if raw in label_cfg.verdict_names():
+                    verdict_label = raw
+                else:
+                    print(f"WARNING: LLM returned unrecognised verdict label: {{raw!r}}")
+            elif line.startswith("CONFIDENCE:"):
+                try:
+                    confidence = float(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("REASONING:"):
+                reasoning = line.split(":", 1)[1].strip()
+            elif line.startswith("KEY_EVIDENCE:"):
+                key_evidence = [e.strip() for e in line.split(":", 1)[1].split("|") if e.strip()]
+
+        if verdict_label is None or reasoning is None:
+            raise RuntimeError(
+                f"Failed to parse LLM verdict response. Raw response:\\n{{response}}"
+            )
+
+        print(f"Parsed verdict: {{verdict_label}} (confidence={{confidence:.3f}})")
+
+        emit_verdict(
+            verdict=verdict_label,
+            confidence=confidence,
+            reasoning=reasoning,
+            key_evidence=key_evidence[:5],
+            gaps_remaining=gaps[:5],
+            state=state,
+            workspace=workspace,
+        )
+    """)
+
+    try:
+        result = subprocess.run(
+            ["python3", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=sub_env,
+        )
+        output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()
+    except Exception as exc:
+        output = f"[ERROR: forced verdict script failed: {exc}]"
+
+    append_to_jupytext_log(log_path, "# Forced verdict (max turns reached)", output)
+    logger.info("Forced verdict: %s", output[:300])
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +640,7 @@ def verify_claim_direct(cfg) -> Path:
         function_docs=function_docs(),
         verdict_names=", ".join(label_cfg.verdict_names()),
         verdict_definitions=label_cfg.verdict_prompt_block(),
+        subclaim_examples=SUBCLAIM_EXAMPLES if cfg.include_subclaim_examples else "",
     )
 
     # Jupytext execution log
@@ -577,6 +711,7 @@ def verify_claim_direct(cfg) -> Path:
         # *** CONTEXT REFRESH: rebuild messages from log before every call ***
         execution_log = serialize_execution_log(log_path)
 
+        turns_remaining = max_calls - call_count
         if call_count == 0:
             user_text = (
                 f"Verify the following scientific claim using evidence programming.\n\n"
@@ -586,6 +721,14 @@ def verify_claim_direct(cfg) -> Path:
                 f"Call check_sufficiency after each round. "
                 f"Stop when confidence >= {cfg.sufficiency_threshold} or after "
                 f"{cfg.max_iterations} iterations."
+            )
+        elif turns_remaining <= 2:
+            user_text = (
+                f"<execution_log>\n{execution_log}\n</execution_log>\n\n"
+                f"URGENT — only {turns_remaining} turn(s) remaining before hard stop.\n"
+                f"You MUST call check_sufficiency and then emit_verdict NOW.\n"
+                f"Do NOT run any more searches or extractions.\n"
+                f"Claim: {claim}"
             )
         else:
             user_text = (
@@ -688,6 +831,12 @@ def verify_claim_direct(cfg) -> Path:
 
     else:
         logger.info("Reached max calls (%d).", max_calls)
+
+    # If the loop exited without a verdict, force one from the current state.
+    verdict_path = workspace / "verdict.json"
+    if not verdict_path.exists():
+        logger.info("No verdict emitted — forcing check_sufficiency + emit_verdict.")
+        _force_verdict(workspace, claim, sub_env, log_path)
 
     # Log final usage
     logger.info("Total token usage: %s", json.dumps(total_usage))

@@ -7,11 +7,16 @@ Callers are responsible for converting dicts to PaperRecord objects.
 
 Rate limiting
 ─────────────
-A global, thread-safe throttle enforces a minimum inter-request interval
-across **all** ``S2Client`` instances in the process:
+A global, thread-AND-process-safe throttle enforces a minimum inter-request
+interval across **all** ``S2Client`` instances in all processes on this host:
 
 * Without an API key (public tier): 1.1 s between requests.
-* With an API key (authenticated tier): 0.15 s between requests.
+* With an API key (authenticated tier): 1.1 s between requests (same server-side
+  limit; the key increases daily quota, not per-second throughput).
+
+The rate state is persisted to ``/tmp/pkevolve_s2_last_request`` using
+``fcntl.flock`` for cross-process mutual exclusion, so concurrent subprocesses
+spawned by the evidence-programming pipeline share the same rate window.
 
 If a 429 is still returned, the client retries with exponential back-off
 (2 s → 4 s → 8 s, up to ``_MAX_RETRIES`` attempts).  After exhausting
@@ -21,10 +26,12 @@ receive an empty result due to throttling.
 Set ``S2_API_KEY`` in the environment to use the authenticated tier.
 """
 
+import fcntl
 import logging
 import os
 import threading
 import time
+from pathlib import Path
 
 import requests
 
@@ -46,15 +53,22 @@ _S2_FIELDS = (
 _DEFAULT_TIMEOUT = 30  # seconds
 _MAX_RETRIES = 3
 
-# Minimum inter-request intervals (seconds)
+# Minimum inter-request intervals (seconds).
+# We update the rate file BEFORE making the HTTP request, so S2 sees requests
+# arrive at this interval.  Both tiers enforce ~1 req/s on the server side;
+# the API key increases daily quota, not throughput.
 _INTERVAL_ANON = 1.1   # public / anonymous tier
-_INTERVAL_AUTH = 0.15   # authenticated tier (x-api-key set)
+_INTERVAL_AUTH = 1.1   # authenticated tier — same server-side limit
 
 # ---------------------------------------------------------------------------
-# Global, thread-safe rate limiter shared by ALL S2Client instances
+# Cross-process, thread-safe rate limiter shared by ALL S2Client instances
 # ---------------------------------------------------------------------------
 _global_lock = threading.Lock()
-_global_last_request: float = 0.0
+
+# File-based timestamp (wall clock) shared across subprocesses on this host.
+# Overridable via S2_RATE_FILE env var for multi-user HPC environments.
+_S2_RATE_FILE = Path(os.environ.get("S2_RATE_FILE", "/tmp/pkevolve_s2_last_request"))
+_S2_LOCK_FILE = Path(str(_S2_RATE_FILE) + ".lock")
 
 
 class S2RateLimitError(Exception):
@@ -74,9 +88,9 @@ class S2Client:
             environment variable.  When absent, unauthenticated requests are
             made and a 1.1 s sleep is enforced between calls.
 
-    Rate limiting is **global and thread-safe**: every ``S2Client`` instance
-    in the process shares a single timestamp + lock so concurrent callers
-    (different baselines, evidence-programming pipeline, …) can never
+    Rate limiting is **global, thread-safe, and process-safe**: every
+    ``S2Client`` instance across all subprocesses on this host shares a
+    file-based timestamp so concurrent pipeline subprocesses can never
     exceed the tier's request rate.
     """
 
@@ -93,14 +107,28 @@ class S2Client:
         return {}
 
     def _rate_limit(self) -> None:
-        """Block until enough time has elapsed since the last global request."""
-        global _global_last_request
+        """Block until enough time has elapsed since the last global request.
+
+        Thread-safe (threading.Lock) and process-safe (fcntl file lock) so
+        that concurrent subprocesses spawned by the pipeline share the same
+        rate-limit window rather than each resetting the counter to zero.
+        """
         min_interval = _INTERVAL_AUTH if self._api_key else _INTERVAL_ANON
+
         with _global_lock:
-            elapsed = time.monotonic() - _global_last_request
-            if elapsed < min_interval:
-                time.sleep(min_interval - elapsed)
-            _global_last_request = time.monotonic()
+            with open(_S2_LOCK_FILE, "w") as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    try:
+                        last = float(_S2_RATE_FILE.read_text())
+                    except (FileNotFoundError, ValueError):
+                        last = 0.0
+                    elapsed = time.time() - last
+                    if elapsed < min_interval:
+                        time.sleep(min_interval - elapsed)
+                    _S2_RATE_FILE.write_text(str(time.time()))
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
 
     def _get(self, url: str, params: dict) -> dict | None:
         """Execute a GET request with rate-limiting, retry, and error handling.

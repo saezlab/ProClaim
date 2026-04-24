@@ -384,6 +384,12 @@ class VerificationSettings(BaseSettings):
         description="Path for the output notebook (Mode A only).",
     )
 
+    # ── Prompt options ────────────────────────────────────────────────
+    include_subclaim_examples: bool = Field(
+        default=True,
+        description="Inject few-shot subclaim decomposition examples into the system prompt.",
+    )
+
     # ── Logging ───────────────────────────────────────────────────────
     verbose: bool = Field(
         default=False,
@@ -503,6 +509,7 @@ class VerificationSettings(BaseSettings):
             "LLM_STREAM": "1" if self.llm.stream else "0",
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
             "MAX_ITERATIONS": str(self.max_iterations),
+            "SUFFICIENCY_BACKEND": self.sufficiency_backend,
             # Label config for setup_kernel() inside the Jupyter kernel
             "LABEL_CONFIG_JSON": self.labels.model_dump_json(),
             # Notebook MCP truncation limit

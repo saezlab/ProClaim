@@ -9,6 +9,33 @@ Each prompt is a str.format()-compatible template.  Placeholders use
 each constant.
 """
 
+# ---------------------------------------------------------------------------
+# Subclaim decomposition examples block
+# Injected into system prompts via {subclaim_examples} placeholder.
+# Pass "" to omit (controlled by VerificationSettings.include_subclaim_examples).
+# ---------------------------------------------------------------------------
+SUBCLAIM_EXAMPLES = """\
+
+   Examples:
+   Claim: "EGFR directly activates STAT3 (through post-translational modification,
+           complex formation, or direct regulation of expression)"
+   Subclaims:
+     - "EGFR directly activates STAT3 through post-translational modification"
+     - "EGFR directly activates STAT3 through complex formation"
+     - "EGFR directly activates STAT3 through direct regulation of expression"
+
+   Claim: "CXCL12 as ligand directly interacts with CXCR4 as receptor"
+   Subclaims:
+     - "CXCL12 directly binds to CXCR4 as its receptor"
+     - "CXCL12 functions as a ligand (or chemokine, or SDF-1, or SDF-1alpha) for CXCR4"
+     - "CXCR4 is a cell-surface receptor and the CXCL12-CXCR4 interaction occurs extracellularly (not intracellularly)"
+
+   For ligand-receptor claims ("X as ligand directly interacts with Y as receptor"), ALWAYS include
+   a subclaim that explicitly asks whether the interaction is extracellular/cell-surface mediated
+   and NOT intracellular. This is critical: some proteins annotated as ligands or receptors in
+   databases only interact intracellularly (e.g., after endocytosis), which would refute the claim.\
+"""
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Subagent prompts  (used by subagents.py)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -280,7 +307,7 @@ Output ONLY the query string without explanation."""
 # Notebook-mode system prompt  (evidence_programming.py — Claude Agent SDK)
 # Placeholders: verdict_names, verdict_definitions, claim, workspace,
 #               function_docs, schemas, max_iterations,
-#               sufficiency_threshold, notebook_path
+#               sufficiency_threshold, notebook_path, subclaim_examples
 # ---------------------------------------------------------------------------
 NOTEBOOK_SYSTEM_PROMPT = """\
 You are an evidence-programming agent that verifies scientific claims and produces verdicts [{verdict_names}].
@@ -324,6 +351,7 @@ them directly via nb_execute.
    verifiable assertion. Use 1 (the original claim) if the claim is already simple
    enough to search directly. Include alternative names or aliases for key entities.
    Set subclaims before searching: state.subclaims = [...]; state._auto_save()
+{subclaim_examples}
 3. Search (iteration 0):
    a. call search_pubmed_llm(state.claim, state, llm) — runs two LLM-generated PubMed queries (claim-only and subclaim-enriched), deduplicated
    b. call search_semantic_scholar_dual(state.claim, state, llm) — runs two S2 queries (claim-only and subclaim-enriched), covers bioRxiv preprints and non-MEDLINE journals
@@ -413,7 +441,7 @@ features populated, so you can safely call it multiple times.
 # Direct-mode system prompt  (evidence_programming_direct.py — LiteLLM)
 # Placeholders: verdict_names, verdict_definitions, claim, workspace,
 #               function_docs, schemas, max_iterations,
-#               sufficiency_threshold
+#               sufficiency_threshold, subclaim_examples
 # ---------------------------------------------------------------------------
 DIRECT_SYSTEM_PROMPT = """\
 You are an evidence-programming agent that verifies scientific claims and produces verdicts [{verdict_names}].
@@ -457,6 +485,7 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
    verifiable assertion. Use 1 (the original claim) if the claim is already simple
    enough to search directly. Include alternative names or aliases for key entities.
    Set subclaims before searching: `state.subclaims = [...]` then `state._auto_save()`.
+{subclaim_examples}
 3. Search (iteration 0):
    a. call search_pubmed_llm(state.claim, state, llm) — runs two LLM-generated PubMed queries (claim-only and subclaim-enriched), deduplicated
    b. call search_semantic_scholar_dual(state.claim, state, llm) — runs two S2 queries (claim-only and subclaim-enriched), covers bioRxiv preprints and non-MEDLINE journals

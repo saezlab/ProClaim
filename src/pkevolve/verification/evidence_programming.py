@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 from pkevolve.verification.prompts import (
     NOTEBOOK_SYSTEM_PROMPT as SYSTEM_PROMPT,
     NOTEBOOK_USER_PROMPT,
+    SUBCLAIM_EXAMPLES,
 )
 
 
@@ -100,6 +101,7 @@ async def verify_claim_notebook(
         function_docs=function_docs(),
         verdict_names=", ".join(label_cfg.verdict_names()),
         verdict_definitions=label_cfg.verdict_prompt_block(),
+        subclaim_examples=SUBCLAIM_EXAMPLES if cfg.include_subclaim_examples else "",
     )
 
     def _on_stderr(line: str) -> None:
