@@ -25,7 +25,7 @@ from pathlib import Path
 
 from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.llm import LLMBackend
-from baselines.shared.label_utils import normalize_label, verdict_names, verdict_options_str
+from baselines.shared.label_utils import normalize_label, verdict_defs_block, verdict_names, verdict_options_str
 from baselines.shared.verdict import BaselineResult
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 _VERDICT_LIST = ", ".join(verdict_names())            # "SUPPORT, REFUTE, UNCERTAIN"
 _VERDICT_OPTIONS = verdict_options_str()               # '"SUPPORT" | "REFUTE" | "UNCERTAIN"'
+_VERDICT_DEFS = verdict_defs_block()                   # multi-line label definitions
 
 # ── ACE Generator prompt (from the ACE framework) ───────────────────
 
@@ -82,10 +83,8 @@ Your output should be a json object, which contains the following fields:
 _CLAIM_VERIFICATION_PLAYBOOK = f"""\
 ## STRATEGIES & INSIGHTS
 [str-00001] helpful=0 harmful=0 :: Classify the scientific claim as {_VERDICT_LIST} based on your knowledge.
-[str-00002] helpful=0 harmful=0 :: SUPPORT means the claim is well-supported by established scientific evidence.
-[str-00003] helpful=0 harmful=0 :: REFUTE means the claim contradicts established scientific evidence or is unsupported.
-[str-00004] helpful=0 harmful=0 :: UNCERTAIN means the evidence is ambiguous, incomplete, or conflicting.
-[str-00005] helpful=0 harmful=0 :: Be conservative: prefer UNCERTAIN when knowledge is insufficient.
+[str-00002] helpful=0 harmful=0 :: Label definitions:\n{_VERDICT_DEFS}
+[str-00003] helpful=0 harmful=0 :: Be conservative: prefer UNCERTAIN when knowledge is insufficient.
 
 ## FORMULAS & CALCULATIONS
 
@@ -219,6 +218,8 @@ class ACEBaseline:
                 lf.write(f"=== final_answer: {final_answer} ===\n")
                 lf.write(f"=== predicted: {predicted} ===\n")
                 lf.write(f"=== response ===\n{gen_response}\n")
+                lf.write(f"=== prompt_sent ===\n{prompt}\n")
+                lf.write(f"=== playbook ===\n{self._playbook}\n")
 
         return BaselineResult(
             claim_id=claim_id,

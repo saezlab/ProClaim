@@ -1,19 +1,17 @@
 # ──────────────────────────────────────────────────────────────────────
-# ReAct Baseline Config
+# ReAct Baseline Config (S2 backend)
 #
 # Unconstrained agentic reasoning with tool use (Yao et al., ICLR 2023).
-# The agent uses a Thought → Action → Observation loop with web search
+# The agent uses a Thought → Action → Observation loop with S2 search
 # and decides on its own when to stop — no external sufficiency signal.
-#
-# This is the "why not just use a ReAct agent?" baseline.
 #
 # Usage:
 #   uv run python experiments/run_baselines_datasets.py \
-#       --config experiments/configs/react_config.yaml
+#       --config experiments/configs/react_s2_config.yaml
 #
 # Prerequisites:
-#   - An LLM API key recognised by litellm (e.g. OPENAI_API_KEY)
-#   - SERPER_API_KEY (optional; falls back to DuckDuckGo)
+#   - An LLM API key recognised by litellm (e.g. ANTHROPIC_API_KEY)
+#   - S2_API_KEY set for higher throughput (anonymous access is rate-limited)
 #
 # Any CLI flag overrides the value set here.
 # ──────────────────────────────────────────────────────────────────────
@@ -31,7 +29,7 @@ baseline: react
 model: anthropic/claude-sonnet-4-6
 
 # ── Search backend ────────────────────────────────────────────────────
-search_backend: web                    # 'web' (Serper/DuckDuckGo) or 's2' (Semantic Scholar)
+search_backend: s2                     # 'web' (Serper/DuckDuckGo) or 's2' (Semantic Scholar)
 
 # Maximum number of search steps
 max_steps: 10

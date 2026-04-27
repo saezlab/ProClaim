@@ -19,7 +19,7 @@
 # ──────────────────────────────────────────────────────────────────────
 
 # ── Data ──────────────────────────────────────────────────────────────
-datasets_dir: /home/ail/workspace/claim_datasets/datasets
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
 datasets:
   - signor
   - connectomedb
@@ -39,3 +39,6 @@ repeats: 1       # FIRE is quasi-deterministic (temperature=0.5 by default)
 
 # ── Sampling ──────────────────────────────────────────────────────────
 limit: 0         # 0 = all claims
+
+# ── Output ────────────────────────────────────────────────────────────
+output_dir: results/baselines

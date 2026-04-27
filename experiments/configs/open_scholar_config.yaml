@@ -18,8 +18,8 @@
 # ──────────────────────────────────────────────────────────────────────
 
 # ── Data ──────────────────────────────────────────────────────────────
-datasets_dir: /home/ail/workspace/claim_datasets/datasets
-# datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+# datasets_dir: /home/ail/workspace/claim_datasets/datasets
 datasets:
   - signor
   - connectomedb

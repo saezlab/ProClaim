@@ -16,7 +16,7 @@
 # ──────────────────────────────────────────────────────────────────────
 
 # ── Data ──────────────────────────────────────────────────────────────
-datasets_dir: /home/ail/workspace/claim_datasets/datasets
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
 datasets:
   - signor
   - connectomedb
@@ -37,6 +37,9 @@ repeats: 1     # deterministic retrieval + temperature=0 → 1 repeat usually su
 
 # ── Sampling ──────────────────────────────────────────────────────────
 limit: 0       # 0 = all claims
+
+# ── Temperature ───────────────────────────────────────────────────────
+temperature: 0.0
 
 # ── Output ────────────────────────────────────────────────────────────
 output_dir: results/baselines

@@ -20,7 +20,7 @@ else
     DATASETS="connectomedb"
 fi
 
-DATASETS_DIR="/home/ail/workspace/claim_datasets/datasets"
+DATASETS_DIR="/hps/nobackup/saezrodriguez/shared_datasets/claims/datasets"
 REPEATS=1
 TEMP=0.0
 OUT="results/baselines"
@@ -96,10 +96,9 @@ run "FIRE: Claude-Sonnet-4.6" \
 # 9. OpenScholar: Claude Sonnet 4.6 (S2 retrieval, no oracle evidence)
 run "OpenScholar: Claude-Sonnet-4.6 (no oracle)" \
     --baseline open_scholar \
-    --model "claude-sonnet-4-6" \
-    --os-api "anthropic" \
-    --os-retrieval \
-    --os-top-n 10
+    --model "anthropic/claude-sonnet-4-6" \
+    --retrieval \
+    --top-k 10
 
 echo ""
 echo "========================================"

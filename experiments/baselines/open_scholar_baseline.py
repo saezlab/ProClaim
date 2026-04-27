@@ -292,7 +292,7 @@ class OpenScholarBaseline:
         except json.JSONDecodeError:
             # The JSON was likely truncated at max_tokens.  Try to salvage the
             # label from the partial object before giving up.
-            m = _re.search(r'"label"\s*:\s*"(SUPPORT|REFUTE|UNCERTAIN)"', text, _re.IGNORECASE)
+            m = _re.search(r'"label"\s*:\s*"(SUPPORT|SUPPORTED|REFUTE|REFUTED|UNCERTAIN)"', text, _re.IGNORECASE)
             if m:
                 recovered_label = m.group(1).upper()
                 # Also try to grab whatever reasoning was emitted so far

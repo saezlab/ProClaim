@@ -232,3 +232,4 @@ data/signor/
 .signor_job_info
 update_venv.sbatch
 vis_example.py
+dcgm/
