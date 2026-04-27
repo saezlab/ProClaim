@@ -55,15 +55,16 @@ For each fact provide a JSON object with:
 - "text": factual statement (one sentence, self-contained)
 - "stance": one of {stance_options}
 - "source_pmid": "{source_pmid}"
-- "relevant_subclaims": list of subclaim strings this fact addresses
 - "confidence": 0.0-1.0, how clearly the paper states this
+
+Example: [{{"text": "Gs alpha directly stimulates adenylyl cyclase activity.", "stance": "SUPPORT", "source_pmid": "{source_pmid}", "confidence": 0.9}}]
 
 Stance definitions:
 {stance_block}
 
 Rules:
 - Base facts strictly on the provided text. Recognize equivalent terms, but do not hallucinate logical leaps not present in the paper.
-- If a paper does not address a subclaim, do not manufacture facts.
+- If the paper has no relevance to the claim or subclaims, return [].
 - Each fact must be independently verifiable from the source paper.
 Now extract facts for the following:
 
@@ -391,6 +392,7 @@ them directly via nb_execute.
 - `state` persists across nb_execute calls (same kernel).
 - All output from nb_execute is via print().
 - When emit_verdict is called, the verification is complete.
+- Do NOT attempt to debug, patch, or work around evidence API functions that return 0 facts. A 0-fact result means the paper lacks relevant evidence or accessible full text — not a tool bug. Move on to other papers or emit a verdict.
 
 ## CRITICAL: Grounded Evidence Only
 
@@ -420,11 +422,16 @@ Required sequence in EVERY iteration:
 1. search_pubmed_llm(state.claim, state, llm)              ← retrieve papers with LLM-generated query
 2. extract_and_add_facts(llm, pmids, state)                ← extract facts for ALL new papers in parallel
 3. populate_paper_features(state)                          ← MUST CALL (computes features)
-4. check_sufficiency(state, llm)                           ← classifier needs features
+4. filter_papers_by_stance(state)                          ← MUST CALL (removes neutral/irrelevant papers)
+5. check_sufficiency(state, llm)                           ← classifier needs features from relevant papers only
 
 If you skip populate_paper_features(), the MLP classifier will receive all-zero
 NLP features (semantic similarity, entity coverage, NLI scores) and the
 sufficiency prediction will be inaccurate.
+
+If you skip filter_papers_by_stance(), the MLP classifier will average features
+across all retrieved papers including those with no SUPPORT or REFUTE evidence,
+diluting the signal and producing unreliable sufficiency scores.
 
 The function is idempotent — it automatically skips papers that already have
 features populated, so you can safely call it multiple times.
@@ -499,9 +506,7 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
    a. search_for_gap(gap_description, state)
    b. search_semantic_scholar_recommendations(state) — S2 graph expansion
    c. formulate_gap_queries(llm, state) — LLM-generated gap queries
-   d. web_search(query) — call this tool directly (NOT via bash) to search the
-      web for evidence not found in PubMed/S2; use when academic databases
-      return few results or for recent findings not yet indexed.
+{web_search_step}
 10. Repeat until confidence >= {sufficiency_threshold} or {max_iterations} iterations.
 11. Call emit_verdict(...) to produce the final verdict.
 
@@ -513,6 +518,7 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
 - `state` does NOT persist across bash calls — reload it each time
   (or call setup_workspace again).
 - When emit_verdict is called, the verification is complete.
+- Do NOT attempt to debug, patch, or work around evidence API functions that return 0 facts. A 0-fact result means the paper lacks relevant evidence or accessible full text — not a tool bug. Move on to other papers or emit a verdict.
 
 ## CRITICAL: Grounded Evidence Only
 
@@ -524,6 +530,8 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
       results2 = extract_and_add_facts(llm, new_pmids, state)
 - NEVER call add_facts_from_dicts with manually written text.
 - If no papers contain relevant evidence, say so in the verdict.
+- add_extraction_context_note is for SYNONYM/ALIAS MAPPINGS ONLY.  Never write 
+  search goals, task descriptions, or paper-specific findings into it.
 
 ## Feature Computation for MLP Classifier
 
@@ -535,7 +543,8 @@ Required sequence in EVERY iteration:
 1. search (PubMed + Semantic Scholar)
 2. extract_and_add_facts(llm, pmids, state)
 3. populate_paper_features(state)           ← REQUIRED
-4. check_sufficiency(state, llm)
+4. filter_papers_by_stance(state)           ← REQUIRED (removes neutral/irrelevant papers)
+5. check_sufficiency(state, llm)
 
 ## Important
 

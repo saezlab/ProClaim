@@ -389,6 +389,10 @@ class VerificationSettings(BaseSettings):
         default=True,
         description="Inject few-shot subclaim decomposition examples into the system prompt.",
     )
+    disable_web_search: bool = Field(
+        default=False,
+        description="Remove web_search from the agent's tool set (direct mode only).",
+    )
 
     # ── Logging ───────────────────────────────────────────────────────
     verbose: bool = Field(

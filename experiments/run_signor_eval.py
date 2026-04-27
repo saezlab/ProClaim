@@ -9,7 +9,11 @@ output CSV. Token usage and cost estimates are parsed from the verdict artifacts
 
 Example command:
     time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
-        --claim "CRTC2 directly activates AKT1 (either through post-translational modification, complex formation, or direct regulation of expression)." \
+        --claim "SRC directly inhibits CTTN." \
+        --output-dir results/test_direct_1
+
+    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
+        --claim "GNAS directly activates ADCY1 (either through post-translational modification, complex formation, or direct regulation of expression)." \
         --output-dir results/test_direct_1
 
 Claim-level modified variant (directness constraint baked in, for testing without ICL):
@@ -98,13 +102,13 @@ def construct_signor_claim(source: str, target: str, interaction: str, flip: boo
 
     # Formulate claim sentence
     if is_positive:
-        claim_str = f"{source} directly activates {target} (direct physical interaction, not through intermediate proteins; either through post-translational modification, complex formation, or direct regulation of expression)."
+        claim_str = f"{source} directly activates {target}."
     elif is_negative:
-        claim_str = f"{source} directly inhibits {target} (direct physical interaction, not through intermediate proteins; either through post-translational modification, complex formation, or direct regulation of expression)."
+        claim_str = f"{source} directly inhibits {target}."
     else:
         # Non-directional interactions (e.g., binding, complex formation)
         # These are never flipped
-        claim_str = f"{source} directly interacts with {target} (e.g., physical binding)."
+        claim_str = f"{source} directly interacts with {target}."
 
     return claim_str
 

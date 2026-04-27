@@ -3,8 +3,8 @@
 
 Usage
 -----
-uv run python scripts/eval_signor_direct_csv.py results/signor_direct_eval_20260419_135117/results.csv
-uv run python scripts/eval_signor_direct_csv.py results/signor_direct_eval_20260419_135117/results.csv --save
+uv run python scripts/eval_signor_direct_csv.py results/signor_direct_eval_20260426_215855/results.csv
+uv run python scripts/eval_signor_direct_csv.py results/signor_direct_eval_20260425_163624/results.csv --save
 uv run python scripts/eval_signor_direct_csv.py results/... --model claude-haiku-4-5
 """
 import argparse

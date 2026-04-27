@@ -121,9 +121,9 @@ def _do_web_search(query: str, k: int = 5) -> str:
 # Tool schemas (OpenAI function calling format, used by LiteLLM)
 # ---------------------------------------------------------------------------
 
-def build_tool_schemas() -> list[dict]:
+def build_tool_schemas(disable_web_search: bool = False) -> list[dict]:
     """Build tool schemas in OpenAI function calling format."""
-    return [
+    schemas = [
         {
             "type": "function",
             "function": {
@@ -187,6 +187,9 @@ def build_tool_schemas() -> list[dict]:
             },
         },
     ]
+    if disable_web_search:
+        schemas = [s for s in schemas if s["function"]["name"] != "web_search"]
+    return schemas
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +634,15 @@ def verify_claim_direct(cfg) -> Path:
     # Build system prompt
     from pkevolve.verification.evidence_api import schema_docs, function_docs
     label_cfg = cfg.labels
+    _web_search_step = (
+        ""
+        if cfg.disable_web_search
+        else (
+            "   d. web_search(query) — call this tool directly (NOT via bash) to search the\n"
+            "      web for evidence not found in PubMed/S2; use when academic databases\n"
+            "      return few results or for recent findings not yet indexed."
+        )
+    )
     system_prompt = SYSTEM_PROMPT.format(
         workspace=str(workspace.resolve()),
         claim=claim,
@@ -641,6 +653,7 @@ def verify_claim_direct(cfg) -> Path:
         verdict_names=", ".join(label_cfg.verdict_names()),
         verdict_definitions=label_cfg.verdict_prompt_block(),
         subclaim_examples=SUBCLAIM_EXAMPLES if cfg.include_subclaim_examples else "",
+        web_search_step=_web_search_step,
     )
 
     # Jupytext execution log
@@ -648,7 +661,7 @@ def verify_claim_direct(cfg) -> Path:
     init_jupytext_log(log_path, claim)
 
     # Tools and environment
-    tools = build_tool_schemas()
+    tools = build_tool_schemas(disable_web_search=cfg.disable_web_search)
     sub_env = build_subprocess_env(cfg)
 
     # Outer agent model (via LiteLLM)

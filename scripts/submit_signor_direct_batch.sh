@@ -14,7 +14,7 @@
 #   bash scripts/submit_signor_direct_batch.sh --cancel
 #   bash scripts/submit_signor_direct_batch.sh --logs
 #   bash scripts/submit_signor_direct_batch.sh --resume               # Resume last failed run
-#   bash scripts/submit_signor_direct_batch.sh --run-tag 20260419_135117 --reps 1 # Resume specific run
+#   bash scripts/submit_signor_direct_batch.sh --run-tag 20260426_215855 --reps 1 # Resume specific run
 # =============================================================================
 set -euo pipefail
 
@@ -24,8 +24,8 @@ LOGIN_HOST="ihpc.ebi.ac.uk"
 LOGIN_NODE="${EBI_USER}@${LOGIN_HOST}"
 
 JOB_NAME="signor-direct"
-# TIME_LIMIT="24:00:00"
-TIME_LIMIT="1:00:00"
+TIME_LIMIT="24:00:00"
+# TIME_LIMIT="1:00:00"
 CPUS=8
 MEM="64G"
 GPU_TYPE="a100"

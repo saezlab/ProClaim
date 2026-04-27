@@ -1371,17 +1371,29 @@ def add_extraction_context_note(state: EvidenceState, note: str) -> None:
     papers are re-extracted.  All previously extracted PMIDs are cleared so
     that the next call to extract_and_add_facts re-runs with the updated prompt.
 
+    The note must describe TERMINOLOGY ONLY (aliases, synonyms, scope boundaries).
+    Do NOT write interpretive conclusions about what the evidence shows — those
+    belong in the verdict reasoning, not here.  Injecting conclusions biases the
+    extraction LLM and will produce incorrect stance labels.
+
     Args:
         state: The live EvidenceState object.
-        note: A free-text note to inject into the EXTRACT_FACTS prompt.
+        note: A terminology/disambiguation note to inject into the EXTRACT_FACTS prompt.
 
-    Example:
+    Good example (synonym mapping — note contains ONLY terminology, zero conclusions):
         >>> add_extraction_context_note(
         ...     state,
         ...     "CRTC2 (also called TORC2) is a CREB transcription coactivator. "
         ...     "mTOR Complex 2 (mTORC2) is a distinct kinase complex that also appears "
         ...     "in literature as 'TORC2'. Papers discussing mTORC2 phosphorylating AKT "
         ...     "are NOT about CRTC2 unless they explicitly name CRTC2.",
+        ... )
+
+    Bad example (do NOT do this — injects a conclusion as if it were a fact):
+        >>> add_extraction_context_note(
+        ...     state,
+        ...     "PMID 12345678 is highly relevant: kinase X phosphorylates protein Y "
+        ...     "at serine 9, activating it.",  # pre-conclusion, not a synonym
         ... )
     """
     n_cleared = len(state.extracted_pmids)
