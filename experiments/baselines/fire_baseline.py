@@ -13,9 +13,8 @@ FIRE outputs use the same canonical taxonomy:
   - Refute    → REFUTE
   - Uncertain → UNCERTAIN
 
-Search backends (checked in order):
-  1. If ``SERPER_API_KEY`` is set → Serper API (paid, higher quality).
-  2. Otherwise → ``ddgs`` (free, DuckDuckGo search).
+Search backend:
+  DuckDuckGo search via ``ddgs`` (free, no API key).
 
 Prerequisites:
   - An LLM API key recognised by litellm (e.g. ``ANTHROPIC_API_KEY``).
@@ -28,13 +27,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-
-import requests
 
 from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.llm import LLMBackend
@@ -105,39 +101,10 @@ STATEMENT:
 {{statement}}"""
 
 
-# ── Web search backends ──────────────────────────────────────────────
-
-_SERPER_URL = "https://google.serper.dev"
+# ── Web search backend ───────────────────────────────────────────────
 
 
-def _serper_search(query: str, api_key: str, k: int = 3) -> str:
-    """Query Google via Serper API and return concatenated snippets."""
-    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
-    params = {"q": query, "num": k, "gl": "us", "hl": "en"}
-    resp = requests.post(
-        f"{_SERPER_URL}/search", headers=headers, params=params, timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    snippets: list[str] = []
-    if data.get("answerBox"):
-        ab = data["answerBox"]
-        for field in ("answer", "snippet", "snippetHighlighted"):
-            val = ab.get(field)
-            if val and isinstance(val, str):
-                snippets.append(val.replace("\n", " "))
-    if data.get("knowledgeGraph"):
-        kg = data["knowledgeGraph"]
-        if kg.get("description"):
-            snippets.append(kg["description"])
-    for item in data.get("organic", [])[:k]:
-        if "snippet" in item:
-            snippets.append(item["snippet"])
-    return " ".join(snippets) if snippets else "No good Google Search result was found"
-
-
-def _google_search(query: str, k: int = 3) -> str:
+def _web_search(query: str, k: int = 3) -> str:
     """Query DuckDuckGo via the ddgs package (free, no API key)."""
     try:
         from ddgs import DDGS
@@ -222,7 +189,7 @@ class FIREBaseline:
         max_steps: int = 5,
         max_retries: int = 10,
         max_tolerance: int = 2,
-        num_search_results: int = 3,
+        num_search_results: int = 5,
     ) -> None:
         self._llm = llm
         self.model = self._llm.model
@@ -233,8 +200,7 @@ class FIREBaseline:
         self.num_search_results = num_search_results
         self.log_dir: Path | None = None
 
-        self._serper_key = os.environ.get("SERPER_API_KEY", "")
-        self._search_backend = "serper" if self._serper_key else "google"
+        self._search_backend = "ddg"
         logger.info("FIRE search backend: %s", self._search_backend)
 
         # Cost estimation — reuse CostTracker pricing table
@@ -371,10 +337,7 @@ class FIREBaseline:
                     logger.info("FIRE early stop: repetitive search results")
                     return "_Early_Stop"
 
-                if self._serper_key:
-                    snippet = _serper_search(q, self._serper_key, k=self.num_search_results)
-                else:
-                    snippet = _google_search(q, k=self.num_search_results)
+                snippet = _web_search(q, k=self.num_search_results)
                 sr = _SearchResult(query=q, result=snippet)
                 searches.append(sr)
                 return sr

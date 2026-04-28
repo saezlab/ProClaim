@@ -19,7 +19,7 @@
 # ──────────────────────────────────────────────────────────────────────
 
 # ── Data ──────────────────────────────────────────────────────────────
-datasets_dir: /home/ail/workspace/claim_datasets/datasets
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
 datasets:
   - signor
   - connectomedb
@@ -27,16 +27,11 @@ datasets:
 # ── Baseline ──────────────────────────────────────────────────────────
 baseline: fire
 
-# ── FIRE model ────────────────────────────────────────────────────────
-# Format: litellm model string "<provider>/<model_id>"
-# Examples:
-#   openai/gpt-4o-mini
-#   openai/gpt-4o
-#   anthropic/claude-sonnet-4-20250514
-fire_model: anthropic/claude-sonnet-4-6
+# ── Model (LiteLLM format: "provider/model-id") ──────────────────────
+model: anthropic/claude-sonnet-4-6
 
-# Maximum iterative search steps (FIRE default is 5)
-fire_max_steps: 5
+# Maximum iterative search steps
+max_steps: 5
 
 # ── Reproducibility ───────────────────────────────────────────────────
 seed: 100
@@ -44,3 +39,6 @@ repeats: 1       # FIRE is quasi-deterministic (temperature=0.5 by default)
 
 # ── Sampling ──────────────────────────────────────────────────────────
 limit: 0         # 0 = all claims
+
+# ── Output ────────────────────────────────────────────────────────────
+output_dir: results/baselines

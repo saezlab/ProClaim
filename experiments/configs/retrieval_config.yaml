@@ -1,19 +1,16 @@
 # ──────────────────────────────────────────────────────────────────────
-# ReAct Baseline Config
+# Retrieval Baseline Config (S2 backend)
 #
-# Unconstrained agentic reasoning with tool use (Yao et al., ICLR 2023).
-# The agent uses a Thought → Action → Observation loop with web search
-# and decides on its own when to stop — no external sufficiency signal.
-#
-# This is the "why not just use a ReAct agent?" baseline.
+# Fixed-k RAG: search Semantic Scholar with the raw claim, retrieve
+# top-k abstracts, pass them to the LLM in a single call.
 #
 # Usage:
 #   uv run python experiments/run_baselines_datasets.py \
-#       --config experiments/configs/react_config.yaml
+#       --config experiments/configs/s2_retrieval_config.yaml
 #
 # Prerequisites:
-#   - An LLM API key recognised by litellm (e.g. OPENAI_API_KEY)
-#   - SERPER_API_KEY (optional; falls back to DuckDuckGo)
+#   - S2_API_KEY set for higher throughput (anonymous access is rate-limited)
+#   - ANTHROPIC_API_KEY (or matching provider key) set
 #
 # Any CLI flag overrides the value set here.
 # ──────────────────────────────────────────────────────────────────────
@@ -25,23 +22,24 @@ datasets:
   - connectomedb
 
 # ── Baseline ──────────────────────────────────────────────────────────
-baseline: react
-
-# ── Model (LiteLLM format: "provider/model-id") ──────────────────────
-model: anthropic/claude-sonnet-4-6
+baseline: retrieval
 
 # ── Search backend ────────────────────────────────────────────────────
-search_backend: web                    # 'web' (Serper/DuckDuckGo) or 's2' (Semantic Scholar)
+search_backend: s2                     # 'web' or 's2' (Semantic Scholar)
 
-# Maximum number of search steps
-max_steps: 10
+# ── Model & retrieval ─────────────────────────────────────────────────
+model: anthropic/claude-sonnet-4-6   # LiteLLM model string
+top_k: 5                              # number of S2 abstracts to retrieve
 
 # ── Reproducibility ───────────────────────────────────────────────────
-seed: 100
-repeats: 1       # temperature=0 → deterministic
+seed: 100      # base seed; repeat i uses seed + i
+repeats: 1     # deterministic retrieval + temperature=0 → 1 repeat usually sufficient
 
 # ── Sampling ──────────────────────────────────────────────────────────
-limit: 0         # 0 = all claims
+limit: 0       # 0 = all claims
+
+# ── Temperature ───────────────────────────────────────────────────────
+temperature: 0.0
 
 # ── Output ────────────────────────────────────────────────────────────
 output_dir: results/baselines

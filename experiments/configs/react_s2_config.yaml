@@ -1,39 +1,45 @@
 # ──────────────────────────────────────────────────────────────────────
-# S2 Retrieval Baseline Config
+# ReAct Baseline Config (S2 backend)
 #
-# Fixed-k RAG: search Semantic Scholar with the raw claim, retrieve
-# top-k abstracts, pass them to the LLM in a single call.
+# Unconstrained agentic reasoning with tool use (Yao et al., ICLR 2023).
+# The agent uses a Thought → Action → Observation loop with S2 search
+# and decides on its own when to stop — no external sufficiency signal.
 #
 # Usage:
 #   uv run python experiments/run_baselines_datasets.py \
-#       --config experiments/configs/s2_retrieval_config.yaml
+#       --config experiments/configs/react_s2_config.yaml
 #
 # Prerequisites:
+#   - An LLM API key recognised by litellm (e.g. ANTHROPIC_API_KEY)
 #   - S2_API_KEY set for higher throughput (anonymous access is rate-limited)
-#   - ANTHROPIC_API_KEY (or matching provider key) set
 #
 # Any CLI flag overrides the value set here.
 # ──────────────────────────────────────────────────────────────────────
 
 # ── Data ──────────────────────────────────────────────────────────────
-datasets_dir: /home/ail/workspace/claim_datasets/datasets
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
 datasets:
   - signor
   - connectomedb
 
 # ── Baseline ──────────────────────────────────────────────────────────
-baseline: s2_retrieval
+baseline: react
 
-# ── S2 Retrieval settings ────────────────────────────────────────────
-s2_model: anthropic/claude-sonnet-4-6   # LiteLLM model string
-s2_top_k: 5                              # number of S2 abstracts to retrieve
+# ── Model (LiteLLM format: "provider/model-id") ──────────────────────
+model: anthropic/claude-sonnet-4-6
+
+# ── Search backend ────────────────────────────────────────────────────
+search_backend: s2                     # 'web' (Serper/DuckDuckGo) or 's2' (Semantic Scholar)
+
+# Maximum number of search steps
+max_steps: 10
 
 # ── Reproducibility ───────────────────────────────────────────────────
-seed: 100      # base seed; repeat i uses seed + i
-repeats: 1     # deterministic retrieval + temperature=0 → 1 repeat usually sufficient
+seed: 100
+repeats: 1       # temperature=0 → deterministic
 
 # ── Sampling ──────────────────────────────────────────────────────────
-limit: 0       # 0 = all claims
+limit: 0         # 0 = all claims
 
 # ── Output ────────────────────────────────────────────────────────────
 output_dir: results/baselines

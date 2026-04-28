@@ -18,8 +18,8 @@
 # ──────────────────────────────────────────────────────────────────────
 
 # ── Data ──────────────────────────────────────────────────────────────
-datasets_dir: /home/ail/workspace/claim_datasets/datasets
-# datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+# datasets_dir: /home/ail/workspace/claim_datasets/datasets
 datasets:
   - signor
   - connectomedb
@@ -27,20 +27,21 @@ datasets:
 # ── Baseline ──────────────────────────────────────────────────────────
 baseline: open_scholar
 
-# ── OpenScholar model ─────────────────────────────────────────────────
-os_model: claude-sonnet-4-6   # passed to OpenScholar's --model_name
-os_api: anthropic              # API provider (anthropic, gemini, …)
+# ── Model (LiteLLM format: "provider/model-id") ──────────────────────
+# The provider prefix is automatically split into --model_name / --api
+# for the OpenScholar subprocess.
+model: anthropic/claude-sonnet-4-6
 
 # ── Retrieval ─────────────────────────────────────────────────────────
-os_retrieval: true       # S2 adaptive retrieval + self-feedback loop
-os_reranker: OpenScholar/OpenScholar_Reranker  # set to "" to disable reranker
-os_task_name: claim_verdict_question  # claim_verdict_question (framed as yes/no query) or claim_verdict (raw claim)
+retrieval: true       # S2 adaptive retrieval + self-feedback loop
+reranker: OpenScholar/OpenScholar_Reranker  # set to "" to disable reranker
+task_name: claim_verdict_question  # claim_verdict_question (framed as yes/no query) or claim_verdict (raw claim)
 
 # ── Context ───────────────────────────────────────────────────────────
-os_top_n: 10              # number of passages forwarded to the generator
-# os_max_tokens: 0          # 0 = no constraint 
-os_max_tokens: 3000     # OpenScholar default: 3000
-os_oracle_context: false # inject CSV evidence as oracle context (leaks labels — for ablation only)
+top_k: 10              # number of passages forwarded to the generator
+# max_tokens: 0          # 0 = no constraint 
+max_tokens: 3000     # OpenScholar default: 3000
+oracle_context: false # inject CSV evidence as oracle context (leaks labels — for ablation only)
 
 # ── Reproducibility ───────────────────────────────────────────────────
 seed: 100     # base seed; repeat i uses seed + i

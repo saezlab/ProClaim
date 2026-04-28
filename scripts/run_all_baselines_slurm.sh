@@ -17,8 +17,6 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DATASETS_DIR="/hps/nobackup/saezrodriguez/shared_datasets/claims/datasets"
-OUTPUT_DIR="${PROJECT_ROOT}/results/baselines"
 LOG_DIR="${PROJECT_ROOT}/results/slurm_logs/baselines"
 GCP_CREDENTIALS="${PROJECT_ROOT}/prj-int-dev-saez-ai-pkc-734bae1cf581.json"
 
@@ -49,7 +47,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $(basename "$0") [--baselines B1 B2 ...] [--datasets D1 D2 ...] [--limit N] [--repeats N] [--time HH:MM:SS]"
             echo ""
-            echo "Available baselines: llm_only s2_retrieval react_web react_s2 ace fire open_scholar"
+            echo "Available baselines: llm_only retrieval react_web react_s2 ace fire open_scholar"
             echo "  (default: all)"
             exit 0 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
@@ -64,7 +62,7 @@ DATASETS_STR="${DATASETS[*]}"
 
 # If no baselines specified, run all
 if [[ ${#BASELINES[@]} -eq 0 ]]; then
-    BASELINES=(llm_only s2_retrieval react_web react_s2 ace fire open_scholar)
+    BASELINES=(llm_only retrieval react_web react_s2 ace fire open_scholar)
 fi
 
 # Helper: check if a baseline is in the selected list
@@ -83,12 +81,16 @@ mkdir -p "$LOG_DIR"
 #   $1 = job name
 #   $2 = description (for logging inside the job)
 #   $3 = extra env exports (newline-separated)
-#   $4... = extra args to run_baselines_datasets.py (baseline-specific flags)
+#   $4 = extra SBATCH lines (newline-separated, e.g. "#SBATCH --gres=gpu:1")
+#   $5 = path to YAML config file
+#   $6... = extra CLI args (override config values)
 # ---------------------------------------------------------------------------
 submit_job() {
     local job_name="$1"; shift
     local description="$1"; shift
     local extra_env="$1"; shift
+    local extra_sbatch="$1"; shift
+    local config_file="$1"; shift
     local extra_args=("$@")
 
     local script_file
@@ -102,6 +104,9 @@ submit_job() {
         echo "#SBATCH --mem=8G"
         echo "#SBATCH --output=${LOG_DIR}/${job_name}_%j.out"
         echo "#SBATCH --error=${LOG_DIR}/${job_name}_%j.err"
+        if [[ -n "${extra_sbatch}" ]]; then
+            echo "${extra_sbatch}"
+        fi
         echo ""
         echo "set -euo pipefail"
         echo "cd \"${PROJECT_ROOT}\""
@@ -118,19 +123,19 @@ submit_job() {
         echo ""
         echo "echo '========================================'"
         echo "echo '  ${description}'"
+        echo "echo '  Config: ${config_file}'"
         echo "echo '  Datasets: ${DATASETS_STR}'"
         echo "echo '  Limit: ${LIMIT}  Repeats: ${REPEATS}'"
         echo "echo \"  Start: \$(date)\""
         echo "echo '========================================'"
         echo ""
-        # Build the command
+        # Build the command — config provides defaults, CLI flags override
         echo -n "uv run python experiments/run_baselines_datasets.py"
-        echo -n " --datasets-dir \"${DATASETS_DIR}\""
+        echo -n " --config \"${config_file}\""
         echo -n " --datasets ${DATASETS_STR}"
         echo -n " --repeats ${REPEATS}"
         echo -n " --temperature ${TEMP}"
         echo -n " --limit ${LIMIT}"
-        echo -n " --output-dir \"${OUTPUT_DIR}\""
         for arg in "${extra_args[@]}"; do
             echo -n " ${arg}"
         done
@@ -146,7 +151,9 @@ submit_job() {
     echo "$job_id"
 }
 
-ALL_JOB_IDS=()
+CONFIGS_DIR="${PROJECT_ROOT}/experiments/configs"
+
+CONFIGS_DIR="${PROJECT_ROOT}/experiments/configs"
 
 GEMINI_ENV="export GOOGLE_APPLICATION_CREDENTIALS=\"${GCP_CREDENTIALS}\"
 export VERTEXAI_LOCATION=\"global\""
@@ -157,19 +164,19 @@ export VERTEXAI_LOCATION=\"global\""
 if baseline_selected llm_only; then
 echo "Submitting: LLM-only: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "llm-only-claude" "LLM-only: Claude-Sonnet-4.6" \
-    "# ANTHROPIC_API_KEY loaded from .env" \
-    --baseline llm_only --model "anthropic/claude-sonnet-4-6")
+    "# ANTHROPIC_API_KEY loaded from .env" "" \
+    "${CONFIGS_DIR}/llm_only_config.yaml")
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 
 # ---------------------------------------------------------------------------
-# 2. LLM-only: Gemini 3.1 Pro Preview
+# 2. LLM-only: Gemini
 # ---------------------------------------------------------------------------
-
-echo "Submitting: LLM-only: Gemini-3.1-Pro-Preview ..."
-JID=$(submit_job "llm-only-gemini" "LLM-only: Gemini-3.1-Pro-Preview" \
-    "$GEMINI_ENV" \
-    --baseline llm_only --model "vertex_ai/gemini-3.1-pro-preview")
+echo "Submitting: LLM-only: gemini-2.5-flash ..."
+JID=$(submit_job "llm-only-gemini" "LLM-only: gemini-2.5-flash" \
+    "$GEMINI_ENV" "" \
+    "${CONFIGS_DIR}/llm_only_config.yaml" \
+    --model "vertex_ai/gemini-2.5-flash" --thinking-budget 0)
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -177,21 +184,22 @@ fi
 # ---------------------------------------------------------------------------
 # 3. S2 Retrieval: Claude Sonnet 4.6
 # ---------------------------------------------------------------------------
-if baseline_selected s2_retrieval; then
-echo "Submitting: S2 Retrieval: Claude-Sonnet-4.6 ..."
-JID=$(submit_job "s2-retrieval-claude" "S2 Retrieval: Claude-Sonnet-4.6" \
-    "# ANTHROPIC_API_KEY loaded from .env" \
-    --baseline s2_retrieval --s2-model "anthropic/claude-sonnet-4-6")
-echo "  -> Job ID: ${JID}"
-ALL_JOB_IDS+=("$JID")
+if baseline_selected retrieval; then
+# echo "Submitting: S2 Retrieval: Claude-Sonnet-4.6 ..."
+# JID=$(submit_job "s2-retrieval-claude" "S2 Retrieval: Claude-Sonnet-4.6" \
+#     "# ANTHROPIC_API_KEY loaded from .env" "" \
+#     "${CONFIGS_DIR}/retrieval_config.yaml")
+# echo "  -> Job ID: ${JID}"
+# ALL_JOB_IDS+=("$JID")
 
 # ---------------------------------------------------------------------------
-# 4. S2 Retrieval: Gemini 3.1 Pro Preview
+# 4. S2 Retrieval: Gemini
 # ---------------------------------------------------------------------------
-echo "Submitting: S2 Retrieval: Gemini-3.1-Pro-Preview ..."
-JID=$(submit_job "s2-retrieval-gemini" "S2 Retrieval: Gemini-3.1-Pro-Preview" \
-    "$GEMINI_ENV" \
-    --baseline s2_retrieval --s2-model "vertex_ai/gemini-3.1-pro-preview")
+echo "Submitting: S2 Retrieval: gemini-2.5-flash ..."
+JID=$(submit_job "s2-retrieval-gemini" "S2 Retrieval: gemini-2.5-flash" \
+    "$GEMINI_ENV" "" \
+    "${CONFIGS_DIR}/retrieval_config.yaml" \
+    --model "vertex_ai/gemini-2.5-flash" --thinking-budget 0)
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -202,8 +210,8 @@ fi
 if baseline_selected react_web; then
 echo "Submitting: ReAct + web: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "react-web-claude" "ReAct + web: Claude-Sonnet-4.6" \
-    "# ANTHROPIC_API_KEY + SERPER_API_KEY loaded from .env" \
-    --baseline react --react-model "anthropic/claude-sonnet-4-6" --react-search-backend web)
+    "# ANTHROPIC_API_KEY loaded from .env" "" \
+    "${CONFIGS_DIR}/react_config.yaml")
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -214,8 +222,8 @@ fi
 if baseline_selected react_s2; then
 echo "Submitting: ReAct + S2: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "react-s2-claude" "ReAct + S2: Claude-Sonnet-4.6" \
-    "# ANTHROPIC_API_KEY loaded from .env" \
-    --baseline react --react-model "anthropic/claude-sonnet-4-6" --react-search-backend s2)
+    "# ANTHROPIC_API_KEY loaded from .env" "" \
+    "${CONFIGS_DIR}/react_s2_config.yaml")
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -226,8 +234,8 @@ fi
 if baseline_selected ace; then
 echo "Submitting: ACE: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "ace-claude" "ACE: Claude-Sonnet-4.6" \
-    "# ANTHROPIC_API_KEY loaded from .env" \
-    --baseline ace --ace-model "anthropic/claude-sonnet-4-6")
+    "# ANTHROPIC_API_KEY loaded from .env" "" \
+    "${CONFIGS_DIR}/ace_config.yaml")
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
@@ -238,20 +246,24 @@ fi
 if baseline_selected fire; then
 echo "Submitting: FIRE: Claude-Sonnet-4.6 ..."
 JID=$(submit_job "fire-claude" "FIRE: Claude-Sonnet-4.6" \
-    "# ANTHROPIC_API_KEY + SERPER_API_KEY loaded from .env" \
-    --baseline fire --fire-model "anthropic/claude-sonnet-4-6")
+    "# ANTHROPIC_API_KEY loaded from .env" "" \
+    "${CONFIGS_DIR}/fire_config.yaml")
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi
 
 # ---------------------------------------------------------------------------
-# 9. OpenScholar: Claude Sonnet 4.6 (S2 retrieval, no oracle evidence)
+# 9. OpenScholar: Claude Sonnet 4.6 (S2 retrieval + reranker, no oracle evidence)
+#    Requires GPU for the FlagReranker model. Uses YAML config.
 # ---------------------------------------------------------------------------
 if baseline_selected open_scholar; then
 echo "Submitting: OpenScholar: Claude-Sonnet-4.6 ..."
-JID=$(submit_job "openscholar-claude" "OpenScholar: Claude-Sonnet-4.6 (no oracle)" \
-    "# ANTHROPIC_API_KEY loaded from .env" \
-    --baseline open_scholar --os-model "claude-sonnet-4-6" --os-api "anthropic" --os-retrieval --os-top-n 10)
+OS_SBATCH="#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G"
+JID=$(submit_job "openscholar-claude" "OpenScholar: Claude-Sonnet-4.6 (S2 + reranker, no oracle)" \
+    "# ANTHROPIC_API_KEY loaded from .env" "${OS_SBATCH}" \
+    "${CONFIGS_DIR}/open_scholar_config.yaml")
 echo "  -> Job ID: ${JID}"
 ALL_JOB_IDS+=("$JID")
 fi

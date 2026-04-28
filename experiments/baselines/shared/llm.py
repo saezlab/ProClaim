@@ -9,7 +9,7 @@ Model name examples:
     "zai/glm-4-plus"              → reads ZAI_API_KEY
     "openai/gpt-4o"               → reads OPENAI_API_KEY
     "anthropic/claude-..."        → reads ANTHROPIC_API_KEY
-    "vertex_ai/gemini-2.5-pro"    → reads GCP credentials (see below)
+    "vertex_ai/gemini-2.5-flash"   → reads GCP credentials (see below)
 
 Vertex AI credentials (.env):
     VERTEXAI_PROJECT=your-gcp-project-id       # required
@@ -48,12 +48,16 @@ class LLMBackend:
         max_tokens: int = 2048,
         retries: int = 3,
         retry_base_delay: float = 1.0,
+        reasoning_effort: str | None = None,
+        thinking_budget: int | None = None,
     ) -> None:
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.retries = retries
         self.retry_base_delay = retry_base_delay
+        self.reasoning_effort = reasoning_effort
+        self.thinking_budget = thinking_budget
 
     def complete(
         self,
@@ -72,7 +76,12 @@ class LLMBackend:
             "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "drop_params": True,
         }
+        if self.thinking_budget is not None:
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": self.thinking_budget}
+        elif self.reasoning_effort is not None:
+            kwargs["reasoning_effort"] = self.reasoning_effort
         if response_format == "json_object":
             kwargs["response_format"] = {"type": "json_object"}
 
