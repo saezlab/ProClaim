@@ -183,8 +183,8 @@ def _parse_tokens_from_usage_json(output_dir: Path) -> Dict[str, int]:
         try:
             data = json.loads(usage_path.read_text())
             return {
-                "input_tokens": data.get("prompt_tokens", 0),
-                "output_tokens": data.get("completion_tokens", 0),
+                "input_tokens": data.get("input_tokens", data.get("prompt_tokens", 0)),
+                "output_tokens": data.get("output_tokens", data.get("completion_tokens", 0)),
                 "cache_creation_tokens": data.get("cache_creation_tokens", 0),
                 "cache_read_tokens": data.get("cache_read_tokens", 0),
             }

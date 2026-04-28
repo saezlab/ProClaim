@@ -3,7 +3,7 @@
 
 Usage
 -----
-uv run python scripts/eval_signor_direct_csv.py results/signor_direct_eval_20260426_215855/results.csv
+uv run python scripts/eval_signor_direct_csv.py results/signor_direct_eval_20260427_221617/results.csv
 uv run python scripts/eval_signor_direct_csv.py results/signor_direct_eval_20260425_163624/results.csv --save
 uv run python scripts/eval_signor_direct_csv.py results/... --model claude-haiku-4-5
 """
@@ -106,8 +106,8 @@ def print_metrics(
     print(f"  Tokens")
     print(f"  {'─'*40}")
     print(f"  Input (non-cache)  : {tokens['input_tokens']:>12,}")
-    print(f"  Cache write        : {tokens['cache_creation_tokens']:>12,}  (×1.25 price)")
-    print(f"  Cache read         : {tokens['cache_read_tokens']:>12,}  (×0.10 price)")
+    print(f"  Cache write        : {tokens['cache_creation_tokens']:>12,}  (\u00d71.25 price)")
+    print(f"  Cache read         : {tokens['cache_read_tokens']:>12,}  (\u00d70.10 price)")
     print(f"  Output             : {tokens['output_tokens']:>12,}")
     print()
     print(f"  {'─'*40}")

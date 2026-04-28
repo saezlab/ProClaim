@@ -38,7 +38,7 @@ case "$TASK_ID" in
     4) ROW_START=32; ROW_LIMIT=8 ;;
     5) ROW_START=40; ROW_LIMIT=8 ;;
     6) ROW_START=48; ROW_LIMIT=8 ;;
-    7) ROW_START=56; ROW_LIMIT=8 ;;
+    7) ROW_START=56; ROW_LIMIT=0 ;; # no limit: covers all rows from 56 to end of dataset
     *) ROW_START=0;  ROW_LIMIT=0  ;;
 esac
 
@@ -118,8 +118,11 @@ fi
 cd "$PROJECT_ROOT"
 
 RUN_ARGS="--run-tag ${RUN_TAG} --output-csv ${OUTPUT_CSV}"
+if [[ $ROW_START -gt 0 ]]; then
+    RUN_ARGS="${RUN_ARGS} --row-start ${ROW_START}"
+fi
 if [[ $ROW_LIMIT -gt 0 ]]; then
-    RUN_ARGS="${RUN_ARGS} --row-start ${ROW_START} --limit ${ROW_LIMIT}"
+    RUN_ARGS="${RUN_ARGS} --limit ${ROW_LIMIT}"
 fi
 
 # shellcheck disable=SC2086

@@ -36,7 +36,8 @@ llm:
   # thinking_budget_tokens: 10000  # enable Claude extended thinking
 
 # Sufficiency backend
-sufficiency_backend: mlp
+# sufficiency_backend: mlp
+sufficiency_backend: llm
 
 # Output paths (overridden per-claim by run_signor_eval.py)
 output_dir: results/signor_direct_eval

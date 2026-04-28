@@ -701,13 +701,8 @@ def verify_claim_direct(cfg) -> Path:
         return {"role": "user", "content": text}
 
     # Token usage tracking
-    total_usage = {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "cache_read_tokens": 0,
-        "cache_creation_tokens": 0,
-    }
+    from pkevolve.verification.cost_tracker import CostTracker
+    tracker = CostTracker(model=agent_model)
 
     logger.info(
         "Starting direct API verification: claim=%r, model=%s, workspace=%s",
@@ -787,11 +782,11 @@ def verify_claim_direct(cfg) -> Path:
         # Track usage
         if hasattr(response, "usage") and response.usage:
             u = response.usage
-            total_usage["prompt_tokens"] += getattr(u, "prompt_tokens", 0) or 0
-            total_usage["completion_tokens"] += getattr(u, "completion_tokens", 0) or 0
-            total_usage["total_tokens"] += getattr(u, "total_tokens", 0) or 0
-            total_usage["cache_read_tokens"] += getattr(u, "cache_read_input_tokens", 0) or 0
-            total_usage["cache_creation_tokens"] += getattr(u, "cache_creation_input_tokens", 0) or 0
+            tracker.record(
+                "llm_call",
+                input_tokens=getattr(u, "prompt_tokens", 0) or 0,
+                output_tokens=getattr(u, "completion_tokens", 0) or 0,
+            )
 
         choice = response.choices[0]
         assistant_msg = choice.message
@@ -852,11 +847,12 @@ def verify_claim_direct(cfg) -> Path:
         _force_verdict(workspace, claim, sub_env, log_path)
 
     # Log final usage
-    logger.info("Total token usage: %s", json.dumps(total_usage))
+    summary = tracker.summary()
+    logger.info("Total token usage: %s", json.dumps(summary))
 
     # Save usage stats
     usage_path = output_dir / "token_usage.json"
-    usage_path.write_text(json.dumps(total_usage, indent=2))
+    usage_path.write_text(json.dumps(summary, indent=2))
 
     # Generate notebook from jupytext log
     notebook_path = output_dir / "evidence_report.ipynb"
