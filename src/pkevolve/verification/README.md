@@ -37,6 +37,28 @@ The `pkevolve.verification` package implements a **Metacognitive Evidence Verifi
     └───────────────────┴────────────────────┴──────────┘
 ```
 
+## Execution Modes
+
+The package currently supports two orchestration paths over the same evidence API.
+
+### Notebook mode (`evidence_programming.py`)
+
+- Uses the Claude Agent SDK.
+- Executes evidence API calls inside a persistent Jupyter kernel.
+- Relies on `notebook_mcp.py` and `kernel_runner.py` for notebook cell execution and rendering.
+- Best when you want rich notebook-native audit trails during execution.
+
+### Direct mode (`evidence_programming_direct.py`)
+
+- Uses LiteLLM directly instead of the Claude Agent SDK.
+- Exposes only two tools to the outer agent: `bash` and `read_file`.
+- Runs Python via `bash` subprocesses in the workspace instead of a persistent kernel.
+- Rebuilds the prompt context from `execution_log.py` before every LLM call rather than accumulating chat history.
+- Persists all mutable verification state to `evidence_state.json`, so each subprocess can reload the same state with `setup_workspace(...)`.
+- Converts the jupytext percent-format log into `evidence_report.ipynb` after the run finishes.
+
+Direct mode is the lower-dependency path: no MCP server, no notebook kernel lifecycle, and no Claude Agent SDK. The tradeoff is that there is no in-memory Python session, so every `bash` call must reload state from disk.
+
 ## Module Reference
 
 ### Data Layer
@@ -95,9 +117,29 @@ The `pkevolve.verification` package implements a **Metacognitive Evidence Verifi
 | Module | Purpose | Key Exports |
 |--------|---------|-------------|
 | `evidence_programming.py` | Main entry point — Claude Agent SDK orchestrator with notebook as audit trail | `async verify_claim_notebook(cfg)`, `main()` |
+| `evidence_programming_direct.py` | LiteLLM direct API orchestrator with per-call context refresh and jupytext audit log | `verify_claim_direct(cfg)`, `main()` |
 | `notebook_mcp.py` | MCP tool server exposing 9 notebook tools (`nb_init`, `nb_execute`, `nb_render_*`, `nb_read_output`, `nb_save`) | FastMCP server |
 | `kernel_runner.py` | Jupyter kernel lifecycle (start, execute, shutdown) | `KernelRunner` |
 | `renderers.py` | HTML renderers for evidence state (papers, facts, sufficiency, verdict) displayed in notebook cells | `render_papers()`, `render_facts()`, `render_sufficiency()`, `render_verdict()` |
+
+### Direct Orchestrator Details
+
+`evidence_programming_direct.py` keeps the orchestration loop intentionally flat:
+
+1. Initialize `EvidenceState` on disk for the claim.
+2. Build a direct-mode system prompt from `DIRECT_SYSTEM_PROMPT`.
+3. On every outer-agent call, rebuild messages from only two inputs: the system prompt and the serialized `execution_log.py`.
+4. Let the model emit `bash` or `read_file` tool calls.
+5. Append tool inputs and outputs back into the jupytext log.
+6. Stop once `verdict.json` exists or the last sufficiency result reaches the configured threshold.
+
+Important implementation details:
+
+- The subprocess environment is assembled by `build_subprocess_env(cfg)` so child `bash` calls inherit model settings, label config, `PYTHONPATH`, and output truncation limits.
+- `dispatch_tool()` appends every tool action to the percent-format log, which acts as both the audit trail and the next-turn context source.
+- `serialize_execution_log()` truncates older cells when needed, preserving the header plus the most recent execution history.
+- `generate_notebook()` converts the final percent-format log into a notebook with proper code cells, markdown cells, and captured stdout outputs.
+- Anthropic models get ephemeral prompt-cache markers on the system and user messages to reduce repeated prompt cost across turns.
 
 ## Data Flow — Verification Workflow
 
@@ -233,6 +275,16 @@ uv run python -m pkevolve.verification.evidence_programming \
     --claim "Does MAPK1 phosphorylate H3?"
 ```
 
+### From CLI (direct mode)
+
+```bash
+uv run python -m pkevolve.verification.evidence_programming_direct \
+   --config experiments/configs/signor_eval_config.yaml \
+   --claim "Does MAPK1 phosphorylate H3?"
+```
+
+Direct mode uses the same `VerificationSettings` object and YAML config resolution as notebook mode. The main operational difference is execution strategy: notebook mode keeps a live kernel, while direct mode rehydrates state from disk on each tool invocation.
+
 ### Key Settings
 
 | Setting | Default | Description |
@@ -255,6 +307,17 @@ uv run python -m pkevolve.verification.evidence_programming \
 | `MLP_MODEL_DIR` | Optional | Override MLP classifier directory (default: `results/models/classifier_best/`) |
 | `NB_MAX_OUTPUT_CHARS` | Optional | Notebook output truncation limit (default: 12000) |
 
+## Direct Mode Artifacts
+
+When `evidence_programming_direct.py` runs, it typically produces or updates these files:
+
+- `workspace/evidence_state.json` — persisted verification state reloaded across subprocess calls.
+- `workspace/execution_log.py` — jupytext percent-format audit log used as the per-call context source.
+- `workspace/verdict.json` — final structured verdict written by `emit_verdict(...)`.
+- `output_dir/evidence_report.ipynb` — notebook generated from `execution_log.py` at the end of the run.
+- `output_dir/token_usage.json` — aggregate prompt/completion/cache token accounting from LiteLLM responses.
+- `output_dir/run.log` — orchestrator log output from `main()`.
+
 ## Common Agent Tasks
 
 ### Run a single verification
@@ -265,6 +328,16 @@ from pkevolve.verification.evidence_programming import verify_claim_notebook
 
 cfg = VerificationSettings.from_yaml("experiments/config.yaml", claim="Does X regulate Y?")
 result_path = await verify_claim_notebook(cfg)  # async — use asyncio.run() if not in async context
+```
+
+### Run a single verification in direct mode
+
+```python
+from pkevolve.verification.config import VerificationSettings
+from pkevolve.verification.evidence_programming_direct import verify_claim_direct
+
+cfg = VerificationSettings.from_yaml("experiments/config.yaml", claim="Does X regulate Y?")
+result_path = verify_claim_direct(cfg)
 ```
 
 ### Use the evidence API directly (without notebook)

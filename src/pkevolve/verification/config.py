@@ -481,6 +481,7 @@ class VerificationSettings(BaseSettings):
             "LLM_TEMPERATURE": str(self.llm.temperature),
             "LLM_DISABLE_THINKING": "1" if self.llm.disable_thinking else "0",
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
+            "SUFFICIENCY_BACKEND": self.sufficiency_backend,
             "MAX_ITERATIONS": str(self.max_iterations),
             # Label config for setup_kernel() inside the Jupyter kernel
             "LABEL_CONFIG_JSON": self.labels.model_dump_json(),
