@@ -133,6 +133,14 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             thinking_budget=args.thinking_budget,
         )
         return RetrievalBaseline(llm=llm, top_k=args.top_k, search_backend=args.search_backend)
+    elif name == "s2_plus_ref":
+        from baselines.s2_plus_ref import S2PlusRef
+        from baselines.shared.llm import LLMBackend
+        llm = LLMBackend(
+            model=getattr(args, "s2_model", "anthropic/claude-sonnet-4-6"),
+            temperature=args.temperature,
+        )
+        return S2PlusRef(llm=llm, top_k=getattr(args, "s2_top_k", 5), strip_parens=getattr(args, "s2_strip_parens", True))
     elif name == "open_scholar":
         from baselines.open_scholar_baseline import OpenScholarBaseline
         api, model_name = _split_model_provider(args.model)
@@ -264,7 +272,7 @@ def parse_args() -> argparse.Namespace:
         default=["signor", "connectomedb"],
         help="Dataset names (without .csv extension).",
     )
-    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "single_paper", "retrieval", "open_scholar", "fire", "ace", "react", "safe"], help="Baseline to run.")
+    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "single_paper", "s2_plus_ref", "retrieval", "open_scholar", "fire", "ace", "react", "safe"], help="Baseline to run.")
     p.add_argument("--seed", type=int, default=100, help="Base random seed. Each repeat i uses seed+i.")
     p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats. Each repeat i uses seed+i.")
     # ── Shared LLM arguments (apply to all LLM-backed baselines) ─────
