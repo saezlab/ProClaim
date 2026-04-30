@@ -38,6 +38,11 @@ from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
 
 logger = logging.getLogger(__name__)
 
+_SIGNOR_CLAIM_RE = re.compile(r"^(?P<base>.*?)\s*\([^)]*\)\s*\.?$")
+_CONNECTOMEDB_CLAIM_RE = re.compile(
+    r"^(?P<ligand>\S+)\s+as\s+ligand\s+directly\s+interacts(?:\s+extracellularly)?\s+with\s+(?P<receptor>\S+)\s+as\s+receptor\.?$"
+)
+
 # ---------------------------------------------------------------------------
 # Query processors — transform claim into a focused search query
 # ---------------------------------------------------------------------------
@@ -50,28 +55,29 @@ def query_process_signor(claim: str) -> str:
          modification, complex formation, or direct regulation of expression)."
     The parenthetical drowns out the entity names in keyword search.
     """
-    return re.sub(r"\s*\([^)]*\)\s*", " ", claim).strip()
+    match = _SIGNOR_CLAIM_RE.match(claim.strip())
+    if not match:
+        logger.warning("SIGNOR claim did not match expected format: %r", claim)
+        return claim.strip()
+    return match.group("base").strip()
 
 
 def query_process_connectomedb(claim: str) -> str:
     """Extract entity names from ConnectomeDB claims.
 
     ConnectomeDB claims look like:
-        "In the context of protein-protein interactions, A2M as ligand
-         directly interacts with HSPA5 as receptor."
-    Even after stripping the prefix, the remaining boilerplate ("as ligand
-    directly interacts with ... as receptor") drowns out entity names in
-    keyword search.  Extract just the two protein names.
+        "A2M as ligand directly interacts extracellularly with HSPA5
+         as receptor."
+    The boilerplate ("as ligand directly interacts extracellularly with ...
+    as receptor") drowns out entity names in keyword search. Extract just the
+    two protein names.
     """
-    m = re.search(
-        r"(\S+)\s+as\s+ligand\s+directly\s+interacts\s+with\s+(\S+)\s+as\s+receptor",
-        claim,
-    )
+    m = _CONNECTOMEDB_CLAIM_RE.match(claim.strip())
     if m:
-        return f"{m.group(1)} {m.group(2)} protein interaction"
-    # Last resort: strip the prefix before the comma
-    _, _, rest = claim.partition(",")
-    return rest.strip() if rest else claim
+        return f"{m.group('ligand')} {m.group('receptor')} protein interaction"
+
+    logger.warning("ConnectomeDB claim did not match expected format: %r", claim)
+    return claim.strip()
 
 
 # Registry for convenient lookup by dataset name

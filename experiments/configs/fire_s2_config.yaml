@@ -1,0 +1,28 @@
+# ──────────────────────────────────────────────────────────────────────
+# FIRE Baseline Config (Semantic Scholar variant)
+#
+# Iterative retrieval-augmented fact-checking via the FIRE pipeline,
+# using Semantic Scholar instead of web search.
+#
+# Usage:
+#   uv run python experiments/run_baselines_datasets.py \
+#       --config experiments/configs/fire_s2_config.yaml
+#
+# Any CLI flag overrides the value set here.
+# ──────────────────────────────────────────────────────────────────────
+
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+datasets:
+  - signor
+  - connectomedb
+
+baseline: fire
+model: anthropic/claude-sonnet-4-6
+search_backend: s2
+max_steps: 5
+
+seed: 100
+repeats: 1
+
+limit: 0
+output_dir: results/baselines

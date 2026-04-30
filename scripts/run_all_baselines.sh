@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run all 9 baselines on claim-verification datasets.
+# Run all baselines on claim-verification datasets.
 # Each run uses --repeats 1 and the evaluation harness's resume feature,
 # so re-running this script safely skips already-completed claims.
 #
@@ -91,9 +91,24 @@ run "ACE: Claude-Sonnet-4.6" \
 # 8. FIRE: Claude Sonnet 4.6
 run "FIRE: Claude-Sonnet-4.6" \
     --baseline fire \
-    --model "anthropic/claude-sonnet-4-6"
+    --model "anthropic/claude-sonnet-4-6" \
+    --search-backend web
 
-# 9. OpenScholar: Claude Sonnet 4.6 (S2 retrieval, no oracle evidence)
+# 9. FIRE + S2: Claude Sonnet 4.6
+run "FIRE + S2: Claude-Sonnet-4.6" \
+    --baseline fire \
+    --model "anthropic/claude-sonnet-4-6" \
+    --search-backend s2
+
+# 10. SAFE: Claude Sonnet 4.6 (web search)
+run "SAFE: Claude-Sonnet-4.6" \
+    --baseline safe \
+    --model "anthropic/claude-sonnet-4-6" \
+    --search-backend web \
+    --top-k 3 \
+    --max-steps 5
+
+# 11. OpenScholar: Claude Sonnet 4.6 (S2 retrieval, no oracle evidence)
 run "OpenScholar: Claude-Sonnet-4.6 (no oracle)" \
     --baseline open_scholar \
     --model "anthropic/claude-sonnet-4-6" \

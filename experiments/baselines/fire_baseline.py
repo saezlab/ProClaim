@@ -13,14 +13,17 @@ FIRE outputs use the same canonical taxonomy:
   - Refute    → REFUTE
   - Uncertain → UNCERTAIN
 
-Search backend:
-  DuckDuckGo search via ``ddgs`` (free, no API key).
+Search backends:
+    ``search_backend="web"`` (default):
+        DuckDuckGo search via ``ddgs`` (free, no API key).
+    ``search_backend="s2"``:
+        Semantic Scholar relevance search (``S2_API_KEY`` optional but recommended).
 
 Prerequisites:
   - An LLM API key recognised by litellm (e.g. ``ANTHROPIC_API_KEY``).
   - ``pip install ddgs`` (already in project deps).
 
-Cost: 1–N LLM calls per claim (N ≤ max_steps × max_retries) + web searches.
+Cost: 1–N LLM calls per claim (N ≤ max_steps × max_retries) + searches.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from baselines.shared.label_utils import (
     verdict_or_str,
 )
 from baselines.shared.verdict import BaselineResult
+from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +130,20 @@ def _web_search(query: str, k: int = 3) -> str:
     return " ".join(snippets) if snippets else "No good Google Search result was found"
 
 
+def _format_s2_results(papers: list[dict]) -> str:
+    """Format Semantic Scholar results into a compact evidence string."""
+    parts: list[str] = []
+    for index, paper in enumerate(papers, 1):
+        title = paper.get("title", "Untitled")
+        year = paper.get("year", "")
+        abstract = (paper.get("abstract") or "").strip() or "(no abstract available)"
+        ext_ids = paper.get("externalIds") or {}
+        pmid = ext_ids.get("PubMed", "")
+        pmid_str = f" PMID:{pmid}" if pmid else ""
+        parts.append(f"[{index}] {title} ({year}){pmid_str}\n{abstract}")
+    return "\n\n".join(parts) if parts else "No relevant papers found on Semantic Scholar"
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def _extract_json(text: str) -> dict | None:
@@ -190,7 +208,11 @@ class FIREBaseline:
         max_retries: int = 10,
         max_tolerance: int = 2,
         num_search_results: int = 5,
+        search_backend: str = "web",
     ) -> None:
+        if search_backend not in ("web", "s2"):
+            raise ValueError(f"search_backend must be 'web' or 's2', got {search_backend!r}")
+
         self._llm = llm
         self.model = self._llm.model
         self.temperature = self._llm.temperature
@@ -198,9 +220,11 @@ class FIREBaseline:
         self.max_retries = max_retries
         self.max_tolerance = max_tolerance
         self.num_search_results = num_search_results
+        self.search_backend = search_backend
         self.log_dir: Path | None = None
 
-        self._search_backend = "ddg"
+        self._search_backend = "s2" if search_backend == "s2" else "ddg"
+        self._s2 = S2Client() if search_backend == "s2" else None
         logger.info("FIRE search backend: %s", self._search_backend)
 
         # Cost estimation — reuse CostTracker pricing table
@@ -240,6 +264,7 @@ class FIREBaseline:
                 lf.write(f"=== claim_id: {claim_id} ===\n")
                 lf.write(f"=== claim ===\n{claim}\n\n")
                 lf.write(f"=== answer: {answer} ===\n")
+                lf.write(f"=== search_backend: {self.search_backend} ===\n")
                 lf.write(f"=== searches ({len(searches)}) ===\n")
                 for s in searches:
                     lf.write(f"  Q: {s.query}\n  R: {s.result[:200]}\n\n")
@@ -337,7 +362,7 @@ class FIREBaseline:
                     logger.info("FIRE early stop: repetitive search results")
                     return "_Early_Stop"
 
-                snippet = _web_search(q, k=self.num_search_results)
+                snippet = self._search(q)
                 sr = _SearchResult(query=q, result=snippet)
                 searches.append(sr)
                 return sr
@@ -372,3 +397,15 @@ class FIREBaseline:
     def _llm_call(self, user_prompt: str) -> tuple[str, int, int]:
         """Single LLM completion.  Returns (text, input_tokens, output_tokens)."""
         return self._llm.complete_text(system=_SYS_PROMPT, user=user_prompt)
+
+    def _search(self, query: str) -> str:
+        """Dispatch FIRE retrieval to the configured search backend."""
+        if self.search_backend == "s2":
+            try:
+                papers = self._s2.search(query, limit=self.num_search_results)
+            except S2RateLimitError as exc:
+                logger.error("S2 rate-limit exhausted during FIRE search: %s", exc)
+                return "Semantic Scholar rate limit exhausted."
+            return _format_s2_results(papers)
+
+        return _web_search(query, k=self.num_search_results)
