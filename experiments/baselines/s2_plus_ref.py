@@ -23,13 +23,15 @@ from pathlib import Path
 from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.label_utils import normalize_label
 from baselines.shared.llm import LLMBackend
+from baselines.shared.logging_utils import write_claim_log
 from baselines.shared.prompts import (
     VERIFICATION_SYSTEM_PROMPT,
     VERIFICATION_USER_TEMPLATE,
 )
+from baselines.shared.single_shot import run_single_shot_verdict
 from baselines.shared.verdict import BaselineResult
 from baselines.single_paper import _fetch_abstract, _format_single_passage
-from baselines.s2_retrieval import _format_passages
+from baselines.shared.search_utils import format_s2_passages
 from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
 
 logger = logging.getLogger(__name__)
@@ -147,24 +149,12 @@ class S2PlusRef:
         user_msg = VERIFICATION_USER_TEMPLATE.format(
             claim=claim, evidence=evidence_text
         )
-        t_llm = time.monotonic()
-        text, in_tok, out_tok = self.llm.complete(
-            system=VERIFICATION_SYSTEM_PROMPT,
-            user=user_msg,
+        verdict = run_single_shot_verdict(
+            llm=self.llm,
+            tracker=self.tracker,
+            system_prompt=VERIFICATION_SYSTEM_PROMPT,
+            user_prompt=user_msg,
         )
-        self.tracker.record("llm_call", in_tok, out_tok, time.monotonic() - t_llm)
-
-        # ── 5. Parse response ─────────────────────────────────────────────
-        parsed = self.llm.parse_json(text)
-        raw_label = parsed.get("label", "UNCERTAIN")
-        predicted = normalize_label(raw_label)
-        confidence = float(parsed.get("confidence", 0.0))
-        reasoning = parsed.get("reasoning", text[:500] if text else "")
-        cited = parsed.get("evidence", [])
-        if isinstance(cited, str):
-            cited = [cited]
-
-        summary = self.tracker.summary()
 
         # Build evidence list for output: reference PMID + S2 PMIDs
         all_evidence_pmids = []
@@ -176,37 +166,46 @@ class S2PlusRef:
                 all_evidence_pmids.append(s2_pmid)
 
         # Write per-claim log
-        if self.log_dir is not None:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            log_path = self.log_dir / f"{claim_id}.log"
-            with open(log_path, "w") as lf:
-                lf.write(f"=== claim_id: {claim_id} ===\n")
-                lf.write(f"=== claim ===\n{claim}\n\n")
-                if ref_paper:
-                    lf.write(f"=== reference paper (PMID: {ref_paper['pmid']}) ===\n")
-                    lf.write(f"  {ref_paper.get('title', '')}\n")
-                    lf.write(f"  {ref_paper.get('abstract', '')}\n\n")
-                lf.write(f"=== S2 papers ({len(papers or [])}) ===\n")
-                for p in (papers or []):
-                    title = p.get("title", "Untitled")
-                    s2_pmid = (p.get("externalIds") or {}).get("PubMed", "")
-                    lf.write(f"  [{s2_pmid or 'no-pmid'}] {title}\n")
-                lf.write(f"\n=== predicted: {predicted} ===\n")
-                lf.write(f"=== reasoning ===\n{reasoning}\n")
-                lf.write(f"=== raw LLM response ===\n{text}\n")
+        s2_lines = []
+        for paper in (papers or []):
+            title = paper.get("title", "Untitled")
+            s2_pmid = (paper.get("externalIds") or {}).get("PubMed", "")
+            s2_lines.append(f"  [{s2_pmid or 'no-pmid'}] {title}")
+        sections = [
+            (f"claim_id: {claim_id}", ""),
+            ("claim", claim),
+            ("system prompt", VERIFICATION_SYSTEM_PROMPT),
+            ("user prompt", user_msg),
+        ]
+        if ref_paper:
+            sections.append(
+                (
+                    f"reference paper (PMID: {ref_paper['pmid']})",
+                    f"  {ref_paper.get('title', '')}\n  {ref_paper.get('abstract', '')}",
+                )
+            )
+        sections.extend(
+            [
+                (f"S2 papers ({len(papers or [])})", "\n".join(s2_lines)),
+                (f"predicted: {verdict.predicted_label}", ""),
+                ("reasoning", verdict.reasoning),
+                ("raw LLM response", verdict.text),
+            ]
+        )
+        write_claim_log(self.log_dir, claim_id, sections)
 
         return BaselineResult(
             claim_id=claim_id,
             claim=claim,
             gold_label=normalize_label(gold_label),
-            predicted_label=predicted,
-            confidence=confidence,
-            reasoning=reasoning,
+            predicted_label=verdict.predicted_label,
+            confidence=verdict.confidence,
+            reasoning=verdict.reasoning,
             evidence=all_evidence_pmids,
-            input_tokens=summary["input_tokens"],
-            output_tokens=summary["output_tokens"],
-            cost_usd=summary["cost_usd"],
-            latency_seconds=summary["latency_seconds"],
+            input_tokens=verdict.summary["input_tokens"],
+            output_tokens=verdict.summary["output_tokens"],
+            cost_usd=verdict.summary["cost_usd"],
+            latency_seconds=verdict.summary["latency_seconds"],
             baseline_name=self.name,
             model=self.llm.model,
         )

@@ -48,6 +48,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))  # for experiments/baselines/
 
 from baselines.shared.evaluate import EvaluationHarness
+from baselines.shared.builder import build_llm_backend
 
 logging.basicConfig(
     level=logging.INFO,
@@ -102,45 +103,24 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
         return RandomBaseline(seed=seed if seed is not None else args.seed)
     elif name == "llm_only":
         from baselines.llm_only import LLMOnly
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return LLMOnly(llm=llm)
     elif name == "single_paper":
         from baselines.single_paper import SinglePaper
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return SinglePaper(llm=llm)
     elif name == "retrieval":
         from baselines.retrieval_baseline import RetrievalBaseline
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return RetrievalBaseline(llm=llm, top_k=args.top_k, search_backend=args.search_backend)
     elif name == "s2_plus_ref":
         from baselines.s2_plus_ref import S2PlusRef
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=getattr(args, "s2_model", "anthropic/claude-sonnet-4-6"),
-            temperature=args.temperature,
+        llm = build_llm_backend(args)
+        return S2PlusRef(
+            llm=llm,
+            top_k=args.top_k,
+            strip_parens=getattr(args, "strip_query", True),
         )
-        return S2PlusRef(llm=llm, top_k=getattr(args, "s2_top_k", 5), strip_parens=getattr(args, "s2_strip_parens", True))
     elif name == "open_scholar":
         from baselines.open_scholar_baseline import OpenScholarBaseline
         api, model_name = _split_model_provider(args.model)
@@ -157,14 +137,7 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
         )
     elif name == "fire":
         from baselines.fire_baseline import FIREBaseline
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return FIREBaseline(
             llm=llm,
             max_steps=args.max_steps,
@@ -173,28 +146,14 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
         )
     elif name == "ace":
         from baselines.ace_baseline import ACEBaseline
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return ACEBaseline(
             llm=llm,
             playbook=args.playbook if args.playbook else None,
         )
     elif name == "react":
         from baselines.react_baseline import ReActBaseline
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return ReActBaseline(
             llm=llm,
             max_steps=args.max_steps,
@@ -203,14 +162,7 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
         )
     elif name == "safe":
         from baselines.safe_baseline import SAFEBaseline
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return SAFEBaseline(
             llm=llm,
             max_steps=args.max_steps,

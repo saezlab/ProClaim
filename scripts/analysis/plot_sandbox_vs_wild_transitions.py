@@ -39,8 +39,8 @@ LABELS = ["UNCERTAIN", "REFUTE", "SUPPORT"]
 COLORS = {"SUPPORT": "#4CAF50", "REFUTE": "#E53935", "UNCERTAIN": "#91A0AF"}
 
 DEFAULT_S1 = PROJECT_ROOT / "results/baselines/single_paper/anthropic--claude-sonnet-4-6/signor_seed100.jsonl"
-DEFAULT_S2 = PROJECT_ROOT / "results/baselines/s2_retrieval/processed_s2_search/anthropic--claude-sonnet-4-6/top5/signor_seed100.jsonl"
-DEFAULT_S3 = PROJECT_ROOT / "results/baselines/s2_plus_ref/anthropic--claude-sonnet-4-6/top5/signor_seed100.jsonl"
+DEFAULT_S2 = PROJECT_ROOT / "results/baselines/retrieval/s2/anthropic--claude-sonnet-4-6/top5/signor_seed100.jsonl"
+DEFAULT_S3 = PROJECT_ROOT / "results/baselines/s2_plus_ref/anthropic--claude-sonnet-4-6/signor_seed100.jsonl"
 
 
 def load_jsonl(path: Path) -> dict[str, dict]:
@@ -186,7 +186,7 @@ def draw_alluvial_three(ax, trans_12: Counter, trans_23: Counter, n: int,
 
     bar_width = 0.10
     gap = 0.02
-    x1, x2, x3 = 0.12, 0.50, 0.88
+    x1, x2, x3 = 0.20, 0.50, 0.80
 
     pos1 = _compute_positions(col1_totals, n, gap)
     pos2 = _compute_positions(col2_totals, n, gap)
@@ -197,13 +197,6 @@ def draw_alluvial_three(ax, trans_12: Counter, trans_23: Counter, n: int,
                         pos1, pos2,
                         col1_totals, col2_totals, bar_width,
                         show_left_labels=True, show_right_labels=False)
-    # Draw count labels on centre column (between the two flow pairs)
-    # for l in LABELS:
-    #     y0, h = pos2[l]
-    #     ax.text(x2, y0 + h / 2,
-    #             f"{l}\n({col2_totals[l]})", ha="center", va="center",
-    #         fontsize=15, fontweight="bold",
-    #             bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.7))
 
     # Draw Setting 2 → Setting 3
     _draw_alluvial_pair(ax, trans_23, n, x2, x3,
@@ -218,7 +211,7 @@ def draw_alluvial_three(ax, trans_12: Counter, trans_23: Counter, n: int,
     )
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(-0.06, y_max + 0.02)
-    ax.set_title("Effect of context for verification", fontsize=20, fontweight="bold", pad=8)
+    ax.set_title("Effect of evidence sources", fontsize=20, fontweight="bold", pad=8)
     label1 = "Reference\nabstract only"
     label2 = "5 retrieved\nabstracts"
     label3 = "5 retrieved +\nreference abstract"
@@ -317,6 +310,327 @@ def draw_heatmap(ax, transitions: Counter, n: int):
             transform=ax.transData)
 
 
+# ── Panel 4: Pie chart ───────────────────────────────────────────────────────
+
+def draw_pie_chart(ax, data: dict[str, dict]):
+    """Pie chart of ground-truth (gold) label distribution.
+
+    Parameters
+    ----------
+    ax : matplotlib Axes
+        Single axis to draw on.
+    data : dict[str, dict]
+        Loaded JSONL data (claim_id → row); uses ``gold_label``.
+    """
+    counts = Counter(row["gold_label"] for row in data.values())
+    total = sum(counts.values())
+    sizes = [counts.get(l, 0) for l in LABELS]
+    colors = [COLORS[l] for l in LABELS]
+
+    wedges, texts, autotexts = ax.pie(
+        sizes,
+        labels=LABELS,
+        colors=colors,
+        autopct=lambda pct: f"{pct:.1f}%\n({int(round(pct * total / 100))})",
+        startangle=90,
+        textprops={"fontsize": 11},
+        pctdistance=0.65,
+        wedgeprops={"edgecolor": "white", "linewidth": 1.5},
+    )
+    for at in autotexts:
+        at.set_fontsize(10)
+        at.set_fontweight("bold")
+    ax.set_title("Ground-truth\nlabel distribution", fontsize=14, fontweight="bold", pad=10)
+
+
+# ── Panel 5: Correction vs regression bar ────────────────────────────────────
+
+def draw_correction_regression(ax, buckets: dict[str, list[dict]]):
+    """Stacked / grouped bar showing S2-corrected vs S2-regressed claims.
+
+    Bars are further broken down by the gold label of each claim so the
+    reader can see *which* verdict classes gained or lost accuracy.
+    """
+    corrected = buckets["s2_corrected"]
+    regressed = buckets["s2_regressed"]
+
+    # Break down by gold label
+    corr_by_gold = Counter(r["gold"] for r in corrected)
+    regr_by_gold = Counter(r["gold"] for r in regressed)
+
+    x = np.arange(len(LABELS))
+    width = 0.35
+
+    corr_vals = [corr_by_gold.get(l, 0) for l in LABELS]
+    regr_vals = [regr_by_gold.get(l, 0) for l in LABELS]
+
+    bars_c = ax.bar(x - width / 2, corr_vals, width,
+                    color=[COLORS[l] for l in LABELS], edgecolor="white",
+                    linewidth=0.8, alpha=0.85, label=f"Corrected ({len(corrected)})")
+    bars_r = ax.bar(x + width / 2, regr_vals, width,
+                    color=[COLORS[l] for l in LABELS], edgecolor="black",
+                    linewidth=0.8, alpha=0.85, hatch="//",
+                    label=f"Regressed ({len(regressed)})")
+
+    # Value labels
+    for bar in list(bars_c) + list(bars_r):
+        h = bar.get_height()
+        if h > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, h + 0.3,
+                    str(int(h)), ha="center", va="bottom", fontsize=9,
+                    fontweight="bold")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(LABELS, fontsize=10)
+    ax.set_ylabel("Claims", fontsize=10)
+    ax.set_title("Verdict changes", fontsize=14, fontweight="bold")
+    ax.legend(fontsize=9, loc="upper right")
+    y_max = max(max(corr_vals, default=0), max(regr_vals, default=0))
+    ax.set_ylim(0, y_max + 4)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
+# ── Changed-claim analysis ───────────────────────────────────────────────────
+
+def find_changed_claims(
+    s1: dict[str, dict],
+    s2: dict[str, dict],
+    s3: dict[str, dict],
+) -> dict[str, list[dict]]:
+    """Identify claims whose predicted label changed across the three settings.
+
+    Returns a dict with the following keys:
+
+    * ``"any_change"`` – label differs in at least one setting pair.
+    * ``"s1_ne_s2"`` – Setting 1 → Setting 2 changed.
+    * ``"s2_ne_s3"`` – Setting 2 → Setting 3 changed.
+    * ``"s1_ne_s3"`` – Setting 1 → Setting 3 changed.
+    * ``"all_differ"`` – all three settings produced different labels.
+    * ``"s2_corrected"`` – S2 fixed an S1 error (S1 wrong, S2 matches gold).
+    * ``"s2_regressed"`` – S2 broke an S1 correct (S1 matches gold, S2 wrong).
+    * ``"s3_corrected"`` – S3 fixed an S1 error (S1 wrong, S3 matches gold).
+    * ``"s3_regressed"`` – S3 broke an S1 correct (S1 matches gold, S3 wrong).
+
+    Each list entry is a dict with ``claim_id``, ``gold``, ``s1``, ``s2``,
+    ``s3``, and the original claim text (if present).
+    """
+    buckets: dict[str, list[dict]] = {
+        "any_change": [],
+        "s1_ne_s2": [],
+        "s2_ne_s3": [],
+        "s1_ne_s3": [],
+        "all_differ": [],
+        "s2_corrected": [],
+        "s2_regressed": [],
+        "s3_corrected": [],
+        "s3_regressed": [],
+    }
+
+    for cid in s1:
+        p1 = s1[cid]["predicted_label"]
+        p2 = s2[cid]["predicted_label"]
+        p3 = s3[cid]["predicted_label"]
+        gold = s1[cid]["gold_label"]
+        claim_text = s1[cid].get("claim", s1[cid].get("claim_text", ""))
+
+        row = {
+            "claim_id": cid,
+            "gold": gold,
+            "s1": p1,
+            "s2": p2,
+            "s3": p3,
+            "claim": claim_text,
+        }
+
+        changed_12 = p1 != p2
+        changed_23 = p2 != p3
+        changed_13 = p1 != p3
+
+        if not (changed_12 or changed_23 or changed_13):
+            continue
+
+        buckets["any_change"].append(row)
+
+        if changed_12:
+            buckets["s1_ne_s2"].append(row)
+        if changed_23:
+            buckets["s2_ne_s3"].append(row)
+        if changed_13:
+            buckets["s1_ne_s3"].append(row)
+        if p1 != p2 and p2 != p3 and p1 != p3:
+            buckets["all_differ"].append(row)
+
+        # Correction / regression relative to gold
+        if p1 != gold and p2 == gold:
+            buckets["s2_corrected"].append(row)
+        if p1 == gold and p2 != gold:
+            buckets["s2_regressed"].append(row)
+        if p1 != gold and p3 == gold:
+            buckets["s3_corrected"].append(row)
+        if p1 == gold and p3 != gold:
+            buckets["s3_regressed"].append(row)
+
+    return buckets
+
+
+def save_changed_claims(buckets: dict[str, list[dict]], out_dir: Path) -> None:
+    """Print a summary and save each bucket to a JSONL file."""
+    print("\n── Changed-claim analysis ──")
+    for name, rows in buckets.items():
+        print(f"  {name:20s}: {len(rows)} claims")
+
+    changed_dir = out_dir / "changed_claims"
+    changed_dir.mkdir(parents=True, exist_ok=True)
+    for name, rows in buckets.items():
+        path = changed_dir / f"{name}.jsonl"
+        with open(path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+    print(f"  → Saved to {changed_dir}/")
+
+
+# ── Panel: Triple confusion-matrix (baseline + two delta matrices) ────────────
+
+def _compute_cm(data: dict[str, dict]) -> np.ndarray:
+    """Return a (len(LABELS) × len(LABELS)) confusion matrix.
+
+    Rows = gold label, columns = predicted label.
+    """
+    idx = {l: i for i, l in enumerate(LABELS)}
+    mat = np.zeros((len(LABELS), len(LABELS)), dtype=int)
+    for row in data.values():
+        g = row["gold_label"]
+        p = row["predicted_label"]
+        if g in idx and p in idx:
+            mat[idx[g], idx[p]] += 1
+    return mat
+
+
+def _improvement_color(delta: int, is_diagonal: bool) -> str:
+    """Return hex colour based on whether a cell delta is an improvement."""
+    if delta == 0:
+        return "#FFFFFF"
+    good = (delta > 0) if is_diagonal else (delta < 0)
+    if good:
+        # green scale: light → dark depending on magnitude
+        return "#C8E6C9" if abs(delta) == 1 else "#66BB6A" if abs(delta) <= 3 else "#2E7D32"
+    else:
+        return "#FFCDD2" if abs(delta) == 1 else "#EF9A9A" if abs(delta) <= 3 else "#C62828"
+
+
+def draw_confusion_matrix_triple(
+    axes,
+    s1: dict[str, dict],
+    s2: dict[str, dict],
+    s3: dict[str, dict] | None,
+    acc1: float,
+    acc2: float,
+    acc3: float | None,
+    titles: tuple[str, str, str] = (
+        "Reference abstract only",
+        "5 retrieved abstracts",
+        "5 retrieved +\nreference abstract",
+    ),
+):
+    """Draw three confusion matrices side by side.
+
+    * Left  : absolute counts for Setting 1 (baseline).
+    * Centre: delta Setting 2 − Setting 1 with improvement-coded colours.
+    * Right : delta Setting 3 − Setting 1 with improvement-coded colours.
+
+    Parameters
+    ----------
+    axes : sequence of 3 Axes
+    s1, s2, s3 : loaded JSONL dicts
+    acc1, acc2, acc3 : accuracy values for subtitles
+    titles : column titles
+    """
+    cm1 = _compute_cm(s1)
+    cm2 = _compute_cm(s2)
+    cm3 = _compute_cm(s3) if s3 is not None else None
+
+    n = len(LABELS)
+    subtitles = [
+        f"{titles[0]}\nAcc = {acc1:.3f}",
+        f"{titles[1]}\nAcc = {acc2:.3f}",
+        f"{titles[2]}\nAcc = {acc3:.3f}" if acc3 is not None else titles[2],
+    ]
+
+    # ── Axis 0: baseline absolute ─────────────────────────────────────────────
+    ax = axes[0]
+    max_val = cm1.max() if cm1.max() > 0 else 1
+    for i in range(n):
+        for j in range(n):
+            val = cm1[i, j]
+            bg = COLORS[LABELS[j]]
+            intensity = 0.15 + 0.75 * (val / max_val)
+            # blend white with the verdict colour
+            import matplotlib.colors as mcolors
+            base = np.array(mcolors.to_rgb(bg))
+            cell_color = 1 - intensity * (1 - base)
+            ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
+                                       facecolor=cell_color, edgecolor="white", linewidth=1.5))
+            text_color = "white" if intensity > 0.55 else "black"
+            ax.text(j, i, str(val), ha="center", va="center",
+                    fontsize=13, fontweight="bold", color=text_color)
+
+    ax.set_xlim(-0.5, n - 0.5)
+    ax.set_ylim(n - 0.5, -0.5)
+    ax.set_xticks(range(n))
+    ax.set_xticklabels(LABELS, fontsize=10)
+    ax.set_yticks(range(n))
+    ax.set_yticklabels(LABELS, fontsize=10)
+    ax.set_xlabel("Predicted", fontsize=11)
+    ax.set_ylabel("Gold", fontsize=11)
+    ax.set_title(subtitles[0], fontsize=12, fontweight="bold", pad=6)
+
+    # ── Axes 1 & 2: delta matrices ────────────────────────────────────────────
+    for k, (ax, cm_new, subtitle) in enumerate(
+        zip(axes[1:], [cm2, cm3], subtitles[1:])
+    ):
+        if cm_new is None:
+            ax.axis("off")
+            continue
+
+        delta = cm_new - cm1
+
+        for i in range(n):
+            for j in range(n):
+                d = int(delta[i, j])
+                cell_color = _improvement_color(d, i == j)
+                ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
+                                           facecolor=cell_color, edgecolor="white", linewidth=1.5))
+                # Show base count + signed delta
+                base_count = cm1[i, j]
+                sign = "+" if d >= 0 else ""
+                label = f"{base_count}\n({sign}{d})"
+                ax.text(j, i, label, ha="center", va="center",
+                        fontsize=10, fontweight="bold" if d != 0 else "normal",
+                        color="black")
+
+        ax.set_xlim(-0.5, n - 0.5)
+        ax.set_ylim(n - 0.5, -0.5)
+        ax.set_xticks(range(n))
+        ax.set_xticklabels(LABELS, fontsize=10)
+        ax.set_yticks(range(n))
+        ax.set_yticklabels(LABELS, fontsize=10)
+        ax.set_xlabel("Predicted", fontsize=11)
+        ax.set_ylabel("Gold", fontsize=11)
+        ax.set_title(subtitle, fontsize=12, fontweight="bold", pad=6)
+
+    # Shared legend for the delta panels
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor="#2E7D32", label="Improvement"),
+        Patch(facecolor="#C62828", label="Regression"),
+        Patch(facecolor="#FFFFFF", edgecolor="gray", label="No change"),
+    ]
+    axes[-1].legend(handles=legend_elements, loc="lower right",
+                    fontsize=9, framealpha=0.85, title="vs. baseline",
+                    title_fontsize=9)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -357,10 +671,16 @@ def main():
               f"{sum(v for (a,b),v in transitions_13.items() if a != b)}/{n} claims.")
         print(f"Accuracy (S3): {acc3:.3f}")
 
+        # Analyse claims that changed across the three settings
+        buckets = find_changed_claims(s1, s2, s3)
+
     out_dir = (args.output or PROJECT_ROOT / "results/analysis")
     if args.output and args.output.suffix:
         out_dir = args.output.parent
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if has_s3:
+        save_changed_claims(buckets, out_dir)
 
     # Plot 1a: Two-column alluvial (Setting 1 → Setting 2)
     fig1, ax1 = plt.subplots(figsize=(7, 5))
@@ -378,10 +698,17 @@ def main():
     fig1.savefig(p1.with_suffix(".png"), bbox_inches="tight", dpi=150)
     print(f"Saved {p1}")
 
-    # Plot 1b: Three-column alluvial (Setting 1 → Setting 2 → Setting 3)
+    # Plot 1b: Three-column alluvial + ground-truth pie + correction/regression
     if has_s3:
-        fig1b, ax1b = plt.subplots(figsize=(11, 5.6))
-        draw_alluvial_three(ax1b, transitions_12, transitions_23, n, acc1=acc1, acc2=acc2, acc3=acc3)
+        fig1b = plt.figure(figsize=(15, 6.4))
+        gs = fig1b.add_gridspec(2, 2, width_ratios=[2, 1], height_ratios=[1, 1],
+                                wspace=0.25, hspace=0.35)
+        ax_alluvial = fig1b.add_subplot(gs[:, 0])   # left column, both rows
+        ax_pie = fig1b.add_subplot(gs[0, 1])         # top-right
+        ax_bar = fig1b.add_subplot(gs[1, 1])         # bottom-right
+        draw_alluvial_three(ax_alluvial, transitions_12, transitions_23, n, acc1=acc1, acc2=acc2, acc3=acc3)
+        draw_pie_chart(ax_pie, s1)
+        draw_correction_regression(ax_bar, buckets)
         fig1b.tight_layout()
         p1b = out_dir / "sandbox_vs_wild_alluvial_three.pdf"
         fig1b.savefig(p1b, bbox_inches="tight", dpi=200)
@@ -403,6 +730,25 @@ def main():
         fig1c.savefig(p1c.with_suffix(".png"), bbox_inches="tight", dpi=150)
         print(f"Saved {p1c}")
 
+    # Plot 1d: Triple confusion-matrix (Figure 3 replacement)
+    fig1d, axes_cm = plt.subplots(1, 3, figsize=(13, 4.2))
+    draw_confusion_matrix_triple(
+        axes_cm,
+        s1,
+        s2,
+        s3 if has_s3 else None,
+        acc1,
+        acc2,
+        acc3 if has_s3 else None,
+    )
+    fig1d.suptitle("Effect of evidence sources on SIGNOR-Fact",
+                   fontsize=14, fontweight="bold", y=1.02)
+    fig1d.tight_layout()
+    p1d = out_dir / "sandbox_vs_wild_confusion_matrices.pdf"
+    fig1d.savefig(p1d, bbox_inches="tight", dpi=200)
+    fig1d.savefig(p1d.with_suffix(".png"), bbox_inches="tight", dpi=150)
+    print(f"Saved {p1d}")
+
     # Plot 2: Distribution bars
     fig2, ax2 = plt.subplots(figsize=(5, 4))
     draw_distribution_bars(ax2, transitions_12, n)
@@ -420,6 +766,7 @@ def main():
     fig3.savefig(p3, bbox_inches="tight", dpi=200)
     fig3.savefig(p3.with_suffix(".png"), bbox_inches="tight", dpi=150)
     print(f"Saved {p3}")
+
 
 
 if __name__ == "__main__":

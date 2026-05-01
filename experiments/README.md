@@ -188,6 +188,8 @@ Aggregated metrics (mean ± std over repeats) are written to:
 results/baselines/<baseline>/<model-slug>/<dataset>_metrics.json
 ```
 
+Baselines that emit per-claim `.log` files now include the prompt text sent to the model. For subprocess-backed OpenScholar runs, the log records the effective task input payload and command invocation.
+
 `BaselineResult` fields:
 
 | Field | Type | Notes |

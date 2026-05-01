@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import re
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +35,12 @@ from baselines.shared.label_utils import (
     verdict_names,
 )
 from baselines.shared.llm import LLMBackend
+from baselines.shared.logging_utils import write_claim_log
+from baselines.shared.search_utils import (
+    ddg_text_search_with_retry,
+    format_ddg_verbose_lines,
+    format_s2_basic_results,
+)
 from baselines.shared.verdict import BaselineResult
 from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
 
@@ -79,9 +84,6 @@ CLAIM:
 {claim}
 """
 
-_DDG_LOCK = threading.Lock()
-
-
 @dataclass
 class _SearchResult:
     query: str
@@ -114,43 +116,6 @@ def _token_overlap(a: str, b: str) -> float:
 def _count_similar(target: str, history: list[str], threshold: float = 0.9) -> int:
     return sum(1 for item in history if _token_overlap(target, item) >= threshold)
 
-
-def _format_s2_results(papers: list[dict]) -> str:
-    parts: list[str] = []
-    for index, paper in enumerate(papers, 1):
-        title = paper.get("title", "Untitled")
-        year = paper.get("year", "")
-        abstract = (paper.get("abstract") or "").strip() or "(no abstract available)"
-        ext_ids = paper.get("externalIds") or {}
-        pmid = ext_ids.get("PubMed", "")
-        pmid_text = f" PMID:{pmid}" if pmid else ""
-        parts.append(f"[{index}] {title} ({year}){pmid_text}\n{abstract}")
-    return "\n\n".join(parts) if parts else "No relevant papers found."
-
-
-def _ddg_search(query: str, k: int) -> str:
-    try:
-        from ddgs import DDGS
-    except ImportError as exc:
-        raise RuntimeError("ddgs not installed. Run: pip install ddgs") from exc
-
-    snippets: list[str] = []
-    try:
-        with _DDG_LOCK:
-            ddgs = DDGS()
-            for result in ddgs.text(query, max_results=k):
-                title = result.get("title", "")
-                body = result.get("body", "")
-                href = result.get("href", "")
-                parts = [part for part in (title, body, href) if part]
-                if parts:
-                    snippets.append(" | ".join(parts))
-    except Exception as exc:
-        logger.warning("DuckDuckGo search failed for %r: %s", query, exc)
-
-    return "\n".join(snippets) if snippets else "No relevant web results found."
-
-
 class SAFEBaseline:
     """SAFE claim-rating baseline using iterative search and a final evidence judgment."""
 
@@ -180,10 +145,7 @@ class SAFEBaseline:
 
         self._s2 = S2Client() if search_backend == "s2" else None
 
-        model_key = self.model.split("/", 1)[-1] if "/" in self.model else self.model
-        in_price, out_price = CostTracker.DEFAULT_PRICING.get(
-            model_key, CostTracker.FALLBACK_PRICING,
-        )
+        in_price, out_price = CostTracker.pricing_for(self.model)
         self._in_price = in_price
         self._out_price = out_price
 
@@ -199,9 +161,10 @@ class SAFEBaseline:
         t0 = time.monotonic()
         usage = {"input_tokens": 0, "output_tokens": 0}
         searches: list[_SearchResult] = []
+        prompts: list[str] = []
 
         try:
-            answer, reasoning = self._safe_loop(claim, searches, usage)
+            answer, reasoning = self._safe_loop(claim, searches, usage, prompts)
         except Exception as exc:
             logger.error("SAFE error for %s: %s", claim_id, exc)
             answer, reasoning = None, f"ERROR: {exc}"
@@ -209,18 +172,27 @@ class SAFEBaseline:
         latency = time.monotonic() - t0
         predicted = validate_verdict(answer) if answer else "UNCERTAIN"
 
-        if self.log_dir is not None:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            log_path = self.log_dir / f"{claim_id}.log"
-            with open(log_path, "w") as handle:
-                handle.write(f"=== claim_id: {claim_id} ===\n")
-                handle.write(f"=== claim ===\n{claim}\n\n")
-                handle.write(f"=== answer: {answer} ===\n")
-                handle.write(f"=== search_backend: {self.search_backend} ===\n")
-                handle.write(f"=== searches ({len(searches)}) ===\n")
-                for search in searches:
-                    handle.write(f"Q: {search.query}\nR: {search.result[:1200]}\n\n")
-                handle.write(f"=== reasoning ===\n{reasoning}\n")
+        prompt_block = "\n\n".join(
+            f"--- prompt {index} ---\n{prompt}"
+            for index, prompt in enumerate(prompts, 1)
+        )
+        search_block = "\n\n".join(
+            f"Q: {search.query}\nR: {search.result[:1200]}"
+            for search in searches
+        )
+        write_claim_log(
+            self.log_dir,
+            claim_id,
+            [
+                (f"claim_id: {claim_id}", ""),
+                ("claim", claim),
+                (f"prompts ({len(prompts)})", prompt_block),
+                (f"answer: {answer}", ""),
+                (f"search_backend: {self.search_backend}", ""),
+                (f"searches ({len(searches)})", search_block),
+                ("reasoning", reasoning),
+            ],
+        )
 
         return BaselineResult(
             claim_id=claim_id,
@@ -246,9 +218,10 @@ class SAFEBaseline:
         claim: str,
         searches: list[_SearchResult],
         usage: dict[str, int],
+        prompts: list[str],
     ) -> tuple[str | None, str]:
         for _ in range(self.max_steps):
-            query = self._next_query(claim, searches, usage)
+            query = self._next_query(claim, searches, usage, prompts)
             if not query:
                 break
 
@@ -263,16 +236,18 @@ class SAFEBaseline:
 
             searches.append(_SearchResult(query=query, result=result))
 
-        return self._final_answer(claim, searches, usage)
+        return self._final_answer(claim, searches, usage, prompts)
 
     def _next_query(
         self,
         claim: str,
         searches: list[_SearchResult],
         usage: dict[str, int],
+        prompts: list[str],
     ) -> str | None:
         knowledge = self._knowledge_block(searches)
         prompt = _NEXT_SEARCH_PROMPT.format(knowledge=knowledge, claim=claim)
+        prompts.append(prompt)
 
         for _ in range(self.max_retries):
             response, in_tok, out_tok = self._llm.complete_text(system="", user=prompt)
@@ -290,6 +265,7 @@ class SAFEBaseline:
         claim: str,
         searches: list[_SearchResult],
         usage: dict[str, int],
+        prompts: list[str],
     ) -> tuple[str | None, str]:
         knowledge = self._knowledge_block(searches)
         prompt = _FINAL_ANSWER_PROMPT.format(
@@ -298,6 +274,7 @@ class SAFEBaseline:
             verdict_defs=_VERDICT_DEFS,
             verdict_names=" | ".join(_VERDICT_NAMES),
         )
+        prompts.append(prompt)
 
         last_response = ""
         for _ in range(self.max_retries):
@@ -327,6 +304,9 @@ class SAFEBaseline:
             except S2RateLimitError as exc:
                 logger.error("S2 rate-limit exhausted during SAFE search: %s", exc)
                 return "Semantic Scholar rate limit exhausted."
-            return _format_s2_results(papers)
+            return format_s2_basic_results(papers)
 
-        return _ddg_search(query, k=self.num_search_results)
+        return format_ddg_verbose_lines(
+            ddg_text_search_with_retry(query, k=self.num_search_results),
+            empty_message="No relevant web results found.",
+        )

@@ -168,17 +168,6 @@ VERIFICATION_USER_TEMPLATE = """Claim: {claim}
 Retrieved Evidence:
 {evidence}
 
-Based on the above evidence, classify the claim."""
-
-LLM_ONLY_USER_TEMPLATE = """Claim: {claim}
-
-Based on your scientific knowledge, classify the claim."""
-
-VERIFICATION_USER_TEMPLATE = """Claim: {claim}
-
-Retrieved Evidence:
-{evidence}
-
 Based on the above evidence, classify the claim. Output JSON."""
 
 LLM_ONLY_USER_TEMPLATE = """Claim: {claim}

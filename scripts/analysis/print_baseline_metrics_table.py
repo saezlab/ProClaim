@@ -72,6 +72,12 @@ def parse_args() -> argparse.Namespace:
         default="baseline_order",
         help="Sort rows within each dataset table. Default keeps a fixed baseline order across datasets.",
     )
+    parser.add_argument(
+        "--no-std",
+        action="store_false",
+        dest="use_std",
+        help="Disable showing standard deviation in metric values (default: show std if available).",
+    )
     return parser.parse_args()
 
 
@@ -82,10 +88,12 @@ def metric_value(metrics: dict, key: str, field: str = "mean", default: float = 
     return float(value)
 
 
-def metric_with_std(metrics: dict, key: str, decimals: int = 2) -> str:
+def metric_with_std(metrics: dict, key: str, use_std: bool, decimals: int = 2) -> str:
     mean = metric_value(metrics, key, "mean")
-    std = metric_value(metrics, key, "std")
-    return f"{mean:.{decimals}f}±{std:.{decimals}f}"
+    if use_std:
+        std = metric_value(metrics, key, "std")
+        return f"{mean:.{decimals}f}±{std:.{decimals}f}"
+    return f"{mean:.{decimals}f}"
 
 
 def parse_metric_path(metrics_path: Path, results_dir: Path) -> tuple[str, str, str]:
@@ -122,6 +130,7 @@ def collect_rows(
     results_dir: Path,
     dataset_filters: set[str],
     sort_by: str,
+    use_std: bool = True,
 ) -> list[dict[str, str | float]]:
     rows: list[dict[str, str | float]] = []
     for metrics_path in sorted(results_dir.rglob("*_metrics.json")):
@@ -141,11 +150,11 @@ def collect_rows(
                 "model": model,
                 "repeats": str(int(metrics.get("n_repeats", 0))),
                 "n": str(int(metrics.get("n", 0))),
-                "accuracy": metric_with_std(metrics, "accuracy"),
-                "macro_f1": metric_with_std(metrics, "macro_f1"),
-                "weighted_fpr": metric_with_std(metrics, "weighted_fpr"),
-                "weighted_fnr": metric_with_std(metrics, "weighted_fnr"),
-                "total_cost_usd": metric_with_std(metrics, "total_cost_usd", decimals=3),
+                "accuracy": metric_with_std(metrics, "accuracy", use_std),
+                "macro_f1": '--',
+                "macro_fpr": metric_with_std(metrics, "macro_fpr", use_std),
+                "macro_fnr": metric_with_std(metrics, "macro_fnr", use_std),
+                "total_cost_usd": metric_with_std(metrics, "total_cost_usd", use_std, decimals=3),
                 "sort_value": metric_value(metrics, sort_by),
             }
         )
@@ -188,7 +197,7 @@ def build_ascii_table(headers: list[str], rows: list[list[str]]) -> str:
     separator = "+-" + "-+-".join("-" * width for width in widths) + "-+"
     header_line = "| " + " | ".join(header.ljust(widths[index]) for index, header in enumerate(headers)) + " |"
     body_lines = [
-        "| " + " | ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)) + " |"
+        "& " + " & ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)) + " &"
         for row in rows
     ]
     return "\n".join([separator, header_line, separator, *body_lines, separator])
@@ -212,7 +221,7 @@ def render_report(rows: list[dict[str, str | float]], results_dir: Path, sort_by
         lines.append("No metrics files found.")
         return "\n".join(lines)
 
-    headers = ["baseline", "variant", "model", "repeats", "n", "accuracy", "macro_f1", "weighted_fpr", "weighted_fnr", "total_cost_usd"]
+    headers = ["baseline", "variant", "model", "repeats", "n", "accuracy", "macro_f1", "macro_fpr", "macro_fnr", "total_cost_usd"]
     for dataset in sorted(grouped_rows):
         dataset_rows = sorted(grouped_rows[dataset], key=lambda row: row_sort_key(row, sort_by))
         table_rows = [[str(row[column]) for column in headers] for row in dataset_rows]
@@ -228,12 +237,13 @@ def main() -> None:
 
     results_dir = args.results_dir.resolve()
     output_dir = args.output_dir.resolve()
+    use_std = args.use_std
     dataset_filters = set(args.dataset)
 
     if not results_dir.exists():
         raise SystemExit(f"Results directory does not exist: {results_dir}")
 
-    rows = collect_rows(results_dir, dataset_filters, args.sort_by)
+    rows = collect_rows(results_dir, dataset_filters, args.sort_by, use_std=use_std)
     report = render_report(rows, results_dir, args.sort_by)
 
     output_dir.mkdir(parents=True, exist_ok=True)

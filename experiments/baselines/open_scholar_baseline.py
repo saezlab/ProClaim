@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from baselines.shared.label_utils import normalize_label
+from baselines.shared.logging_utils import write_claim_log
 from baselines.shared.verdict import BaselineResult
 
 logger = logging.getLogger(__name__)
@@ -196,15 +197,21 @@ class OpenScholarBaseline:
             # Write per-claim log for post-hoc debugging and echo subprocess
             # output through the logger so it appears in the log file rather
             # than on raw stdout (which can be a broken pipe).
-            if self.log_dir is not None:
-                self.log_dir.mkdir(parents=True, exist_ok=True)
-                log_path = self.log_dir / f"{claim_id}.log"
-                with open(log_path, "w") as _lf:
-                    _lf.write(f"=== claim_id: {claim_id} ===\n")
-                    _lf.write(f"=== framed_input ===\n{framed_input}\n\n")
-                    _lf.write(f"=== stdout ===\n{proc.stdout or ''}\n")
-                    _lf.write(f"=== stderr ===\n{proc.stderr or ''}\n")
-                    _lf.write(f"=== returncode: {proc.returncode} ===\n")
+            write_claim_log(
+                self.log_dir,
+                claim_id,
+                [
+                    (f"claim_id: {claim_id}", ""),
+                    ("task_name", self.task_name),
+                    ("prompt", framed_input),
+                    ("input payload", json.dumps({"input": framed_input, "ctxs": ctxs, "answer": ""}, indent=2)),
+                    ("command", " ".join(cmd)),
+                    ("framed_input", framed_input),
+                    ("stdout", proc.stdout or ""),
+                    ("stderr", proc.stderr or ""),
+                    (f"returncode: {proc.returncode}", ""),
+                ],
+            )
 
             if proc.stdout:
                 logger.debug("OpenScholar stdout [%s]:\n%s", claim_id, proc.stdout)

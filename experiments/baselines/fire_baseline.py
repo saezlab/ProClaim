@@ -37,12 +37,18 @@ from pathlib import Path
 
 from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.llm import LLMBackend
+from baselines.shared.logging_utils import write_claim_log
 from baselines.shared.label_utils import (
     normalize_label,
     validate_verdict,
     verdict_defs_block,
     verdict_names,
     verdict_or_str,
+)
+from baselines.shared.search_utils import (
+    ddg_text_search_with_retry,
+    format_ddg_body_results,
+    format_s2_basic_results,
 )
 from baselines.shared.verdict import BaselineResult
 from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
@@ -103,46 +109,6 @@ KNOWLEDGE:
 
 STATEMENT:
 {{statement}}"""
-
-
-# ── Web search backend ───────────────────────────────────────────────
-
-
-def _web_search(query: str, k: int = 3) -> str:
-    """Query DuckDuckGo via the ddgs package (free, no API key)."""
-    try:
-        from ddgs import DDGS
-    except ImportError:
-        raise RuntimeError(
-            "ddgs not installed. Run: pip install ddgs"
-        )
-
-    snippets: list[str] = []
-    try:
-        ddgs = DDGS()
-        for result in ddgs.text(query, max_results=k):
-            body = result.get("body", "")
-            if body:
-                snippets.append(body)
-    except Exception as exc:
-        logger.warning("DuckDuckGo search failed for %r: %s", query, exc)
-
-    return " ".join(snippets) if snippets else "No good Google Search result was found"
-
-
-def _format_s2_results(papers: list[dict]) -> str:
-    """Format Semantic Scholar results into a compact evidence string."""
-    parts: list[str] = []
-    for index, paper in enumerate(papers, 1):
-        title = paper.get("title", "Untitled")
-        year = paper.get("year", "")
-        abstract = (paper.get("abstract") or "").strip() or "(no abstract available)"
-        ext_ids = paper.get("externalIds") or {}
-        pmid = ext_ids.get("PubMed", "")
-        pmid_str = f" PMID:{pmid}" if pmid else ""
-        parts.append(f"[{index}] {title} ({year}){pmid_str}\n{abstract}")
-    return "\n\n".join(parts) if parts else "No relevant papers found on Semantic Scholar"
-
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -228,10 +194,7 @@ class FIREBaseline:
         logger.info("FIRE search backend: %s", self._search_backend)
 
         # Cost estimation — reuse CostTracker pricing table
-        model_key = self.model.split("/", 1)[-1] if "/" in self.model else self.model
-        in_price, out_price = CostTracker.DEFAULT_PRICING.get(
-            model_key, CostTracker.FALLBACK_PRICING,
-        )
+        in_price, out_price = CostTracker.pricing_for(self.model)
         self._in_price = in_price    # USD per 1M input tokens
         self._out_price = out_price  # USD per 1M output tokens
 
@@ -247,9 +210,10 @@ class FIREBaseline:
         t0 = time.monotonic()
         total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         searches: list[_SearchResult] = []
+        prompts: list[str] = []
 
         try:
-            answer, reasoning = self._fire_loop(claim, searches, total_usage)
+            answer, reasoning = self._fire_loop(claim, searches, total_usage, prompts)
         except Exception as exc:
             logger.error("FIRE error for %s: %s", claim_id, exc)
             answer, reasoning = None, f"ERROR: {exc}"
@@ -257,18 +221,28 @@ class FIREBaseline:
         latency = time.monotonic() - t0
 
         # Write per-claim log
-        if self.log_dir is not None:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            log_path = self.log_dir / f"{claim_id}.log"
-            with open(log_path, "w") as lf:
-                lf.write(f"=== claim_id: {claim_id} ===\n")
-                lf.write(f"=== claim ===\n{claim}\n\n")
-                lf.write(f"=== answer: {answer} ===\n")
-                lf.write(f"=== search_backend: {self.search_backend} ===\n")
-                lf.write(f"=== searches ({len(searches)}) ===\n")
-                for s in searches:
-                    lf.write(f"  Q: {s.query}\n  R: {s.result[:200]}\n\n")
-                lf.write(f"=== reasoning ===\n{reasoning}\n")
+        prompt_block = "\n\n".join(
+            f"--- prompt {index} ---\n{prompt}"
+            for index, prompt in enumerate(prompts, 1)
+        )
+        search_block = "\n\n".join(
+            f"  Q: {search.query}\n  R: {search.result[:200]}"
+            for search in searches
+        )
+        write_claim_log(
+            self.log_dir,
+            claim_id,
+            [
+                (f"claim_id: {claim_id}", ""),
+                ("claim", claim),
+                ("system prompt", _SYS_PROMPT),
+                (f"prompts ({len(prompts)})", prompt_block),
+                (f"answer: {answer}", ""),
+                (f"search_backend: {self.search_backend}", ""),
+                (f"searches ({len(searches)})", search_block),
+                ("reasoning", reasoning),
+            ],
+        )
 
         # Map FIRE's answer → canonical labels
         if answer is not None:
@@ -304,10 +278,11 @@ class FIREBaseline:
         claim: str,
         searches: list[_SearchResult],
         usage: dict[str, int],
+        prompts: list[str],
     ) -> tuple[str | None, str]:
         """Run the iterative search-or-answer loop.  Returns (answer, reasoning)."""
         for _ in range(self.max_steps):
-            result = self._step(claim, searches, usage)
+            result = self._step(claim, searches, usage, prompts)
             if result is None:
                 break
             if isinstance(result, str):
@@ -317,19 +292,21 @@ class FIREBaseline:
                 return result
             # _SearchResult — already appended inside _step
 
-        return self._force_final(claim, searches, usage)
+        return self._force_final(claim, searches, usage, prompts)
 
     def _step(
         self,
         claim: str,
         searches: list[_SearchResult],
         usage: dict[str, int],
+        prompts: list[str],
     ) -> tuple[str, str] | _SearchResult | str | None:
         """One FIRE iteration: ask the LLM to decide or search."""
         knowledge = "\n".join(s.result for s in searches) or "N/A"
         prompt = _FINAL_ANSWER_OR_NEXT_SEARCH.format(
             knowledge=knowledge, statement=claim,
         ).strip()
+        prompts.append(prompt)
 
         for _ in range(self.max_retries):
             text, in_tok, out_tok = self._llm_call(prompt)
@@ -374,12 +351,14 @@ class FIREBaseline:
         claim: str,
         searches: list[_SearchResult],
         usage: dict[str, int],
+        prompts: list[str],
     ) -> tuple[str | None, str]:
         """Force the LLM to produce a final verdict."""
         knowledge = "\n".join(s.result for s in searches) or "N/A"
         prompt = _MUST_HAVE_FINAL_ANSWER.format(
             knowledge=knowledge, statement=claim,
         ).strip()
+        prompts.append(prompt)
 
         for _ in range(self.max_retries):
             text, in_tok, out_tok = self._llm_call(prompt)
@@ -406,6 +385,12 @@ class FIREBaseline:
             except S2RateLimitError as exc:
                 logger.error("S2 rate-limit exhausted during FIRE search: %s", exc)
                 return "Semantic Scholar rate limit exhausted."
-            return _format_s2_results(papers)
+            return format_s2_basic_results(
+                papers,
+                empty_message="No relevant papers found on Semantic Scholar",
+            )
 
-        return _web_search(query, k=self.num_search_results)
+        return format_ddg_body_results(
+            ddg_text_search_with_retry(query, k=self.num_search_results),
+            empty_message="No good Google Search result was found",
+        )
