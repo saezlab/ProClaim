@@ -14,7 +14,7 @@
 #   bash scripts/submit_signor_direct_batch.sh --cancel
 #   bash scripts/submit_signor_direct_batch.sh --logs
 #   bash scripts/submit_signor_direct_batch.sh --resume               # Resume last failed run
-#   bash scripts/submit_signor_direct_batch.sh --run-tag 20260427_221617 --reps 1 # Resume specific run
+#   bash scripts/submit_signor_direct_batch.sh --run-tag 20260429_200315 --reps 1 # Resume specific run
 # =============================================================================
 set -euo pipefail
 

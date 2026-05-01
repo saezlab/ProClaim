@@ -7,6 +7,12 @@ Usage:
         --llm_dir   /hps/nobackup/saezrodriguez/rain/workspace/grn-llm-correct/results/signor_eval_20260402_214154 \
         --haiku_dir /hps/nobackup/saezrodriguez/rain/workspace/grn-llm-correct/results/signor_eval_20260406_181859 \
         --out results/slm_llm_ablation/signor_eval_ablation_plots
+
+    uv run python scripts/sufficiency_classifier/slm_llm_ablation/compare_eval_runs.py \
+        --mlp_dir   /hps/nobackup/saezrodriguez/rain/workspace/grn-llm-correct/results/signor_direct_eval_20260427_221617 \
+        --llm_dir   /hps/nobackup/saezrodriguez/rain/workspace/grn-llm-correct/results/signor_direct_eval_20260428_185709 \
+        --haiku_dir /hps/nobackup/saezrodriguez/rain/workspace/grn-llm-correct/results/signor_direct_eval_20260429_071519 \
+        --out results/slm_llm_ablation/signor_eval_ablation_plots
 """
 
 import json
@@ -635,6 +641,47 @@ def main():
             if row["Model"] in present_models
         }
         write_latex_tables(metrics_by_model, present_models, args.out, mean_iters=mean_iters)
+
+        # 5b. Sufficiency Score Trajectory (Box Plot) — SUPPORT ground truth only
+        gold_lookup = next(iter(acc_dfs.values()))[["claim_key", "gold"]].drop_duplicates("claim_key")
+        melted_with_gold = melted.merge(gold_lookup, on="claim_key", how="inner")
+        melted_supported = melted_with_gold[melted_with_gold["gold"] == "SUPPORT"]
+        print(f"  sufficiency_trajectory_boxplot_supported_only: {len(melted_supported['claim_key'].unique())} claims")
+
+        fig5b, ax5b = plt.subplots(figsize=(10, 5))
+        sns.boxplot(data=melted_supported, x="iteration", y="score", hue="model",
+                    hue_order=model_order, palette=palette,
+                    flierprops={"marker": "o", "markersize": 3, "alpha": 0.4},
+                    linewidth=0.8, ax=ax5b)
+        ax5b.set_xlabel("Search Iteration")
+        ax5b.set_ylabel("Sufficiency Score")
+        ax5b.set_ylim(-0.05, 1.05)
+        fig5b.tight_layout()
+        save_fig(fig5b, "sufficiency_trajectory_boxplot_supported_only")
+
+        # 5c. Per-claim spaghetti plot — SUPPORT ground truth only
+        fig5c, axes5c = plt.subplots(1, len(model_order), figsize=(5 * len(model_order), 5),
+                                     sharey=True)
+        for ax, model_name in zip(axes5c, model_order):
+            color = palette[model_name]
+            model_data = melted_supported[melted_supported["model"] == model_name]
+            for ck, grp in model_data.groupby("claim_key"):
+                grp_sorted = grp.sort_values("iteration")
+                ax.plot(grp_sorted["iteration"], grp_sorted["score"],
+                        color=color, alpha=0.2, linewidth=0.8)
+            # Overlay mean line
+            mean_line = model_data.groupby("iteration")["score"].mean()
+            ax.plot(mean_line.index, mean_line.values,
+                    color=color, linewidth=2.5, marker="o", label="Mean")
+            ax.set_title(model_name)
+            ax.set_xlabel("Search Iteration")
+            ax.set_xticks([1, 2, 3, 4])
+            ax.set_ylim(-0.05, 1.05)
+        axes5c[0].set_ylabel("Sufficiency Score")
+        mean_handle = mlines.Line2D([], [], color="black", linewidth=2.5, marker="o", label="Mean")
+        fig5c.legend(handles=[mean_handle], loc="lower right", frameon=True)
+        fig5c.tight_layout()
+        save_fig(fig5c, "sufficiency_trajectory_spaghetti_supported_only")
 
 
 if __name__ == "__main__":
