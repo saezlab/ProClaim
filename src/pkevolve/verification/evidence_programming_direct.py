@@ -463,6 +463,7 @@ def build_subprocess_env(cfg) -> dict:
     env["LLM_TEMPERATURE"] = str(cfg.llm.temperature)
     env["LLM_DISABLE_THINKING"] = "1" if cfg.llm.disable_thinking else "0"
     env["MLP_MODEL_DIR"] = cfg.mlp_model_dir or "results/models/classifier_best"
+    env["SUFFICIENCY_BACKEND"] = cfg.sufficiency_backend
     env["MAX_ITERATIONS"] = str(cfg.max_iterations)
     env["SUFFICIENCY_BACKEND"] = cfg.sufficiency_backend
     env["LABEL_CONFIG_JSON"] = cfg.labels.model_dump_json()

@@ -29,10 +29,12 @@ import requests
 from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.label_utils import normalize_label
 from baselines.shared.llm import LLMBackend
+from baselines.shared.logging_utils import write_claim_log
 from baselines.shared.prompts import (
     VERIFICATION_SYSTEM_PROMPT,
     VERIFICATION_USER_TEMPLATE,
 )
+from baselines.shared.single_shot import run_single_shot_verdict
 from baselines.shared.verdict import BaselineResult
 
 logger = logging.getLogger(__name__)
@@ -45,13 +47,29 @@ def _fetch_abstract(pmid: str) -> dict | None:
 
     Returns a dict with keys ``title``, ``abstract``, ``year``, ``pmid``
     or ``None`` if the fetch fails.
+    Implements exponential backoff and retry for HTTP 429 errors.
     """
     params = {"db": "pubmed", "id": pmid, "retmode": "xml"}
-    try:
-        resp = requests.get(_EFETCH_URL, params=params, timeout=30)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        logger.warning("PubMed efetch failed for PMID %s: %s", pmid, exc)
+    max_retries = 5
+    backoff = 2.0
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(_EFETCH_URL, params=params, timeout=30)
+            if resp.status_code == 429:
+                wait_time = backoff * (2 ** attempt)
+                logger.warning(
+                    "PubMed efetch rate-limited (429) for PMID %s, retrying in %.1fs (attempt %d/%d)",
+                    pmid, wait_time, attempt + 1, max_retries
+                )
+                time.sleep(wait_time)
+                continue
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            logger.warning("PubMed efetch failed for PMID %s: %s", pmid, exc)
+            return None
+        break
+    else:
+        logger.warning("PubMed efetch failed for PMID %s after %d retries (429)", pmid, max_retries)
         return None
 
     try:
@@ -159,51 +177,43 @@ class SinglePaper:
         user_msg = VERIFICATION_USER_TEMPLATE.format(
             claim=claim, evidence=evidence_text
         )
-        t_llm = time.monotonic()
-        text, in_tok, out_tok = self.llm.complete(
-            system=VERIFICATION_SYSTEM_PROMPT,
-            user=user_msg,
+        verdict = run_single_shot_verdict(
+            llm=self.llm,
+            tracker=self.tracker,
+            system_prompt=VERIFICATION_SYSTEM_PROMPT,
+            user_prompt=user_msg,
         )
-        self.tracker.record("llm_call", in_tok, out_tok, time.monotonic() - t_llm)
-
-        # 4. Parse response
-        parsed = self.llm.parse_json(text)
-        raw_label = parsed.get("label", "UNCERTAIN")
-        predicted = normalize_label(raw_label)
-        confidence = float(parsed.get("confidence", 0.0))
-        reasoning = parsed.get("reasoning", text[:500] if text else "")
-        cited = parsed.get("evidence", [])
-        if isinstance(cited, str):
-            cited = [cited]
-
-        summary = self.tracker.summary()
 
         # Write per-claim log
-        if self.log_dir is not None:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            log_path = self.log_dir / f"{claim_id}.log"
-            with open(log_path, "w") as lf:
-                lf.write(f"=== claim_id: {claim_id} ===\n")
-                lf.write(f"=== claim ===\n{claim}\n\n")
-                lf.write(f"=== source PMID: {pmid} ===\n")
-                lf.write(f"=== title: {paper.get('title', '')} ===\n")
-                lf.write(f"=== abstract ===\n{paper.get('abstract', '')}\n\n")
-                lf.write(f"=== predicted: {predicted} ===\n")
-                lf.write(f"=== reasoning ===\n{reasoning}\n")
-                lf.write(f"=== raw LLM response ===\n{text}\n")
+        write_claim_log(
+            self.log_dir,
+            claim_id,
+            [
+                (f"claim_id: {claim_id}", ""),
+                ("claim", claim),
+                ("system prompt", VERIFICATION_SYSTEM_PROMPT),
+                ("user prompt", user_msg),
+                (f"source PMID: {pmid}", ""),
+                (f"title: {paper.get('title', '')}", ""),
+                ("abstract", paper.get("abstract", "")),
+                (f"predicted: {verdict.predicted_label}", ""),
+                ("reasoning", verdict.reasoning),
+                ("raw LLM response", verdict.text),
+            ],
+        )
 
         return BaselineResult(
             claim_id=claim_id,
             claim=claim,
             gold_label=normalize_label(gold_label),
-            predicted_label=predicted,
-            confidence=confidence,
-            reasoning=reasoning,
-            evidence=cited,
-            input_tokens=summary["input_tokens"],
-            output_tokens=summary["output_tokens"],
-            cost_usd=summary["cost_usd"],
-            latency_seconds=summary["latency_seconds"],
+            predicted_label=verdict.predicted_label,
+            confidence=verdict.confidence,
+            reasoning=verdict.reasoning,
+            evidence=verdict.evidence,
+            input_tokens=verdict.summary["input_tokens"],
+            output_tokens=verdict.summary["output_tokens"],
+            cost_usd=verdict.summary["cost_usd"],
+            latency_seconds=verdict.summary["latency_seconds"],
             baseline_name=self.name,
             model=self.llm.model,
         )

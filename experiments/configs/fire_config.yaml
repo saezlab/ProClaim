@@ -2,7 +2,7 @@
 # FIRE Baseline Config
 #
 # Iterative retrieval-augmented fact-checking via the FIRE pipeline.
-# FIRE dynamically searches the web and decides when it has enough
+# FIRE dynamically searches the configured backend and decides when it has enough
 # evidence to classify the claim.  Binary output (True/False) is
 # mapped to SUPPORT / REFUTE; failures default to UNCERTAIN.
 #
@@ -11,8 +11,7 @@
 #       --config experiments/configs/fire_config.yaml
 #
 # Prerequisites:
-#   - FIRE cloned at <workspace>/fire with .venv set up
-#   - SERPER_API_KEY set (for Google Search via SerperAPI)
+#   - ddgs installed for web search, or S2_API_KEY for higher-throughput S2 use
 #   - OPENAI_API_KEY or ANTHROPIC_API_KEY set (depending on model)
 #
 # Any CLI flag overrides the value set here.
@@ -29,6 +28,9 @@ baseline: fire
 
 # ── Model (LiteLLM format: "provider/model-id") ──────────────────────
 model: anthropic/claude-sonnet-4-6
+
+# Search backend
+search_backend: web
 
 # Maximum iterative search steps
 max_steps: 5

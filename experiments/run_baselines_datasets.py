@@ -48,6 +48,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))  # for experiments/baselines/
 
 from baselines.shared.evaluate import EvaluationHarness
+from baselines.shared.builder import build_llm_backend
 
 logging.basicConfig(
     level=logging.INFO,
@@ -102,37 +103,24 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
         return RandomBaseline(seed=seed if seed is not None else args.seed)
     elif name == "llm_only":
         from baselines.llm_only import LLMOnly
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return LLMOnly(llm=llm)
     elif name == "single_paper":
         from baselines.single_paper import SinglePaper
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return SinglePaper(llm=llm)
     elif name == "retrieval":
         from baselines.retrieval_baseline import RetrievalBaseline
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return RetrievalBaseline(llm=llm, top_k=args.top_k, search_backend=args.search_backend)
+    elif name == "s2_plus_ref":
+        from baselines.s2_plus_ref import S2PlusRef
+        llm = build_llm_backend(args)
+        return S2PlusRef(
+            llm=llm,
+            top_k=args.top_k,
+            strip_parens=getattr(args, "strip_query", True),
+        )
     elif name == "open_scholar":
         from baselines.open_scholar_baseline import OpenScholarBaseline
         api, model_name = _split_model_provider(args.model)
@@ -149,51 +137,40 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
         )
     elif name == "fire":
         from baselines.fire_baseline import FIREBaseline
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return FIREBaseline(
             llm=llm,
             max_steps=args.max_steps,
             num_search_results=args.top_k,
+            search_backend=args.search_backend,
         )
     elif name == "ace":
         from baselines.ace_baseline import ACEBaseline
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return ACEBaseline(
             llm=llm,
             playbook=args.playbook if args.playbook else None,
         )
     elif name == "react":
         from baselines.react_baseline import ReActBaseline
-        from baselines.shared.llm import LLMBackend
-        llm = LLMBackend(
-            model=args.model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            reasoning_effort=args.reasoning_effort,
-            thinking_budget=args.thinking_budget,
-        )
+        llm = build_llm_backend(args)
         return ReActBaseline(
             llm=llm,
             max_steps=args.max_steps,
             num_search_results=args.top_k,
             search_backend=args.search_backend,
         )
+    elif name == "safe":
+        from baselines.safe_baseline import SAFEBaseline
+        llm = build_llm_backend(args)
+        return SAFEBaseline(
+            llm=llm,
+            max_steps=args.max_steps,
+            num_search_results=args.top_k,
+            search_backend=args.search_backend,
+        )
     else:
-        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, single_paper, retrieval, open_scholar, fire, ace, react")
+        raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, single_paper, retrieval, open_scholar, fire, ace, react, safe")
 
 
 def _mean_std(values: list[float], decimals: int = 2) -> dict[str, float]:
@@ -247,7 +224,7 @@ def parse_args() -> argparse.Namespace:
         default=["signor", "connectomedb"],
         help="Dataset names (without .csv extension).",
     )
-    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "single_paper", "retrieval", "open_scholar", "fire", "ace", "react"], help="Baseline to run.")
+    p.add_argument("--baseline", default="random", choices=["random", "llm_only", "single_paper", "s2_plus_ref", "retrieval", "open_scholar", "fire", "ace", "react", "safe"], help="Baseline to run.")
     p.add_argument("--seed", type=int, default=100, help="Base random seed. Each repeat i uses seed+i.")
     p.add_argument("--repeats", type=int, default=10, help="Number of independent repeats. Each repeat i uses seed+i.")
     # ── Shared LLM arguments (apply to all LLM-backed baselines) ─────
@@ -259,11 +236,11 @@ def parse_args() -> argparse.Namespace:
                     help="LiteLLM reasoning_effort: controls thinking/CoT budget. 'none' minimises hidden thinking (recommended for fair baselines). Ignored by models that don't support it (via drop_params).")
     p.add_argument("--thinking-budget", dest="thinking_budget", type=int, default=None,
                     help="Explicit thinking budget in tokens.")
-    p.add_argument("--max-steps", dest="max_steps", type=int, default=10, help="Maximum iterative search/reasoning steps (used by fire, react).")
+    p.add_argument("--max-steps", dest="max_steps", type=int, default=10, help="Maximum iterative search/reasoning steps (used by fire, react, safe).")
     p.add_argument("--top-k", dest="top_k", type=int, default=5, help="Number of retrieved items (S2 abstracts for retrieval; passages for open_scholar).")
     # ── Retrieval-specific ─────────────────────────────────────────────
     p.add_argument("--search-backend", dest="search_backend", default="s2", choices=["web", "s2"],
-                    help="Search backend for retrieval and react baselines: 'web' (DuckDuckGo) or 's2' (Semantic Scholar). Default: s2.")
+                    help="Search backend for retrieval, react, and safe baselines: 'web' (DuckDuckGo) or 's2' (Semantic Scholar). Default: s2.")
     p.add_argument("--no-strip-query", dest="strip_query", action="store_false", default=True,
                     help="Disable stripping dataset-specific boilerplate from claims before S2 search.")
     # ── OpenScholar-specific ──────────────────────────────────────────
@@ -305,8 +282,10 @@ def main() -> None:
         pass  # no model
     elif args.baseline == "retrieval":
         baseline_subdir = f"retrieval/{args.search_backend}/{model_slug}/top{args.top_k}"
-    elif args.baseline == "react":
+    elif args.baseline in {"react", "safe"}:
         baseline_subdir = f"react/{args.search_backend}/{model_slug}"
+        if args.baseline == "safe":
+            baseline_subdir = f"safe/{args.search_backend}/{model_slug}"
     else:
         baseline_subdir = f"{args.baseline}/{model_slug}"
 
