@@ -57,7 +57,7 @@ YAML config files for `run_baselines_datasets.py`. Load with `--config`; any CLI
 | `s2_retrieval_config.yaml` | `retrieval` | `anthropic/claude-sonnet-4-6`, search_backend=s2, top_k=5, 1 repeat |
 | `open_scholar_config.yaml` | `open_scholar` | `anthropic/claude-sonnet-4-6`, S2 adaptive retrieval on (`retrieval: true`), top_k=10, 1 repeat |
 | `fire_config.yaml` | `fire` | `anthropic/claude-sonnet-4-6`, max_steps=5, 1 repeat |
-| `fire_s2_config.yaml` | `fire` | `anthropic/claude-sonnet-4-6`, search_backend=s2, max_steps=5, 1 repeat |
+| `fire_s2_config.yaml` | `fire` | Deprecated preset from the earlier local FIRE reimplementation. Upstream FIRE is web-only; this config now exists only as a reference and will fail fast if used unchanged. |
 | `safe_config.yaml` | `safe` | `anthropic/claude-sonnet-4-6`, search_backend=web, top_k=3, max_steps=5, 1 repeat |
 | `ace_config.yaml` | `ace` | `anthropic/claude-sonnet-4-6`, max_tokens=4096, 1 repeat |
 | `react_config.yaml` | `react` | `anthropic/claude-sonnet-4-6`, max_steps=10, 1 repeat |
@@ -82,7 +82,7 @@ Runs all baselines sequentially on one or more datasets. Accepts dataset names a
 | 6 | Adaptive retrieval | `react` (S2) | `anthropic/claude-sonnet-4-6` |
 | 7 | Adaptive retrieval | `ace` | `anthropic/claude-sonnet-4-6` |
 | 8 | Adaptive retrieval | `fire` | `anthropic/claude-sonnet-4-6` |
-| 9 | Adaptive retrieval | `fire` (S2) | `anthropic/claude-sonnet-4-6` |
+| 9 | Adaptive retrieval | `fire` (S2) | Deprecated historical entry from the earlier local reimplementation; upstream FIRE is web-only. |
 | 10 | Adaptive retrieval | `safe` (web) | `anthropic/claude-sonnet-4-6` |
 | 11 | Adaptive retrieval | `open_scholar` | `claude-sonnet-4-6` (S2 retrieval, no oracle evidence) |
 
@@ -100,7 +100,7 @@ ReAct + web search
 ReAct + S2
 ACE
 FIRE
-FIRE + S2
+FIRE + S2 (deprecated historical variant)
 SAFE + web search
 OpenScholar-Sonnet-4.6 (no evidence)
 ```
@@ -119,11 +119,11 @@ Installable baseline classes. All baselines share the same infrastructure from `
 | `random_baseline.py` | `RandomBaseline` | Chance floor — uniform draw from {SUPPORT, REFUTE, NEI} |
 | `llm_only.py` | `LLMOnly` | Parametric knowledge ceiling — single LLM call, no retrieval |
 | `retrieval_baseline.py` | `RetrievalBaseline` | Fixed-k RAG — searches Semantic Scholar or the web (controlled by `--search-backend`) with the raw claim, retrieves top-k results, and classifies with a single LLM call. No iteration or feedback. The "paste search results into an LLM" baseline. |
-| `open_scholar_baseline.py` | `OpenScholarBaseline` | RAG baseline — routes each claim through the [OpenScholar](../../OpenScholar) pipeline (Claude Sonnet 4.6 by default). When the dataset CSV provides an `evidence` snippet (e.g. SIGNOR, ConnectomeDB), it is forwarded as a retrieved passage alongside any live S2-retrieved passages. With `--retrieval`, OpenScholar runs its full feedback loop (keyword extraction → S2 search → re-rank → answer edit). Outputs `claim_verdict` JSON (SUPPORT / REFUTE / UNCERTAIN → normalised to SUPPORT / REFUTE / NEI). Results saved as `BaselineResult` JSONL, identical in schema to `llm_only`. |
-| `fire_baseline.py` | `FIREBaseline` | Iterative retrieval baseline — [FIRE](../../fire) dynamically decides whether to search the web or finalise a verdict at each step, integrating reasoning and retrieval. Binary output (True/False) mapped to SUPPORT/REFUTE; failures → UNCERTAIN. Runs as subprocess in FIRE's own `.venv`. |
+| `open_scholar_baseline.py` | `OpenScholarBaseline` | RAG baseline — routes each claim through the upstream [OpenScholar](OpenScholar) pipeline under `experiments/OpenScholar` (Claude Sonnet 4.6 by default). When the dataset CSV provides an `evidence` snippet (e.g. SIGNOR, ConnectomeDB), it is forwarded as a retrieved passage alongside any live S2-retrieved passages. With `--retrieval`, OpenScholar runs its full feedback loop (keyword extraction → S2 search → re-rank → answer edit). Outputs `claim_verdict` JSON (SUPPORT / REFUTE / UNCERTAIN → normalised to SUPPORT / REFUTE / NEI). Results saved as `BaselineResult` JSONL, identical in schema to `llm_only`. |
+| `fire_baseline.py` | `FIREBaseline` | Iterative retrieval baseline — routes each claim through the upstream [FIRE](fire) verification loop in-process. The original FIRE search step is patched to use the repo's shared `do_search` web helper, while the upstream control flow and prompts remain intact. Binary output (True/False) is mapped to SUPPORT / REFUTE; failures default to UNCERTAIN. Upstream FIRE is web-only in this integration. |
 | `ace_baseline.py` | `ACEBaseline` | Agentic context engineering baseline — [ACE](../../ace) Generator agent classifies claims using a self-improving playbook. By default runs in eval_only mode with a built-in claim-verification playbook (no training). Runs as subprocess in ACE's own `.venv`. |
 | `react_baseline.py` | `ReActBaseline` | Unconstrained agentic reasoning baseline — ReAct (Yao et al., ICLR 2023) Thought → Action → Observation loop with web search tools. The agent decides when to stop with no external sufficiency signal. Uses native tool-use API. The "why not just use a ReAct agent?" baseline. |
-| `safe_baseline.py` | `SAFEBaseline` | SAFE-style iterative search baseline — adapts the claim-rating portion of Search-Augmented Factuality Evaluator (Wei et al., NeurIPS 2024) to atomic scientific claims. The model proposes one search query at a time, accumulates retrieved evidence, and then emits a final SUPPORT / REFUTE / UNCERTAIN label from the shared evaluation taxonomy. |
+| `safe_baseline.py` | `SAFEBaseline` | SAFE baseline — routes each atomic claim through the upstream SAFE `rate_atomic_fact` loop in-process. The original SAFE search step is patched to use the repo's shared `do_search` web helper, while the upstream prompting and answer parsing remain intact. SAFE's `Supported` / `Not Supported` outputs are mapped to SUPPORT / REFUTE; failures default to UNCERTAIN. Upstream SAFE is web-only in this integration. |
 
 ### Unified CLI flags
 
@@ -145,7 +145,7 @@ All baselines share a single set of core flags. Baseline-specific flags only tak
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--search-backend` | `s2` | Search backend: `web` (DuckDuckGo) or `s2` (Semantic Scholar). Used by `retrieval`, `react`, and `safe`. |
+| `--search-backend` | `s2` | Search backend: `web` (DuckDuckGo) or `s2` (Semantic Scholar). Used by `retrieval` and `react`. `fire` and `safe` now use the upstream web-only implementations and will raise if configured with `s2`. |
 | `--no-strip-query` | (stripping on) | Disable stripping dataset-specific boilerplate from claims before S2 search. |
 
 #### OpenScholar-specific
@@ -168,9 +168,8 @@ All baselines share a single set of core flags. Baseline-specific flags only tak
 - **All LLM baselines**: An LLM API key recognised by litellm (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
 - **Retrieval / OpenScholar**: `S2_API_KEY` (defaults to `""`, anonymous, rate-limited) when using `--search-backend s2`.
 - **Retrieval (web) / ReAct (web)**: `ddgs` package (free, no API key).
-- **OpenScholar**: OpenScholar checked out at `<workspace>/OpenScholar` with `.venv` intact.
+- **OpenScholar**: OpenScholar checked out at `experiments/OpenScholar` with `.venv` intact.
 - **FIRE (web)**: `ddgs` package (free, no API key).
-- **FIRE (S2)**: `S2_API_KEY` optional but recommended for higher throughput.
 - **SAFE (web)**: `ddgs` package (free, no API key).
 - **ACE**: ACE cloned at `<workspace>/ace` (reference only; runs in-process).
 

@@ -25,6 +25,9 @@ uv run python scripts/qa_pipeline/run_qa.py --help
 # Run analysis on results
 uv run python scripts/analysis/analyze_qa_results.py --help
 
+# Convert direct-eval baseline CSV output to baseline-style JSONL
+uv run python scripts/analysis/convert_direct_eval_csv_to_jsonl.py --help
+
 # Print baseline metrics tables and save a log under results/analysis/metrics
 uv run python scripts/analysis/print_baseline_metrics_table.py --help
 ```

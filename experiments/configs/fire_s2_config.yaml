@@ -1,8 +1,9 @@
 # ──────────────────────────────────────────────────────────────────────
-# FIRE Baseline Config (Semantic Scholar variant)
+# FIRE Baseline Config (deprecated historical preset)
 #
-# Iterative retrieval-augmented fact-checking via the FIRE pipeline,
-# using Semantic Scholar instead of web search.
+# The original upstream FIRE integration used by this repo is web-only.
+# This file is kept only so older experiment notes still resolve to a file,
+# but the current baseline runner will raise if this config is used unchanged.
 #
 # Usage:
 #   uv run python experiments/run_baselines_datasets.py \

@@ -1,23 +1,27 @@
 """
 Visualise verdict transitions between Setting 1 (single-paper, in-sandbox)
-and Setting 2 (S2 retrieval top-5, in-the-wild) on SIGNOR-Fact.
+and Setting 2 (S2 retrieval top-5, in-the-wild) on SIGNOR-Fact and/or
+ConnectomeDB-Fact.
 
 The focus is on how verdicts *change* when additional evidence is introduced,
 not on accuracy against ground truth.
 
-Produces three panels:
-  1. Sankey / alluvial diagram of verdict flows (Setting 1 → Setting 2)
-  2. Grouped bar chart of verdict distributions per setting
-  3. Transition heatmap with counts and percentages
+Produces several figures including a triple confusion-matrix panel
+(baseline + two delta matrices colour-coded by improvement/regression).
 
 Usage::
 
+    # Default: aggregate both datasets
     uv run python scripts/analysis/plot_sandbox_vs_wild_transitions.py
 
-    # Custom paths
+    # Single dataset
+    uv run python scripts/analysis/plot_sandbox_vs_wild_transitions.py --datasets signor
+    uv run python scripts/analysis/plot_sandbox_vs_wild_transitions.py --datasets connectomedb
+
+    # Custom paths (overrides --datasets)
     uv run python scripts/analysis/plot_sandbox_vs_wild_transitions.py \
         --setting1 results/baselines/single_paper/.../signor_seed100.jsonl \
-        --setting2 results/baselines/s2_retrieval/.../signor_seed100.jsonl \
+        --setting2 results/baselines/retrieval/s2/.../top5/signor_seed100.jsonl \
         --output figs/sandbox_vs_wild.pdf
 """
 
@@ -27,7 +31,9 @@ import argparse
 import json
 from collections import Counter
 from pathlib import Path
+from textwrap import fill
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
@@ -35,12 +41,46 @@ import numpy as np
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
-LABELS = ["UNCERTAIN", "REFUTE", "SUPPORT"]
+LABELS = ["SUPPORT", "REFUTE", "UNCERTAIN"]
 COLORS = {"SUPPORT": "#4CAF50", "REFUTE": "#E53935", "UNCERTAIN": "#91A0AF"}
 
-DEFAULT_S1 = PROJECT_ROOT / "results/baselines/single_paper/anthropic--claude-sonnet-4-6/signor_seed100.jsonl"
-DEFAULT_S2 = PROJECT_ROOT / "results/baselines/retrieval/s2/anthropic--claude-sonnet-4-6/top5/signor_seed100.jsonl"
-DEFAULT_S3 = PROJECT_ROOT / "results/baselines/s2_plus_ref/anthropic--claude-sonnet-4-6/signor_seed100.jsonl"
+_BASELINE_ROOT = PROJECT_ROOT / "results/baselines"
+_MODEL = "anthropic--claude-sonnet-4-6"
+
+# Per-dataset default paths: dataset_key → (setting1, setting2, setting3)
+# Setting 3 defaults to ProClaim direct-eval outputs converted to baseline-style JSONL.
+DATASET_DEFAULTS: dict[str, tuple[Path, Path, Path]] = {
+    "signor": (
+        _BASELINE_ROOT / f"single_paper/{_MODEL}/signor_seed100.jsonl",
+        _BASELINE_ROOT / f"retrieval/s2/{_MODEL}/top5/signor_seed100.jsonl",
+        _BASELINE_ROOT / "signor_direct_eval_20260427_221617/signor_seed100.jsonl",
+    ),
+    "connectomedb": (
+        _BASELINE_ROOT / f"single_paper/{_MODEL}/connectomedb_seed100.jsonl",
+        _BASELINE_ROOT / f"retrieval/s2/{_MODEL}/top5/connectomedb_seed100.jsonl",
+        _BASELINE_ROOT / "connectomedb_eval_20260424_171117/connectomedb_seed100.jsonl",
+    ),
+}
+
+# Legacy single-path defaults (used when --setting1/2/3 are passed explicitly)
+DEFAULT_S1 = DATASET_DEFAULTS["signor"][0]
+DEFAULT_S2 = DATASET_DEFAULTS["signor"][1]
+DEFAULT_S3 = DATASET_DEFAULTS["signor"][2]
+
+
+def resolve_output_dir(output: Path | None, dataset_label: str) -> Path:
+    """Return the directory where figures should be written.
+
+    The aggregated default run historically wrote to ``results/analysis``.
+    Preserve that location so rerunning the default command refreshes the
+    expected figures instead of leaving stale single-dataset artifacts there.
+    """
+    analysis_root = PROJECT_ROOT / "results/analysis"
+    if output is not None:
+        return output.parent if output.suffix else output
+    if dataset_label == "signor+connectomedb":
+        return analysis_root
+    return analysis_root / dataset_label
 
 
 def load_jsonl(path: Path) -> dict[str, dict]:
@@ -50,6 +90,60 @@ def load_jsonl(path: Path) -> dict[str, dict]:
             d = json.loads(line)
             items[d["claim_id"]] = d
     return items
+
+
+def load_and_merge(
+    datasets: list[str],
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict] | None]:
+    """Load and merge S1/S2/S3 results across the requested datasets.
+
+    Claim IDs are naturally disjoint (``SIGNOR-*`` vs ``CDB25:*``), so the
+    merged dicts can be combined safely.  Only claim IDs present in **all**
+    available settings are kept so that accuracy and transition counts are
+    always computed on the same set of claims.
+
+    Returns (s1, s2, s3). s3 is None if the file does not exist for *any*
+    of the requested datasets.
+    """
+    s1_all: dict[str, dict] = {}
+    s2_all: dict[str, dict] = {}
+    s3_all: dict[str, dict] = {}
+    has_s3 = True
+
+    for ds in datasets:
+        p1, p2, p3 = DATASET_DEFAULTS[ds]
+        if not p1.exists():
+            raise FileNotFoundError(f"Setting 1 results not found for {ds}: {p1}")
+        if not p2.exists():
+            raise FileNotFoundError(f"Setting 2 results not found for {ds}: {p2}")
+        s1_all.update(load_jsonl(p1))
+        s2_all.update(load_jsonl(p2))
+        if p3.exists():
+            s3_all.update(load_jsonl(p3))
+        else:
+            has_s3 = False
+
+    # Restrict to the intersection of claim IDs present in all settings
+    common = set(s1_all) & set(s2_all)
+    if has_s3:
+        common &= set(s3_all)
+
+    if len(common) < len(s1_all) or len(common) < len(s2_all):
+        import logging
+        logging.getLogger(__name__).warning(
+            "Restricted to %d claims present in all settings "
+            "(S1=%d, S2=%d%s).",
+            len(common),
+            len(s1_all),
+            len(s2_all),
+            f", S3={len(s3_all)}" if has_s3 else "",
+        )
+
+    s1_all = {k: s1_all[k] for k in common}
+    s2_all = {k: s2_all[k] for k in common}
+    s3_filtered = {k: s3_all[k] for k in common} if has_s3 else None
+
+    return s1_all, s2_all, s3_filtered
 
 
 def compute_transitions(s1: dict, s2: dict) -> tuple[Counter, int]:
@@ -214,7 +308,7 @@ def draw_alluvial_three(ax, trans_12: Counter, trans_23: Counter, n: int,
     ax.set_title("Effect of evidence sources", fontsize=20, fontweight="bold", pad=8)
     label1 = "Reference\nabstract only"
     label2 = "5 retrieved\nabstracts"
-    label3 = "5 retrieved +\nreference abstract"
+    label3 = "ProClaim\n(agentic)"
     if acc1 is not None:
         label1 = f"{label1}\nAcc={acc1:.3f}"
     if acc2 is not None:
@@ -530,7 +624,7 @@ def draw_confusion_matrix_triple(
     titles: tuple[str, str, str] = (
         "Reference abstract only",
         "5 retrieved abstracts",
-        "5 retrieved +\nreference abstract",
+        "ProClaim\n(agentic)",
     ),
 ):
     """Draw three confusion matrices side by side.
@@ -631,53 +725,267 @@ def draw_confusion_matrix_triple(
                     title_fontsize=9)
 
 
+def _text_color_for_fill(color: str) -> str:
+    red, green, blue = mcolors.to_rgb(color)
+    luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    return "white" if luminance < 0.52 else "#111827"
+
+
+def _largest_off_diagonal(cm: np.ndarray) -> tuple[str, str, int, float]:
+    best_count = -1
+    best_src = LABELS[0]
+    best_dst = LABELS[0]
+    best_pct = 0.0
+    for row_idx, src in enumerate(LABELS):
+        row_total = int(cm[row_idx].sum())
+        if row_total == 0:
+            continue
+        for col_idx, dst in enumerate(LABELS):
+            if row_idx == col_idx:
+                continue
+            count = int(cm[row_idx, col_idx])
+            if count > best_count:
+                best_count = count
+                best_src = src
+                best_dst = dst
+                best_pct = 100 * count / row_total
+    return best_src, best_dst, best_count, best_pct
+
+
+def draw_neurips_consensus_panel(
+    ax,
+    data: dict[str, dict],
+    accuracy: float,
+    title: str,
+    setting_description: str,
+    *,
+    show_y_labels: bool = True,
+):
+    """Draw a compact per-setting summary for fast consensus inspection."""
+    cm = _compute_cm(data)
+    row_totals = cm.sum(axis=1)
+    y_positions = np.arange(len(LABELS))
+
+    for row_idx, gold_label in enumerate(LABELS):
+        total = int(row_totals[row_idx])
+        left = 0.0
+        for col_idx, predicted_label in enumerate(LABELS):
+            count = int(cm[row_idx, col_idx])
+            if count == 0 or total == 0:
+                continue
+
+            width = 100 * count / total
+            is_consensus = row_idx == col_idx
+            facecolor = COLORS[predicted_label]
+            alpha = 0.96 if is_consensus else 0.62
+            edgecolor = "#111827" if is_consensus else "white"
+            linewidth = 2.0 if is_consensus else 1.0
+
+            ax.barh(
+                y_positions[row_idx],
+                width,
+                left=left,
+                height=0.74,
+                color=facecolor,
+                alpha=alpha,
+                edgecolor=edgecolor,
+                linewidth=linewidth,
+            )
+
+            if width >= 14:
+                label = f"{predicted_label}\n{width:.0f}%"
+                ax.text(
+                    left + width / 2,
+                    y_positions[row_idx],
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=11,
+                    fontweight="bold" if is_consensus else "normal",
+                    color=_text_color_for_fill(facecolor),
+                )
+            left += width
+
+    error_rate = 1 - accuracy
+    ax.set_xlim(0, 100)
+    ax.set_xticks([0, 50, 100])
+    ax.set_xticklabels(["0%", "50%", "100%"], fontsize=14)
+    ax.set_yticks(y_positions)
+    if show_y_labels:
+        ax.set_yticklabels(
+            [f"{label}\n(n={int(total)})" for label, total in zip(LABELS, row_totals)],
+            fontsize=14,
+        )
+    else:
+        ax.set_yticklabels([])
+        ax.tick_params(axis="y", length=0)
+    ax.set_ylim(len(LABELS) - 0.5, -0.85)
+    # ax.grid(axis="x", color="#D1D5DB", linewidth=0.8, alpha=0.8)
+    ax.set_axisbelow(True)
+    ax.set_xlabel("Predictions in each label category (%)", fontsize=14)
+    ax.set_title(title, fontsize=18, fontweight="bold", loc="center", y=1.12, pad=0)
+    ax.text(
+        0.5,
+        1.015,
+        setting_description,
+        transform=ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=17,
+        color="#374151",
+    )
+    ax.text(
+        0.5,
+        0.925,
+        f"Prediction-label agreement {accuracy:.1%}",
+        transform=ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=17,
+        color="#111827",
+    )
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#9CA3AF")
+
+
+def draw_neurips_consensus_summary(
+    fig,
+    axes,
+    s1: dict[str, dict],
+    s2: dict[str, dict],
+    s3: dict[str, dict],
+    acc1: float,
+    acc2: float,
+    acc3: float,
+):
+    """Draw a reader-friendly three-panel summary for a paper audience."""
+    panel_specs = [
+        (
+            s1,
+            acc1,
+            "1. Document-guided",
+            "With one reference abstract.",
+        ),
+        (
+            s2,
+            acc2,
+            "2. Naive retrieval",
+            "With top-5 retrieved abstracts.",
+        ),
+        (
+            s3,
+            acc3,
+            "3. ProClaim",
+            "With the ProClaim agentic system.",
+        ),
+    ]
+
+    for index, (ax, (data, accuracy, title, setting_description)) in enumerate(zip(axes, panel_specs)):
+        draw_neurips_consensus_panel(
+            ax,
+            data,
+            accuracy,
+            title,
+            setting_description,
+            show_y_labels=index == 0,
+        )
+
+    legend_handles = [
+        mpatches.Patch(facecolor=COLORS[label], edgecolor="white", label=f"Predicted {label}")
+        for label in LABELS
+    ]
+    legend_handles.append(
+        mpatches.Patch(facecolor="white", edgecolor="#111827", linewidth=2, label="Agreement with labels")
+    )
+    fig.legend(
+        handles=legend_handles,
+        ncol=4,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.06),
+        frameon=False,
+        fontsize=18,
+    )
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
         description="Visualise verdict transitions between sandbox and wild settings."
     )
-    parser.add_argument("--setting1", type=Path, default=DEFAULT_S1,
-                        help="Path to Setting 1 (single paper) JSONL results.")
-    parser.add_argument("--setting2", type=Path, default=DEFAULT_S2,
-                        help="Path to Setting 2 (S2 retrieval) JSONL results.")
-    parser.add_argument("--setting3", type=Path, default=DEFAULT_S3,
-                        help="Path to Setting 3 (S2 top-5 + reference paper) JSONL results.")
+    parser.add_argument(
+        "--datasets",
+        nargs="+",
+        choices=list(DATASET_DEFAULTS) + ["both"],
+        default=["both"],
+        help=(
+            "Which dataset(s) to include. 'both' aggregates signor and connectomedb. "
+            "Ignored when --setting1/2/3 are supplied explicitly."
+        ),
+    )
+    parser.add_argument("--setting1", type=Path, default=None,
+                        help="Override Setting 1 JSONL path (single paper).")
+    parser.add_argument("--setting2", type=Path, default=None,
+                        help="Override Setting 2 JSONL path (S2 retrieval).")
+    parser.add_argument("--setting3", type=Path, default=None,
+                        help="Override Setting 3 JSONL path (default: ProClaim direct-eval JSONL).")
     parser.add_argument("--output", type=Path, default=None,
                         help="Output directory for figures (default: results/analysis/)")
     args = parser.parse_args()
 
-    s1 = load_jsonl(args.setting1)
-    s2 = load_jsonl(args.setting2)
+    # ── Load data ─────────────────────────────────────────────────────────────
+    if args.setting1 is not None or args.setting2 is not None:
+        # Explicit paths supplied — load directly (original behaviour)
+        s1_path = args.setting1 or DEFAULT_S1
+        s2_path = args.setting2 or DEFAULT_S2
+        s3_path = args.setting3 or DEFAULT_S3
+        s1 = load_jsonl(s1_path)
+        s2 = load_jsonl(s2_path)
+        s3 = load_jsonl(s3_path) if s3_path.exists() else None
+        dataset_label = s1_path.stem
+    else:
+        requested = args.datasets
+        if "both" in requested:
+            requested = list(DATASET_DEFAULTS.keys())
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        requested = [d for d in requested if not (d in seen or seen.add(d))]
+        s1, s2, s3 = load_and_merge(requested)
+        dataset_label = "+".join(requested)
+
     acc1 = compute_accuracy(s1)
     acc2 = compute_accuracy(s2)
     transitions_12, n = compute_transitions(s1, s2)
 
-    print(f"Loaded {n} claims. Verdicts changed (S1→S2) in "
-          f"{sum(v for (a,b),v in transitions_12.items() if a != b)}/{n} claims.")
+    print(f"Datasets: {dataset_label}  |  {n} claims total")
+    print(f"Verdicts changed (S1→S2): {sum(v for (a,b),v in transitions_12.items() if a != b)}/{n}")
     print(f"Accuracy (S1): {acc1:.3f}")
     print(f"Accuracy (S2): {acc2:.3f}")
 
     # Load Setting 3 if available
-    has_s3 = args.setting3.exists()
+    has_s3 = s3 is not None
     if has_s3:
-        s3 = load_jsonl(args.setting3)
         acc3 = compute_accuracy(s3)
         transitions_23, _ = compute_transitions(s2, s3)
         transitions_13, _ = compute_transitions(s1, s3)
-        print(f"Verdicts changed (S2→S3) in "
-              f"{sum(v for (a,b),v in transitions_23.items() if a != b)}/{n} claims.")
-        print(f"Verdicts changed (S1→S3) in "
-              f"{sum(v for (a,b),v in transitions_13.items() if a != b)}/{n} claims.")
+        print(f"Verdicts changed (S2→S3): {sum(v for (a,b),v in transitions_23.items() if a != b)}/{n}")
+        print(f"Verdicts changed (S1→S3): {sum(v for (a,b),v in transitions_13.items() if a != b)}/{n}")
         print(f"Accuracy (S3): {acc3:.3f}")
 
         # Analyse claims that changed across the three settings
         buckets = find_changed_claims(s1, s2, s3)
 
-    out_dir = (args.output or PROJECT_ROOT / "results/analysis")
-    if args.output and args.output.suffix:
-        out_dir = args.output.parent
+    out_dir = resolve_output_dir(args.output, dataset_label)
     out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Saving figures to: {out_dir}")
+
+    # Human-readable dataset label for figure titles
+    title_label = {
+        "signor": "SIGNOR-Fact",
+        "connectomedb": "ConnectomeDB-Fact",
+        "signor+connectomedb": "SIGNOR-Fact + ConnectomeDB-Fact",
+    }.get(dataset_label, dataset_label)
 
     if has_s3:
         save_changed_claims(buckets, out_dir)
@@ -719,13 +1027,13 @@ def main():
     if has_s3:
         fig1c, ax1c = plt.subplots(figsize=(7, 5))
         draw_alluvial(ax1c, transitions_13, n,
-                      title=f"Reference only vs. retrieved + reference\nAccuracy: {acc1:.3f} → {acc3:.3f}",
+                      title=f"Reference only vs. ProClaim\nAccuracy: {acc1:.3f} → {acc3:.3f}",
                       left_label="Reference\nabstract only",
-                      right_label="5 retrieved +\nreference abstract",
+                      right_label="ProClaim\n(agentic)",
                       left_accuracy=acc1,
                       right_accuracy=acc3)
         fig1c.tight_layout()
-        p1c = out_dir / "sandbox_vs_s2plusref_alluvial.pdf"
+        p1c = out_dir / "sandbox_vs_proclaim_alluvial.pdf"
         fig1c.savefig(p1c, bbox_inches="tight", dpi=200)
         fig1c.savefig(p1c.with_suffix(".png"), bbox_inches="tight", dpi=150)
         print(f"Saved {p1c}")
@@ -741,13 +1049,28 @@ def main():
         acc2,
         acc3 if has_s3 else None,
     )
-    fig1d.suptitle("Effect of evidence sources on SIGNOR-Fact",
+    fig1d.suptitle(f"Effect of evidence sources on {title_label}",
                    fontsize=14, fontweight="bold", y=1.02)
     fig1d.tight_layout()
     p1d = out_dir / "sandbox_vs_wild_confusion_matrices.pdf"
     fig1d.savefig(p1d, bbox_inches="tight", dpi=200)
     fig1d.savefig(p1d.with_suffix(".png"), bbox_inches="tight", dpi=150)
     print(f"Saved {p1d}")
+
+    if has_s3:
+        fig1e, axes_neurips = plt.subplots(1, 3, figsize=(18.4, 6.9))
+        draw_neurips_consensus_summary(fig1e, axes_neurips, s1, s2, s3, acc1, acc2, acc3)
+        # fig1e.suptitle(
+        #     "How Consensus Patterns Shift Across Verification Settings",
+        #     fontsize=18,
+        #     fontweight="bold",
+        #     y=0.96,
+        # )
+        fig1e.subplots_adjust(left=0.08, right=0.98, top=0.74, bottom=0.24, wspace=0.36)
+        p1e = out_dir / "sandbox_vs_wild_neurips_consensus_summary.pdf"
+        fig1e.savefig(p1e, bbox_inches="tight", dpi=200)
+        fig1e.savefig(p1e.with_suffix(".png"), bbox_inches="tight", dpi=150)
+        print(f"Saved {p1e}")
 
     # Plot 2: Distribution bars
     fig2, ax2 = plt.subplots(figsize=(5, 4))

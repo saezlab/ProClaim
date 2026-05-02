@@ -30,14 +30,10 @@ from baselines.shared.verdict import BaselineResult
 
 logger = logging.getLogger(__name__)
 
-# Resolve paths relative to *this* file:
-#   baselines/open_scholar_baseline.py
-#   ../../..  → grn-llm-correct/
-#   ../../../../OpenScholar → OpenScholar root
+# Resolve paths relative to *this* file.
 _BASELINES_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _BASELINES_DIR.parent.parent      # grn-llm-correct/
-_WORKSPACE_ROOT = _PROJECT_ROOT.parent             # workspace/
-_DEFAULT_OPEN_SCHOLAR_DIR = _WORKSPACE_ROOT / "OpenScholar"
+_DEFAULT_OPEN_SCHOLAR_DIR = _PROJECT_ROOT / "experiments" / "OpenScholar"
 _DEFAULT_ENV_FILE = _PROJECT_ROOT / ".env"
 
 

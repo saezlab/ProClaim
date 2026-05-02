@@ -21,6 +21,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${PROJECT_ROOT}/results/slurm_logs/baselines"
 GCP_CREDENTIALS="${PROJECT_ROOT}/prj-int-dev-saez-ai-pkc-734bae1cf581.json"
+DATASETS_DIR="/hps/nobackup/saezrodriguez/shared_datasets/claims/datasets"
 
 LIMIT=0
 REPEATS=1
@@ -52,7 +53,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $(basename "$0") [--baselines B1 B2 ...] [--datasets D1 D2 ...] [--limit N] [--repeats N] [--time HH:MM:SS]"
             echo ""
-            echo "Available baselines: llm_only retrieval react_web react_s2 ace fire fire_s2 safe open_scholar"
+            echo "Available baselines: llm_only retrieval react_web react_s2 ace fire safe open_scholar"
             echo "  (default: all)"
             exit 0 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
@@ -67,7 +68,7 @@ DATASETS_STR="${DATASETS[*]}"
 
 # If no baselines specified, run all
 if [[ ${#BASELINES[@]} -eq 0 ]]; then
-    BASELINES=(llm_only retrieval react_web react_s2 ace fire fire_s2 safe open_scholar)
+    BASELINES=(llm_only retrieval react_web react_s2 ace fire safe open_scholar)
 fi
 
 # Helper: check if a baseline is in the selected list
@@ -125,6 +126,7 @@ submit_job() {
         echo ""
         echo "# Baseline-specific environment"
         echo "${extra_env}"
+        echo "export PYTHONUNBUFFERED=1"
         echo ""
         echo "echo '========================================'"
         echo "echo '  ${description}'"
@@ -137,6 +139,7 @@ submit_job() {
         # Build the command — config provides defaults, CLI flags override
         echo -n "uv run python experiments/run_baselines_datasets.py"
         echo -n " --config \"${config_file}\""
+        echo -n " --datasets-dir \"${DATASETS_DIR}\""
         echo -n " --datasets ${DATASETS_STR}"
         echo -n " --repeats ${REPEATS}"
         echo -n " --temperature ${TEMP}"
@@ -282,20 +285,7 @@ ALL_JOB_IDS+=("$JID")
 fi
 
 # ---------------------------------------------------------------------------
-# 9. FIRE + S2: Claude Sonnet 4.6
-# ---------------------------------------------------------------------------
-if baseline_selected fire_s2; then
-echo "Submitting: FIRE + S2: Claude-Sonnet-4.6 ..."
-submit_s2_job "fire-s2-claude" "FIRE + S2: Claude-Sonnet-4.6" \
-    "# ANTHROPIC_API_KEY loaded from .env" "" \
-    "${CONFIGS_DIR}/fire_s2_config.yaml"
-JID="$SUBMITTED_JOB_ID"
-echo "  -> Job ID: ${JID}"
-ALL_JOB_IDS+=("$JID")
-fi
-
-# ---------------------------------------------------------------------------
-# 10. SAFE: Claude Sonnet 4.6
+# 9. SAFE: Claude Sonnet 4.6
 # ---------------------------------------------------------------------------
 if baseline_selected safe; then
 echo "Submitting: SAFE: Claude-Sonnet-4.6 ..."
@@ -308,7 +298,7 @@ ALL_JOB_IDS+=("$JID")
 fi
 
 # ---------------------------------------------------------------------------
-# 11. OpenScholar: Claude Sonnet 4.6 (S2 retrieval + reranker, no oracle evidence)
+# 10. OpenScholar: Claude Sonnet 4.6 (S2 retrieval + reranker, no oracle evidence)
 #    Requires GPU for the FlagReranker model. Uses YAML config.
 # ---------------------------------------------------------------------------
 if baseline_selected open_scholar; then
