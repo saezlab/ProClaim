@@ -42,4 +42,4 @@ output_dir: results/connectomedb_eval_prompt
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
 # Logging
-verbose: True
+verbose: false

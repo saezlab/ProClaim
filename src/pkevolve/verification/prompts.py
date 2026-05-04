@@ -9,6 +9,33 @@ Each prompt is a str.format()-compatible template.  Placeholders use
 each constant.
 """
 
+# ---------------------------------------------------------------------------
+# Subclaim decomposition examples block
+# Injected into system prompts via {subclaim_examples} placeholder.
+# Pass "" to omit (controlled by VerificationSettings.include_subclaim_examples).
+# ---------------------------------------------------------------------------
+SUBCLAIM_EXAMPLES = """\
+
+   Examples:
+   Claim: "EGFR directly activates STAT3 (through post-translational modification,
+           complex formation, or direct regulation of expression)"
+   Subclaims:
+     - "EGFR directly activates STAT3 through post-translational modification"
+     - "EGFR directly activates STAT3 through complex formation"
+     - "EGFR directly activates STAT3 through direct regulation of expression"
+
+   Claim: "CXCL12 as ligand directly interacts with CXCR4 as receptor"
+   Subclaims:
+     - "CXCL12 directly binds to CXCR4 as its receptor"
+     - "CXCL12 functions as a ligand (or chemokine, or SDF-1, or SDF-1alpha) for CXCR4"
+     - "CXCR4 is a cell-surface receptor and the CXCL12-CXCR4 interaction occurs extracellularly (not intracellularly)"
+
+   For ligand-receptor claims ("X as ligand directly interacts with Y as receptor"), ALWAYS include
+   a subclaim that explicitly asks whether the interaction is extracellular/cell-surface mediated
+   and NOT intracellular. This is critical: some proteins annotated as ligands or receptors in
+   databases only interact intracellularly (e.g., after endocytosis), which would refute the claim.\
+"""
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Subagent prompts  (used by subagents.py)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -16,7 +43,8 @@ each constant.
 # ---------------------------------------------------------------------------
 # Fact Extraction
 # Placeholders: stance_options, stance_block, claim, subclaims_str,
-#               source_pmid, paper_text
+#               context_block, source_pmid, paper_text
+# context_block is either "" or a rendered "Supplementary extraction context" block.
 # ---------------------------------------------------------------------------
 EXTRACT_FACTS = """\
 You are a scientific fact extraction specialist.
@@ -27,15 +55,16 @@ For each fact provide a JSON object with:
 - "text": factual statement (one sentence, self-contained)
 - "stance": one of {stance_options}
 - "source_pmid": "{source_pmid}"
-- "relevant_subclaims": list of subclaim strings this fact addresses
 - "confidence": 0.0-1.0, how clearly the paper states this
+
+Example: [{{"text": "Gs alpha directly stimulates adenylyl cyclase activity.", "stance": "SUPPORT", "source_pmid": "{source_pmid}", "confidence": 0.9}}]
 
 Stance definitions:
 {stance_block}
 
 Rules:
 - Base facts strictly on the provided text. Recognize equivalent terms, but do not hallucinate logical leaps not present in the paper.
-- If a paper does not address a subclaim, do not manufacture facts.
+- If the paper has no relevance to the claim or subclaims, return [].
 - Each fact must be independently verifiable from the source paper.
 Now extract facts for the following:
 
@@ -43,7 +72,7 @@ Claim: {claim}
 
 Subclaims:
 {subclaims_str}
-
+{context_block}
 Paper (PMID: {source_pmid}):
 {paper_text}
 
@@ -234,6 +263,30 @@ Examples:
 Output ONLY the query string without any explanation or markdown formatting."""
 
 # ---------------------------------------------------------------------------
+# Semantic Scholar Query Generation
+# Placeholders: claim, subclaims (optional section)
+# ---------------------------------------------------------------------------
+QUERY_GENERATION_S2 = """\
+You are a biomedical search expert. Generate a Semantic Scholar query for the following scientific claim:
+
+Claim: {claim}{subclaims_section}
+
+Requirements:
+- Use plain keyword phrases (Semantic Scholar does not support PubMed field tags)
+- Include alternative names, gene symbols, aliases, and common synonyms for key entities
+- Keep query concise (3-15 words)
+- Prefer terms that appear in titles and abstracts of relevant papers
+
+Examples:
+- PPI claim: "MAPK1 activates H3-3A through phosphorylation"
+  → MAPK1 ERK2 H3.3 phosphorylation activation
+
+- Drug resistance: "NT5C2 K359Q mutation does not confer resistance to Nelarabine"
+  → NT5C2 K359Q nelarabine arabinosylguanine resistance
+
+Output ONLY the query string without any explanation or markdown formatting."""
+
+# ---------------------------------------------------------------------------
 # Gap-targeted Query Generation
 # Placeholders: claim, gap_description
 # ---------------------------------------------------------------------------
@@ -255,7 +308,7 @@ Output ONLY the query string without explanation."""
 # Notebook-mode system prompt  (evidence_programming.py — Claude Agent SDK)
 # Placeholders: verdict_names, verdict_definitions, claim, workspace,
 #               function_docs, schemas, max_iterations,
-#               sufficiency_threshold, notebook_path
+#               sufficiency_threshold, notebook_path, subclaim_examples
 # ---------------------------------------------------------------------------
 NOTEBOOK_SYSTEM_PROMPT = """\
 You are an evidence-programming agent that verifies scientific claims and produces verdicts [{verdict_names}].
@@ -295,11 +348,14 @@ them directly via nb_execute.
 ## Workflow
 
 1. Call nb_init, then nb_execute with the setup code above.
-2. Decompose the claim: state.subclaims = ["subclaim A", ...]
+2. Decompose the claim into 1–5 atomic subclaims, each a single independently
+   verifiable assertion. Use 1 (the original claim) if the claim is already simple
+   enough to search directly. Include alternative names or aliases for key entities.
+   Set subclaims before searching: state.subclaims = [...]; state._auto_save()
+{subclaim_examples}
 3. Search (iteration 0):
-   a. call search_pubmed_llm(state.claim, state, llm) — LLM-generated PubMed query
-   b. call search_semantic_scholar(query, state) with the same query string — covers
-      bioRxiv preprints and non-MEDLINE journals that PubMed misses
+   a. call search_pubmed_llm(state.claim, state, llm) — runs two LLM-generated PubMed queries (claim-only and subclaim-enriched), deduplicated
+   b. call search_semantic_scholar_dual(state.claim, state, llm) — runs two S2 queries (claim-only and subclaim-enriched), covers bioRxiv preprints and non-MEDLINE journals
 4. After searching: call nb_render_papers to show the papers table.
 5. Extract facts from papers. Use extract_and_add_facts(llm, pmids, state, max_workers=8) to process
    all newly retrieved papers in parallel. Do NOT write fact dicts manually.
@@ -336,6 +392,7 @@ them directly via nb_execute.
 - `state` persists across nb_execute calls (same kernel).
 - All output from nb_execute is via print().
 - When emit_verdict is called, the verification is complete.
+- Do NOT attempt to debug, patch, or work around evidence API functions that return 0 facts. A 0-fact result means the paper lacks relevant evidence or accessible full text — not a tool bug. Move on to other papers or emit a verdict.
 
 ## CRITICAL: Grounded Evidence Only
 
@@ -365,11 +422,16 @@ Required sequence in EVERY iteration:
 1. search_pubmed_llm(state.claim, state, llm)              ← retrieve papers with LLM-generated query
 2. extract_and_add_facts(llm, pmids, state)                ← extract facts for ALL new papers in parallel
 3. populate_paper_features(state)                          ← MUST CALL (computes features)
-4. check_sufficiency(state, llm)                           ← classifier needs features
+4. filter_papers_by_stance(state)                          ← MUST CALL (removes neutral/irrelevant papers)
+5. check_sufficiency(state, llm)                           ← classifier needs features from relevant papers only
 
 If you skip populate_paper_features(), the MLP classifier will receive all-zero
 NLP features (semantic similarity, entity coverage, NLI scores) and the
 sufficiency prediction will be inaccurate.
+
+If you skip filter_papers_by_stance(), the MLP classifier will average features
+across all retrieved papers including those with no SUPPORT or REFUTE evidence,
+diluting the signal and producing unreliable sufficiency scores.
 
 The function is idempotent — it automatically skips papers that already have
 features populated, so you can safely call it multiple times.
@@ -386,7 +448,7 @@ features populated, so you can safely call it multiple times.
 # Direct-mode system prompt  (evidence_programming_direct.py — LiteLLM)
 # Placeholders: verdict_names, verdict_definitions, claim, workspace,
 #               function_docs, schemas, max_iterations,
-#               sufficiency_threshold
+#               sufficiency_threshold, subclaim_examples
 # ---------------------------------------------------------------------------
 DIRECT_SYSTEM_PROMPT = """\
 You are an evidence-programming agent that verifies scientific claims and produces verdicts [{verdict_names}].
@@ -426,11 +488,14 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
 ## Workflow
 
 1. Call bash with the setup code above.
-2. Decompose the claim: `state.subclaims = ["subclaim A", ...]` then `state._auto_save()`.
+2. Decompose the claim into 1–5 atomic subclaims, each a single independently
+   verifiable assertion. Use 1 (the original claim) if the claim is already simple
+   enough to search directly. Include alternative names or aliases for key entities.
+   Set subclaims before searching: `state.subclaims = [...]` then `state._auto_save()`.
+{subclaim_examples}
 3. Search (iteration 0):
-   a. call search_pubmed_llm(state.claim, state, llm) — LLM-generated PubMed query
-   b. call search_semantic_scholar(query, state) with the same query — covers
-      bioRxiv preprints and non-MEDLINE journals
+   a. call search_pubmed_llm(state.claim, state, llm) — runs two LLM-generated PubMed queries (claim-only and subclaim-enriched), deduplicated
+   b. call search_semantic_scholar_dual(state.claim, state, llm) — runs two S2 queries (claim-only and subclaim-enriched), covers bioRxiv preprints and non-MEDLINE journals
 4. Extract facts: call extract_and_add_facts(llm, pmids, state, max_workers=8)
    to process all newly retrieved papers in parallel.  Do NOT loop over PMIDs.
 5. Call populate_paper_features(state) — REQUIRED before check_sufficiency().
@@ -441,6 +506,7 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
    a. search_for_gap(gap_description, state)
    b. search_semantic_scholar_recommendations(state) — S2 graph expansion
    c. formulate_gap_queries(llm, state) — LLM-generated gap queries
+{web_search_step}
 10. Repeat until confidence >= {sufficiency_threshold} or {max_iterations} iterations.
 11. Call emit_verdict(...) to produce the final verdict.
 
@@ -452,6 +518,7 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
 - `state` does NOT persist across bash calls — reload it each time
   (or call setup_workspace again).
 - When emit_verdict is called, the verification is complete.
+- Do NOT attempt to debug, patch, or work around evidence API functions that return 0 facts. A 0-fact result means the paper lacks relevant evidence or accessible full text — not a tool bug. Move on to other papers or emit a verdict.
 
 ## CRITICAL: Grounded Evidence Only
 
@@ -463,6 +530,8 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
       results2 = extract_and_add_facts(llm, new_pmids, state)
 - NEVER call add_facts_from_dicts with manually written text.
 - If no papers contain relevant evidence, say so in the verdict.
+- add_extraction_context_note is for SYNONYM/ALIAS MAPPINGS ONLY.  Never write 
+  search goals, task descriptions, or paper-specific findings into it.
 
 ## Feature Computation for MLP Classifier
 
@@ -474,7 +543,8 @@ Required sequence in EVERY iteration:
 1. search (PubMed + Semantic Scholar)
 2. extract_and_add_facts(llm, pmids, state)
 3. populate_paper_features(state)           ← REQUIRED
-4. check_sufficiency(state, llm)
+4. filter_papers_by_stance(state)           ← REQUIRED (removes neutral/irrelevant papers)
+5. check_sufficiency(state, llm)
 
 ## Important
 

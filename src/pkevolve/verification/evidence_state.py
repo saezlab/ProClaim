@@ -46,13 +46,14 @@ class EvidenceState(BaseModel):
     coverage: dict[str, float] = Field(default_factory=dict)
     synthesis: dict[str, str] = Field(default_factory=dict)
     extracted_pmids: list[str] = Field(default_factory=list)
+    extraction_context: list[str] = Field(default_factory=list)
     sufficiency_history: list[SufficiencyResult] = Field(default_factory=list)
     iteration: int = 0
     token_estimate: int = 0
     # Track paper count per iteration for minimum paper requirements
     papers_per_iteration: list[int] = Field(default_factory=list)
     # In-memory trace log — accumulated during REPL sessions,
-    # written to disk on save()/checkpoint_save().
+    # written to disk only by checkpoint_save() (excluded from evidence_state.json).
     trace: list[dict] = Field(default_factory=list, exclude=True)
 
     # Private: workspace path for auto-persistence.  Set by init_new()
@@ -65,12 +66,15 @@ class EvidenceState(BaseModel):
     def _auto_save(self) -> None:
         """Persist state to workspace if one is configured.
 
-        Called automatically after every mutation method.  Ensures that
-        disk state is always in sync with in-memory state, removing the
-        need for the LLM to call checkpoint_save() explicitly.
+        Writes evidence_state.json on every mutation, and also flushes
+        trace.json whenever the in-memory trace is non-empty.  This ensures
+        the trace survives even if emit_verdict() is never called.
         """
         if self._workspace is not None:
             self.save(self._workspace / "evidence_state.json")
+            if self.trace:
+                trace_path = self._workspace / "trace.json"
+                trace_path.write_text(json.dumps(self.trace, indent=2))
 
     # -- Mutation methods --------------------------------------------------
 
@@ -87,6 +91,12 @@ class EvidenceState(BaseModel):
     def add_conflict(self, conflict: Conflict) -> None:
         """Record a conflict between two facts."""
         self.conflicts.append(conflict)
+        self._auto_save()
+
+    def add_extraction_context(self, note: str) -> None:
+        """Append a context note and clear the extraction cache for full re-extraction."""
+        self.extraction_context.append(note)
+        self.extracted_pmids.clear()
         self._auto_save()
 
     # -- Query methods -----------------------------------------------------

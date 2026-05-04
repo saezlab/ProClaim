@@ -199,12 +199,13 @@ def function_docs() -> str:
     # Functions from evidence_api
     _api_funcs = [
         search_pubmed, search_pubmed_llm, find_related_articles,
-        search_semantic_scholar, search_semantic_scholar_recommendations,
+        search_semantic_scholar, search_semantic_scholar_dual, search_semantic_scholar_recommendations,
         get_full_text_article, get_paper_text, extract_and_add_facts,
         add_facts_from_dicts, update_synthesis, add_conflict,
         get_evidence_summary, check_sufficiency, get_sufficiency_history, compress_evidence,
         emit_verdict, formulate_pubmed_query, search_for_gap, refine_search_for_failed_papers,
         populate_paper_features, populate_paper_features_parallel, filter_papers_by_stance,
+        add_extraction_context_note,
     ]
 
     # Import model registry function for documentation
@@ -392,39 +393,51 @@ def search_pubmed_llm(
     llm,
     max_results: int = 10,
 ) -> list[str]:
-    """PubMed search using single LLM-generated query.
+    """PubMed search using two independent LLM-generated queries, deduplicated.
 
-    Uses LLM to generate a comprehensive query from the claim, replacing
-    the entity-based progressive search approach. Works for diverse claim
-    types: PPI, diagnosis, drug resistance, disease mechanisms, etc.
+    Runs a claim-only query and a subclaim-enriched query in sequence so that
+    aliases and alternative names introduced during decomposition improve recall.
+    Deduplication is handled by ``_search_and_add`` (keyed on PMID).
 
     Args:
         claim: The scientific claim to verify
         state: EvidenceState to add papers to
         llm: LLM callable for query generation
-        max_results: Maximum papers to retrieve
+        max_results: Maximum papers to retrieve per query
 
     Returns:
-        List of added PMIDs
+        List of added PMIDs (union of both queries, deduplicated)
     """
     from pkevolve.search.llm_query_generator import generate_search_query
 
-    # Generate comprehensive query using LLM
-    query = generate_search_query(claim, llm)
-    _debug_print(f"[LLM Query] {query}")
+    all_added: list[str] = []
 
-    # Search PubMed with the LLM-generated query
-    found, added, added_pmids = _search_and_add(query, state, max_results)
-    print(f"PubMed LLM search: found {found}, added {added} new papers")
+    ctx = state.extraction_context or None
 
-    if len(added_pmids) == 0:
-        print("⚠️ No papers found in initial search.")
+    # Query A: claim-only (original behaviour)
+    query_a = generate_search_query(claim, llm, extraction_context=ctx)
+    _debug_print(f"[LLM Query A] {query_a}")
+    _, _, pmids_a = _search_and_add(query_a, state, max_results)
+    all_added.extend(pmids_a)
+
+    # Query B: subclaim-enriched (uses aliases from decomposition step)
+    if state.subclaims:
+        query_b = generate_search_query(claim, llm, subclaims=state.subclaims, extraction_context=ctx)
+        _debug_print(f"[LLM Query B] {query_b}")
+        _, _, pmids_b = _search_and_add(query_b, state, max_results)
+        all_added.extend(pmids_b)
+    else:
+        query_b = None
+
+    if not all_added:
+        print("⚠️ No papers found in initial PubMed search.")
 
     print(
-        f"search_pubmed_llm: found {found}, added {added} new. "
-        f"PMIDs: {', '.join(added_pmids) if added_pmids else 'none'}"
+        f"search_pubmed_llm: added {len(all_added)} new paper(s) across "
+        f"{'2 queries' if query_b else '1 query'}. "
+        f"PMIDs: {', '.join(all_added) if all_added else 'none'}"
     )
-    return added_pmids
+    return all_added
 
 
 
@@ -711,6 +724,59 @@ def search_semantic_scholar(
         len(results), len(added), ', '.join(added) if added else 'none',
     )
     return added
+
+
+def search_semantic_scholar_dual(
+    claim: str,
+    state: EvidenceState,
+    llm,
+    max_results: int = 10,
+) -> list[str]:
+    """Search Semantic Scholar with two independent LLM-generated queries, deduplicated.
+
+    Runs a claim-only query and a subclaim-enriched query so that aliases
+    introduced during decomposition improve recall beyond what the plain claim
+    provides.  Deduplication is handled by ``_search_and_add``.
+
+    Args:
+        claim: The scientific claim to verify
+        state: EvidenceState to add papers to
+        llm: LLM callable for query generation
+        max_results: Maximum papers to retrieve per query
+
+    Returns:
+        List of added paper IDs (union of both queries, deduplicated)
+    """
+    from pkevolve.search.llm_query_generator import generate_search_query_s2
+    from pkevolve.search.semantic_scholar import S2Client
+
+    client = S2Client()
+    all_added: list[str] = []
+
+    ctx = state.extraction_context or None
+
+    # Query C: claim-only
+    query_c = generate_search_query_s2(claim, llm, extraction_context=ctx)
+    _debug_print(f"[S2 Query C] {query_c}")
+    results_c = client.search(query_c, limit=max_results)
+    added_c = _add_s2_records(results_c, state)
+    all_added.extend(added_c)
+
+    # Query D: subclaim-enriched
+    if state.subclaims:
+        query_d = generate_search_query_s2(claim, llm, subclaims=state.subclaims, extraction_context=ctx)
+        _debug_print(f"[S2 Query D] {query_d}")
+        results_d = client.search(query_d, limit=max_results)
+        added_d = _add_s2_records(results_d, state)
+        all_added.extend(added_d)
+    else:
+        query_d = None
+
+    logger.info(
+        "S2 dual search: added %d new. IDs: %s",
+        len(all_added), ', '.join(all_added) if all_added else 'none',
+    )
+    return all_added
 
 
 def search_semantic_scholar_recommendations(
@@ -1173,7 +1239,15 @@ def _extract_and_add_facts_single(
         claim=state.claim,
         subclaims=state.subclaims,
         source_pmid=pmid,
+        extraction_context=state.extraction_context or None,
     )
+
+    # Always track as processed — prevents re-extraction unless add_extraction_context_note
+    # clears this list explicitly.  Must happen before the early return so 0-fact papers
+    # are not re-processed on every subsequent call.
+    if pmid not in state.extracted_pmids:
+        state.extracted_pmids.append(pmid)
+        state._auto_save()
 
     if not facts:
         _debug_print(f"_extract_and_add_facts_single: subagent returned 0 facts for PMID {pmid}.")
@@ -1191,11 +1265,6 @@ def _extract_and_add_facts_single(
         for f in facts
     ]
     added = add_facts_from_dicts(facts_dicts, state)
-
-    # Track this PMID as processed so the LLM doesn't re-extract
-    if pmid not in state.extracted_pmids:
-        state.extracted_pmids.append(pmid)
-
     return added
 
 
@@ -1287,6 +1356,54 @@ def extract_and_add_facts(
     print(f"extract_and_add_facts: done. facts={total_facts} papers={len(pmids_to_process)}")
 
     return results
+
+
+def add_extraction_context_note(state: EvidenceState, note: str) -> None:
+    """Append a supplementary note for fact extraction and clear the extraction cache.
+
+    Use this when new information (synonym mappings, disambiguation, scope
+    clarifications) is discovered during the workflow and should influence how
+    papers are re-extracted.  All previously extracted PMIDs are cleared so
+    that the next call to extract_and_add_facts re-runs with the updated prompt.
+
+    The note must describe TERMINOLOGY ONLY (aliases, synonyms, scope boundaries).
+    Do NOT write interpretive conclusions about what the evidence shows — those
+    belong in the verdict reasoning, not here.  Injecting conclusions biases the
+    extraction LLM and will produce incorrect stance labels.
+
+    Args:
+        state: The live EvidenceState object.
+        note: A terminology/disambiguation note to inject into the EXTRACT_FACTS prompt.
+
+    Good example (synonym mapping — note contains ONLY terminology, zero conclusions):
+        >>> add_extraction_context_note(
+        ...     state,
+        ...     "CRTC2 (also called TORC2) is a CREB transcription coactivator. "
+        ...     "mTOR Complex 2 (mTORC2) is a distinct kinase complex that also appears "
+        ...     "in literature as 'TORC2'. Papers discussing mTORC2 phosphorylating AKT "
+        ...     "are NOT about CRTC2 unless they explicitly name CRTC2.",
+        ... )
+
+    Bad example (do NOT do this — injects a conclusion as if it were a fact):
+        >>> add_extraction_context_note(
+        ...     state,
+        ...     "PMID 12345678 is highly relevant: kinase X phosphorylates protein Y "
+        ...     "at serine 9, activating it.",  # pre-conclusion, not a synonym
+        ... )
+    """
+    n_cleared = len(state.extracted_pmids)
+    n_papers = len(state.papers)
+    state.add_extraction_context(note)
+    state.append_trace("add_extraction_context", {
+        "note": note,
+        "extracted_pmids_cleared": n_cleared,
+        "total_context_notes": len(state.extraction_context),
+    })
+    print(
+        f"Added extraction context note. Cleared all extracted_pmids ({n_cleared} → 0).\n"
+        f"NEXT STEP: re-extract ALL {n_papers} papers with the updated prompt:\n"
+        f"  extract_and_add_facts(llm, list(state.papers.keys()), state)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1713,6 +1830,155 @@ def check_sufficiency(
     return _check_sufficiency_mlp(state, llm, threshold, min_total_papers)
 
 
+def _check_sufficiency_llm(
+    state: EvidenceState,
+    llm,
+    threshold: float,
+    min_total_papers: int,
+) -> SufficiencyResult:
+    """LLM-based sufficiency check (Qwen subagent backend)."""
+    from pkevolve.verification.llm_sufficiency import check_sufficiency_llm
+    from pkevolve.verification.subagents import identify_gaps
+
+    if state.iteration >= state.MAX_ITERATIONS:
+        raise MaxIterationsExceeded(
+            f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
+            "Call emit_verdict() to produce your final verdict.",
+            state=state,
+        )
+
+    current_paper_count = len(state.papers)
+    previous_paper_count = (
+        state.papers_per_iteration[-1] if state.papers_per_iteration else 0
+    )
+    papers_added_this_iteration = current_paper_count - previous_paper_count
+    state.papers_per_iteration.append(current_paper_count)
+
+    label, score, raw_response = check_sufficiency_llm(state, llm, threshold)
+
+    override_reason = None
+    if (
+        label == "sufficient"
+        and min_total_papers > 0
+        and current_paper_count < min_total_papers
+        and state.iteration < state.MAX_ITERATIONS
+    ):
+        override_reason = (
+            f"Minimum paper requirement not met: only {current_paper_count} papers "
+            f"(need at least {min_total_papers}). Continue searching."
+        )
+        label = "insufficient"
+
+    gaps: list = []
+    if label == "insufficient":
+        if override_reason:
+            from pkevolve.verification.data_models import Gap, GapType, GapPriority
+            gaps = [Gap(
+                subclaim=state.claim,
+                gap_type=GapType.LOW_DIVERSITY,
+                description=override_reason,
+                priority=GapPriority.HIGH,
+            )]
+        else:
+            gaps = identify_gaps(
+                llm=llm, claim=state.claim,
+                subclaims=state.subclaims, facts=state.facts,
+            )
+
+    result = SufficiencyResult(label=label, confidence=score, gaps=gaps)
+    state.sufficiency_history.append(result)
+    state.iteration += 1
+    state._auto_save()
+
+    logger.info("check_sufficiency: iter=%d papers=%d score=%.4f label=%s",
+                state.iteration, current_paper_count, score, label)
+    print(f"check_sufficiency: iter={state.iteration} label={label} confidence={score:.4f} papers={current_paper_count}(+{papers_added_this_iteration}) backend=llm")
+    if override_reason:
+        print(f"  override: sufficient → insufficient (need >={min_total_papers} papers, have {current_paper_count})")
+    if gaps:
+        print(f"  gaps: {len(gaps)} (top: {gaps[0].gap_type.value} — {gaps[0].description[:80]})")
+
+    return result
+
+
+def _check_sufficiency_haiku(
+    state: EvidenceState,
+    llm,
+    threshold: float,
+    min_total_papers: int,
+) -> SufficiencyResult:
+    """Haiku-based sufficiency check (Claude Haiku via native Anthropic API).
+
+    Gap identification still uses the general-purpose ``llm`` (Qwen).
+    """
+    from pkevolve.verification.llm_sufficiency import check_sufficiency_llm
+    from pkevolve.verification.subagents import identify_gaps
+    from pkevolve.verification.model_registry import get_haiku_llm
+
+    if state.iteration >= state.MAX_ITERATIONS:
+        raise MaxIterationsExceeded(
+            f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
+            "Call emit_verdict() to produce your final verdict.",
+            state=state,
+        )
+
+    current_paper_count = len(state.papers)
+    previous_paper_count = (
+        state.papers_per_iteration[-1] if state.papers_per_iteration else 0
+    )
+    papers_added_this_iteration = current_paper_count - previous_paper_count
+    state.papers_per_iteration.append(current_paper_count)
+
+    haiku_llm = get_haiku_llm()
+    label, score, raw_response = check_sufficiency_llm(state, haiku_llm, threshold)
+
+    override_reason = None
+    if (
+        label == "sufficient"
+        and min_total_papers > 0
+        and current_paper_count < min_total_papers
+        and state.iteration < state.MAX_ITERATIONS
+    ):
+        override_reason = (
+            f"Minimum paper requirement not met: only {current_paper_count} papers "
+            f"(need at least {min_total_papers}). Continue searching."
+        )
+        label = "insufficient"
+
+    gaps: list = []
+    if label == "insufficient":
+        if override_reason:
+            from pkevolve.verification.data_models import Gap, GapType, GapPriority
+            gaps = [Gap(
+                subclaim=state.claim,
+                gap_type=GapType.LOW_DIVERSITY,
+                description=override_reason,
+                priority=GapPriority.HIGH,
+            )]
+        else:
+            gaps = identify_gaps(
+                llm=llm,  # Qwen, not Haiku
+                claim=state.claim,
+                subclaims=state.subclaims,
+                facts=state.facts,
+            )
+
+    result = SufficiencyResult(label=label, confidence=score, gaps=gaps)
+    state.sufficiency_history.append(result)
+    state.iteration += 1
+    state._auto_save()
+
+    logger.info("check_sufficiency: iter=%d papers=%d score=%.4f label=%s",
+                state.iteration, current_paper_count, score, label)
+    print(f"check_sufficiency: iter={state.iteration} label={label} confidence={score:.4f} papers={current_paper_count}(+{papers_added_this_iteration}) backend=haiku")
+    if override_reason:
+        print(f"  override: sufficient → insufficient (need >={min_total_papers} papers, have {current_paper_count})")
+    if gaps:
+        print(f"  gaps: {len(gaps)} (top: {gaps[0].gap_type.value} — {gaps[0].description[:80]})")
+
+    return result
+
+
 def _check_sufficiency_mlp(
     state: EvidenceState,
     llm,
@@ -1914,7 +2180,6 @@ def get_sufficiency_history(
                 f"  {row['iteration']:>4}  {row['label']:<12}  "
                 f"{row['confidence']:>10.6f}"
             )
-        logger.debug("get_sufficiency_history:\n%s", "\n".join(table_lines))
 
     # --- Trend analysis ------------------------------------------------------
     if len(history) < window:
@@ -2005,9 +2270,7 @@ def filter_papers_by_stance(
         del state.papers[pmid]
 
     # Log the filtering operation
-    state.trace.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "operation": "filter_papers_by_stance",
+    state.append_trace("filter_papers_by_stance", {
         "keep_stances": keep_stances,
         "papers_before": len(papers_to_keep) + len(papers_to_remove),
         "papers_after": len(papers_to_keep),
@@ -2246,12 +2509,17 @@ def setup_kernel(
         extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+    timeout = int(os.environ.get("LLM_TIMEOUT", "300"))
+    stream = os.environ.get("LLM_STREAM", "1") == "1"
+
     llm = make_llm(
         model=model,
         api_key=api_key,
         base_url=base_url,
         temperature=temperature,
         extra_body=extra_body,
+        timeout=timeout,
+        stream=stream,
     )
 
     # Initialize label config from environment (JSON-encoded, set by build_sdk_env)
@@ -2345,6 +2613,8 @@ def setup_workspace(
         extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+    timeout = int(os.environ.get("LLM_TIMEOUT", "300"))
+    stream = os.environ.get("LLM_STREAM", "1") == "1"
 
     from pkevolve.verification.llm_factory import make_llm
     llm = make_llm(
@@ -2353,6 +2623,8 @@ def setup_workspace(
         base_url=base_url,
         temperature=temperature,
         extra_body=extra_body,
+        timeout=timeout,
+        stream=stream,
     )
 
     # Initialize label config from environment

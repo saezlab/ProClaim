@@ -128,6 +128,7 @@ def extract_facts(
     claim: str,
     subclaims: list[str],
     source_pmid: str,
+    extraction_context: list[str] | None = None,
 ) -> list[Fact]:
     """Extract stance-labeled facts from a paper.
 
@@ -137,6 +138,8 @@ def extract_facts(
         claim: The claim being verified.
         subclaims: List of subclaims the facts should be mapped to.
         source_pmid: PMID of the source paper.
+        extraction_context: Optional list of supplementary notes (synonym mappings,
+            disambiguation, scope clarifications) injected between subclaims and paper.
 
     Returns:
         List of Fact objects with stance labels and subclaim mappings.
@@ -147,11 +150,17 @@ def extract_facts(
     subclaims_str = "\n".join(f"  - {sc}" for sc in subclaims)
     stance_block = label_cfg.stance_prompt_block()
     stance_options = label_cfg.stance_options_str()
+    if extraction_context:
+        notes = "\n".join(f"- {note}" for note in extraction_context)
+        context_block = f"Supplementary extraction context (use to interpret the paper correctly):\n{notes}\n"
+    else:
+        context_block = ""
     prompt = EXTRACT_FACTS.format(
         stance_options=stance_options,
         stance_block=stance_block,
         claim=claim,
         subclaims_str=subclaims_str,
+        context_block=context_block,
         source_pmid=source_pmid,
         paper_text=paper_text[:50000],
     )

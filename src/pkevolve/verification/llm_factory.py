@@ -9,12 +9,6 @@ Uses LiteLLM for provider-agnostic routing — supports Anthropic, OpenAI,
 vLLM, SGLang, DeepSeek, Gemini, and any other backend via provider-prefixed
 model strings (e.g. ``"anthropic/claude-sonnet-4-20250514"``) or raw model
 names with a ``base_url`` for local endpoints.
-
-Example::
-
-    from pkevolve.verification.llm_factory import make_llm
-    llm = make_llm(model="anthropic/claude-sonnet-4-20250514", api_key=...)
-    llm = make_llm(model="Qwen/Qwen3-8B", base_url="http://localhost:8000/v1/")
 """
 
 from __future__ import annotations
@@ -22,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import re
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -48,7 +43,9 @@ def make_llm(
     temperature: float = 0.7,
     retries: int = 3,
     retry_base_delay: float = 1.0,
+    timeout: int = 300,
     extra_body: dict | None = None,
+    stream: bool = True,
 ) -> LLMCallable:
     """Build an ``llm(prompt) -> str`` callable backed by LiteLLM.
 
@@ -66,131 +63,64 @@ def make_llm(
         temperature:      Sampling temperature (default 0.7).
         retries:          Number of attempts before returning an empty string.
         retry_base_delay: Base delay in seconds for exponential back-off.
+        timeout:          Connection and read timeout in seconds (default 300).
         extra_body:       Extra fields forwarded verbatim in the request body.
-                          Use this for backend-specific options, e.g. for
-                          SGLang + Qwen3 to disable the built-in thinking mode::
-
-                              extra_body={"chat_template_kwargs": {"enable_thinking": False}}
+        stream:           Use streaming API (default True). Prevents timeouts
+                          during long reasoning phases.
 
     Returns:
         A callable ``llm(prompt: str) -> str``.
-
-    Raises:
-        ValueError: If ``model`` is empty.
-
-    Example::
-
-        llm = make_llm(
-            model="anthropic/claude-sonnet-4-20250514",
-        )
-        print(llm("Summarise the role of MAPK1 in cell signalling."))
-
-        # Local vLLM / SGLang endpoint
-        llm = make_llm(
-            model="Qwen/Qwen3-8B",
-            base_url="http://localhost:8000/v1/",
-            api_key="EMPTY",
-        )
     """
     if not model:
         raise ValueError("make_llm: model must not be empty")
 
     import litellm as _litellm
-    import re as _re
 
-    # Cloud providers are routed by LiteLLM automatically — don't
-    # override with base_url which would break routing.
+    # Cloud providers are routed by LiteLLM automatically
+    _is_cloud = any(model.startswith(p) for p in _CLOUD_PREFIXES)
     effective_base_url = base_url
     effective_model = model
-    if base_url and any(model.startswith(p) for p in _CLOUD_PREFIXES):
-        logger.debug(
-            "make_llm: ignoring base_url for cloud model %s", model
-        )
+    # extra_body is vLLM-specific (e.g. chat_template_kwargs); cloud APIs reject it
+    if _is_cloud:
+        extra_body = None
+    if base_url and _is_cloud:
         effective_base_url = None
-    elif base_url and not any(model.startswith(p) for p in _CLOUD_PREFIXES):
-        # Local endpoint (vLLM, SGLang, etc.) — LiteLLM requires a
-        # provider prefix to route the request.  Add "openai/" so it
-        # uses the OpenAI-compatible chat/completions endpoint.
+    elif base_url and not _is_cloud:
         if not model.startswith("openai/"):
             effective_model = f"openai/{model}"
-            logger.debug(
-                "make_llm: auto-prefixed local model as %s", effective_model
-            )
-    # client = OpenAI(base_url=base_url, api_key=api_key)
 
-    # # Preflight: verify the model is actually served (skip for Anthropic endpoints
-    # # which don't expose an OpenAI-compatible /v1/models list).
-    # if "api.anthropic.com" not in base_url:
-    #     try:
-    #         available = {m.id for m in client.models.list().data}
-    #         if model not in available:
-    #             raise ValueError(
-    #                 f"make_llm: model {model!r} not served by {base_url}. "
-    #                 f"Available: {sorted(available)}"
-    #             )
-    #     except ValueError:
-    #         raise
-    #     except Exception:
-    #         pass  # endpoint unreachable or doesn't implement /v1/models — proceed
+    def _call_streaming(kwargs: dict) -> str:
+        """Single streaming attempt using LiteLLM."""
+        content: list[str] = []
+        # Add stream=True to kwargs
+        stream_kwargs = {**kwargs, "stream": True}
+        
+        response = _litellm.completion(**stream_kwargs)
+        
+        for chunk in response:
+            if chunk.choices:
+                delta = chunk.choices[0].delta
+                # Handle both standard content and reasoning_content (vLLM/SGLang)
+                if hasattr(delta, "content") and delta.content:
+                    content.append(delta.content)
+                elif isinstance(delta, dict) and delta.get("content"):
+                    content.append(delta["content"])
+        
+        return "".join(content).strip()
 
-    # def _call_streaming(prompt: str) -> str:
-    #     """Single streaming attempt; returns text or raises."""
-    #     import sys
-    #     import re
-
-    #     content: list[str] = []
-    #     response = client.chat.completions.create(
-    #         model=model,
-    #         messages=[{"role": "user", "content": prompt}],
-    #         temperature=temperature,
-    #         max_tokens=max_tokens,
-    #         stream=True,
-    #         extra_body=extra_body,
-    #     )
-
-    #     for chunk in response:
-    #         if chunk.choices:
-    #             delta = chunk.choices[0].delta
-    #             # SGLang/Qwen3 thinking mode: actual answer is in delta.content;
-    #             # reasoning tokens appear in delta.reasoning_content (ignored here).
-    #             if delta.content:
-    #                 content.append(delta.content)
-
-    #     full_text = "".join(content).strip()
-
-    #     # Filter out <think>...</think> tags for stdout display
-    #     # but keep them in the returned text
-    #     display_text = re.sub(r'<think>.*?</think>', '', full_text, flags=re.DOTALL)
-
-    #     # Print a summary to stdout (so Agent sees activity)
-    #     if display_text:
-    #         preview = display_text[:200].replace('\n', ' ')
-    #         if len(display_text) > 200:
-    #             preview += "..."
-    #         logger.debug("[LLM response: %d chars] %s", len(display_text), preview)
-    #     else:
-    #         logger.debug("[LLM response received (empty display text)]")
-
-    #     return full_text
-
-    # def _call_blocking(prompt: str) -> str:
-    #     """Single non-streaming attempt; returns text or raises."""
-    #     response = client.chat.completions.create(
-    #         model=model,
-    #         messages=[{"role": "user", "content": prompt}],
-    #         temperature=temperature,
-    #         max_tokens=max_tokens,
-    #         stream=False,
-    #         extra_body=extra_body,
-    #     )
-    #     return (response.choices[0].message.content or "").strip()
+    def _call_blocking(kwargs: dict) -> str:
+        """Single blocking attempt using LiteLLM."""
+        response = _litellm.completion(**kwargs)
+        # Check for content or reasoning_content
+        msg = response.choices[0].message
+        result = msg.content or ""
+        # If content is empty but reasoning is present, we might have a 
+        # model that only produced reasoning or LiteLLM mis-mapped it.
+        # But for fact extraction, we only care about final content.
+        return result.strip()
 
     def llm(prompt: str) -> str:
-        """Call the LLM with ``prompt`` and return the response text.
-
-        Retries up to *retries* times with exponential back-off.
-        Returns an empty string if all attempts fail.
-        """
+        """Call the LLM with ``prompt`` and return the response text."""
         for attempt in range(retries):
             try:
                 kwargs: dict = dict(
@@ -198,6 +128,7 @@ def make_llm(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    timeout=timeout,
                 )
                 if api_key:
                     kwargs["api_key"] = api_key
@@ -206,12 +137,15 @@ def make_llm(
                 if extra_body:
                     kwargs["extra_body"] = extra_body
 
-                response = _litellm.completion(**kwargs)
-                result = (response.choices[0].message.content or "").strip()
+                if stream:
+                    result = _call_streaming(kwargs)
+                else:
+                    result = _call_blocking(kwargs)
 
                 if result:
-                    display = _re.sub(
-                        r"<think>.*?</think>", "", result, flags=_re.DOTALL
+                    # Strip reasoning tags for display only
+                    display = re.sub(
+                        r"<think>.*?</think>", "", result, flags=re.DOTALL
                     )
                     preview = display[:200].replace("\n", " ")
                     if len(display) > 200:
@@ -221,16 +155,13 @@ def make_llm(
                     return result
 
                 logger.warning(
-                    "llm(): empty response on attempt %d/%d",
-                    attempt + 1,
-                    retries,
+                    "llm(): empty response on attempt %d/%d (model=%s)",
+                    attempt + 1, retries, model
                 )
             except Exception as exc:
                 logger.warning(
                     "llm(): error on attempt %d/%d: %s",
-                    attempt + 1,
-                    retries,
-                    exc,
+                    attempt + 1, retries, exc
                 )
 
             if attempt < retries - 1:
@@ -240,10 +171,9 @@ def make_llm(
         logger.error("llm(): all %d retries exhausted; returning empty string", retries)
         return ""
 
-    # Attach metadata so callers can inspect the configuration
     llm.__doc__ = (
         f"LLM callable (litellm) — model={model!r} "
-        f"base_url={effective_base_url!r} retries={retries}"
+        f"base_url={effective_base_url!r} stream={stream} timeout={timeout}"
     )
     return llm
 
@@ -262,36 +192,18 @@ def make_anthropic_llm(
     Designed for Claude models (e.g. claude-haiku-4-5-20251001).
     Uses ``max_tokens=1024`` since sufficiency output is a short JSON block.
     ``temperature=1.0`` follows Anthropic's recommended default.
-
-    Args:
-        api_key:          Anthropic API key.
-        model:            Claude model identifier.
-        max_tokens:       Maximum output tokens (default 1024).
-        temperature:      Sampling temperature (default 1.0 — Anthropic recommended).
-        retries:          Number of attempts before returning an empty string.
-        retry_base_delay: Base delay in seconds for exponential back-off.
-
-    Returns:
-        A callable ``llm(prompt: str) -> str``.
-
-    Raises:
-        ValueError: If ``api_key`` or ``model`` are empty strings.
     """
     if not api_key:
         raise ValueError("make_anthropic_llm: api_key must not be empty")
     if not model:
         raise ValueError("make_anthropic_llm: model must not be empty")
 
-    from anthropic import Anthropic  # imported lazily so the module is import-safe
+    from anthropic import Anthropic
 
     client = Anthropic(api_key=api_key)
 
     def llm(prompt: str) -> str:
-        """Call Claude via native Anthropic API and return the response text.
-
-        Retries up to ``retries`` times with exponential back-off.
-        Returns an empty string if all attempts fail.
-        """
+        """Call Claude via native Anthropic API and return the response text."""
         for attempt in range(retries):
             try:
                 message = client.messages.create(

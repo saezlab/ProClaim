@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -47,16 +48,82 @@ _MAX_OUTPUT_CHARS = int(os.environ.get("NB_MAX_OUTPUT_CHARS", "12000"))
 # System prompt: imported from prompts.py
 # ---------------------------------------------------------------------------
 
-from pkevolve.verification.prompts import DIRECT_SYSTEM_PROMPT as SYSTEM_PROMPT
+from pkevolve.verification.prompts import DIRECT_SYSTEM_PROMPT as SYSTEM_PROMPT, SUBCLAIM_EXAMPLES
+
+
+# ---------------------------------------------------------------------------
+# Web search helpers (Serper → DuckDuckGo fallback)
+# ---------------------------------------------------------------------------
+
+_WEB_SEARCH_LOCK = threading.Lock()  # ddgs hangs on concurrent calls
+_SERPER_URL = "https://google.serper.dev"
+
+
+def _serper_search(query: str, api_key: str, k: int = 5) -> str:
+    import requests as _requests
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+    resp = _requests.post(
+        f"{_SERPER_URL}/search",
+        headers=headers,
+        params={"q": query, "num": k, "gl": "us", "hl": "en"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    snippets: list[str] = []
+    if data.get("answerBox"):
+        ab = data["answerBox"]
+        for field in ("answer", "snippet"):
+            val = ab.get(field)
+            if isinstance(val, str):
+                snippets.append(val.replace("\n", " "))
+    if data.get("knowledgeGraph", {}).get("description"):
+        snippets.append(data["knowledgeGraph"]["description"])
+    for item in data.get("organic", [])[:k]:
+        if "snippet" in item:
+            snippets.append(item["snippet"])
+    return "\n".join(snippets) if snippets else "No search results."
+
+
+def _ddg_search(query: str, k: int = 5) -> str:
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        return "[ERROR: ddgs not installed. Run: pip install ddgs]"
+    snippets: list[str] = []
+    try:
+        with _WEB_SEARCH_LOCK:
+            for result in DDGS().text(query, max_results=k):
+                body = result.get("body", "")
+                if body:
+                    snippets.append(body)
+    except Exception as exc:
+        logger.warning("DuckDuckGo search failed for %r: %s", query, exc)
+    return "\n".join(snippets) if snippets else "No search results."
+
+
+def _do_web_search(query: str, k: int = 5) -> str:
+    """Run web search via Serper (if key set) or DuckDuckGo fallback."""
+    serper_key = os.environ.get("SERPER_API_KEY", "")
+    for attempt in range(3):
+        try:
+            if serper_key:
+                return _serper_search(query, serper_key, k=k)
+            return _ddg_search(query, k=k)
+        except Exception as exc:
+            wait = 2 ** attempt * 2
+            logger.warning("Web search error (attempt %d/3), retrying in %ds: %s", attempt + 1, wait, exc)
+            time.sleep(wait)
+    return "Web search temporarily unavailable."
 
 
 # ---------------------------------------------------------------------------
 # Tool schemas (OpenAI function calling format, used by LiteLLM)
 # ---------------------------------------------------------------------------
 
-def build_tool_schemas() -> list[dict]:
+def build_tool_schemas(disable_web_search: bool = False) -> list[dict]:
     """Build tool schemas in OpenAI function calling format."""
-    return [
+    schemas = [
         {
             "type": "function",
             "function": {
@@ -94,7 +161,35 @@ def build_tool_schemas() -> list[dict]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": (
+                    "Search the web for scientific evidence. Use specific queries "
+                    "targeting the entities and relationships in the claim. "
+                    "Returns snippets from top results."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query.",
+                        },
+                        "num_results": {
+                            "type": "integer",
+                            "description": "Number of results to return (default 5).",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
     ]
+    if disable_web_search:
+        schemas = [s for s in schemas if s["function"]["name"] != "web_search"]
+    return schemas
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +407,17 @@ def dispatch_tool(
             append_to_jupytext_log(log_path, f"cat {fpath}", error_msg)
             return error_msg
 
+    elif name == "web_search":
+        query = arguments.get("query", "")
+        k = int(arguments.get("num_results", 5))
+        try:
+            result = _do_web_search(query, k=k)
+        except Exception as e:
+            result = f"[ERROR: web search failed: {e}]"
+        truncated = _smart_truncate(result)
+        append_to_jupytext_log(log_path, f"web_search({query!r})", truncated)
+        return truncated
+
     return f"[ERROR: Unknown tool '{name}']"
 
 
@@ -359,6 +465,7 @@ def build_subprocess_env(cfg) -> dict:
     env["MLP_MODEL_DIR"] = cfg.mlp_model_dir or "results/models/classifier_best"
     env["SUFFICIENCY_BACKEND"] = cfg.sufficiency_backend
     env["MAX_ITERATIONS"] = str(cfg.max_iterations)
+    env["SUFFICIENCY_BACKEND"] = cfg.sufficiency_backend
     env["LABEL_CONFIG_JSON"] = cfg.labels.model_dump_json()
     env["NB_MAX_OUTPUT_CHARS"] = str(cfg.max_output_chars)
 
@@ -372,6 +479,138 @@ def build_subprocess_env(cfg) -> dict:
         env["PYTHONPATH"] = f"{src_dir}:{existing}" if existing else src_dir
 
     return env
+
+
+# ---------------------------------------------------------------------------
+# Forced verdict helper
+# ---------------------------------------------------------------------------
+
+def _force_verdict(workspace: Path, claim: str, sub_env: dict, log_path: Path) -> None:
+    """Force check_sufficiency + LLM-guided emit_verdict when the turn budget is exhausted.
+
+    Mirrors what the agent would do in its final turn: runs check_sufficiency, then
+    prompts the subagent LLM to evaluate the evidence and decide SUPPORT/REFUTE/UNCERTAIN,
+    then calls emit_verdict.  No hardcoded verdict defaults — the LLM makes the call.
+    """
+    abs_workspace = str(workspace.resolve())
+    script = textwrap.dedent(f"""\
+        from pkevolve.verification.evidence_api import (
+            setup_workspace, populate_paper_features, check_sufficiency, emit_verdict,
+            get_evidence_summary, MaxIterationsExceeded,
+        )
+        from pkevolve.verification.config import get_label_config
+
+        state, llm, workspace = setup_workspace(
+            claim={claim!r},
+            workspace_path={abs_workspace!r},
+        )
+        print(f"Forced verdict: {{len(state.papers)}} papers, {{len(state.facts)}} facts, iteration={{state.iteration}}")
+
+        populate_paper_features(state)
+
+        # Run or reuse sufficiency check for gaps.
+        if state.sufficiency_history:
+            suf = state.sufficiency_history[-1]
+            print(f"Reusing last sufficiency: {{suf.label}} (confidence={{suf.confidence:.3f}})")
+        else:
+            try:
+                suf = check_sufficiency(state, llm)
+            except MaxIterationsExceeded:
+                suf = None
+
+        gaps = [g.description for g in (suf.gaps if suf else [])]
+        suf_confidence = suf.confidence if suf else 0.0
+
+        # Prompt the subagent LLM to evaluate evidence and decide the verdict.
+        label_cfg = get_label_config()
+        summary = get_evidence_summary(state)
+        facts_text = "\\n".join(
+            f"  [{{f.stance}}] {{f.text[:200]}}" for f in state.facts[:20]
+        ) or "  (none)"
+
+        verdict_prompt = f\"\"\"You are a scientific evidence evaluator. Based on the evidence below,
+determine the verdict for this claim using exactly one of the defined labels.
+
+Claim: {{state.claim}}
+
+Verdict label definitions:
+{{label_cfg.verdict_prompt_block()}}
+
+Evidence summary:
+{{summary}}
+
+Extracted facts:
+{{facts_text}}
+
+Gaps identified:
+{{chr(10).join(f"  - {{g}}" for g in gaps[:5]) or "  (none)"}}
+
+Output your answer in this exact format:
+VERDICT: <one of {', '.join(label_cfg.verdict_names())}>
+CONFIDENCE: <0.0-1.0>
+REASONING: <one paragraph>
+KEY_EVIDENCE: <bullet 1> | <bullet 2> | <bullet 3>
+\"\"\"
+
+        response = llm(verdict_prompt)
+        print("LLM verdict response:", response[:600])
+
+        # Parse the LLM's structured response.
+        verdict_label = None
+        confidence = suf_confidence
+        reasoning = None
+        key_evidence = []
+
+        for line in response.splitlines():
+            line = line.strip()
+            if line.startswith("VERDICT:"):
+                raw = line.split(":", 1)[1].strip().upper()
+                if raw in label_cfg.verdict_names():
+                    verdict_label = raw
+                else:
+                    print(f"WARNING: LLM returned unrecognised verdict label: {{raw!r}}")
+            elif line.startswith("CONFIDENCE:"):
+                try:
+                    confidence = float(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("REASONING:"):
+                reasoning = line.split(":", 1)[1].strip()
+            elif line.startswith("KEY_EVIDENCE:"):
+                key_evidence = [e.strip() for e in line.split(":", 1)[1].split("|") if e.strip()]
+
+        if verdict_label is None or reasoning is None:
+            raise RuntimeError(
+                f"Failed to parse LLM verdict response. Raw response:\\n{{response}}"
+            )
+
+        print(f"Parsed verdict: {{verdict_label}} (confidence={{confidence:.3f}})")
+
+        emit_verdict(
+            verdict=verdict_label,
+            confidence=confidence,
+            reasoning=reasoning,
+            key_evidence=key_evidence[:5],
+            gaps_remaining=gaps[:5],
+            state=state,
+            workspace=workspace,
+        )
+    """)
+
+    try:
+        result = subprocess.run(
+            ["python3", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=sub_env,
+        )
+        output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()
+    except Exception as exc:
+        output = f"[ERROR: forced verdict script failed: {exc}]"
+
+    append_to_jupytext_log(log_path, "# Forced verdict (max turns reached)", output)
+    logger.info("Forced verdict: %s", output[:300])
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +635,15 @@ def verify_claim_direct(cfg) -> Path:
     # Build system prompt
     from pkevolve.verification.evidence_api import schema_docs, function_docs
     label_cfg = cfg.labels
+    _web_search_step = (
+        ""
+        if cfg.disable_web_search
+        else (
+            "   d. web_search(query) — call this tool directly (NOT via bash) to search the\n"
+            "      web for evidence not found in PubMed/S2; use when academic databases\n"
+            "      return few results or for recent findings not yet indexed."
+        )
+    )
     system_prompt = SYSTEM_PROMPT.format(
         workspace=str(workspace.resolve()),
         claim=claim,
@@ -405,6 +653,8 @@ def verify_claim_direct(cfg) -> Path:
         function_docs=function_docs(),
         verdict_names=", ".join(label_cfg.verdict_names()),
         verdict_definitions=label_cfg.verdict_prompt_block(),
+        subclaim_examples=SUBCLAIM_EXAMPLES if cfg.include_subclaim_examples else "",
+        web_search_step=_web_search_step,
     )
 
     # Jupytext execution log
@@ -412,17 +662,26 @@ def verify_claim_direct(cfg) -> Path:
     init_jupytext_log(log_path, claim)
 
     # Tools and environment
-    tools = build_tool_schemas()
+    tools = build_tool_schemas(disable_web_search=cfg.disable_web_search)
     sub_env = build_subprocess_env(cfg)
 
     # Outer agent model (via LiteLLM)
     agent_model = cfg.llm.model  # e.g. "anthropic/claude-sonnet-4-20250514"
 
+    # Anthropic extended thinking: pass thinking block when budget_tokens > 0.
+    # Requires temperature=1 per Anthropic API requirements.
+    _thinking_budget = cfg.llm.thinking_budget_tokens
+    _thinking_kwargs: dict = {}
+    if _thinking_budget > 0:
+        _thinking_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _thinking_budget}
+        _thinking_kwargs["temperature"] = 1
+
     # Anthropic prompt caching: mark the system message and the last user
     # message with cache_control so repeated turns reuse cached prefixes.
     # LiteLLM passes this through to Anthropic's API.  For non-Anthropic
     # models the extra key is silently ignored.
-    _use_cache = agent_model.startswith("anthropic/")
+    # Note: prompt caching is disabled when thinking is active (Anthropic restriction).
+    _use_cache = agent_model.startswith("anthropic/") and _thinking_budget == 0
 
     def _cached_system_msg(text: str) -> dict:
         if _use_cache:
@@ -443,13 +702,8 @@ def verify_claim_direct(cfg) -> Path:
         return {"role": "user", "content": text}
 
     # Token usage tracking
-    total_usage = {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "cache_read_tokens": 0,
-        "cache_creation_tokens": 0,
-    }
+    from pkevolve.verification.cost_tracker import CostTracker
+    tracker = CostTracker(model=agent_model)
 
     logger.info(
         "Starting direct API verification: claim=%r, model=%s, workspace=%s",
@@ -466,6 +720,7 @@ def verify_claim_direct(cfg) -> Path:
         # *** CONTEXT REFRESH: rebuild messages from log before every call ***
         execution_log = serialize_execution_log(log_path)
 
+        turns_remaining = max_calls - call_count
         if call_count == 0:
             user_text = (
                 f"Verify the following scientific claim using evidence programming.\n\n"
@@ -475,6 +730,14 @@ def verify_claim_direct(cfg) -> Path:
                 f"Call check_sufficiency after each round. "
                 f"Stop when confidence >= {cfg.sufficiency_threshold} or after "
                 f"{cfg.max_iterations} iterations."
+            )
+        elif turns_remaining <= 2:
+            user_text = (
+                f"<execution_log>\n{execution_log}\n</execution_log>\n\n"
+                f"URGENT — only {turns_remaining} turn(s) remaining before hard stop.\n"
+                f"You MUST call check_sufficiency and then emit_verdict NOW.\n"
+                f"Do NOT run any more searches or extractions.\n"
+                f"Claim: {claim}"
             )
         else:
             user_text = (
@@ -498,6 +761,7 @@ def verify_claim_direct(cfg) -> Path:
                 messages=messages,
                 tools=tools,
                 max_tokens=16384,
+                **_thinking_kwargs,
             )
         except Exception as e:
             logger.error("LiteLLM API error: %s", e)
@@ -508,6 +772,7 @@ def verify_claim_direct(cfg) -> Path:
                     messages=messages,
                     tools=tools,
                     max_tokens=16384,
+                    **_thinking_kwargs,
                 )
             except Exception as e2:
                 logger.error("LiteLLM retry failed: %s", e2)
@@ -518,11 +783,11 @@ def verify_claim_direct(cfg) -> Path:
         # Track usage
         if hasattr(response, "usage") and response.usage:
             u = response.usage
-            total_usage["prompt_tokens"] += getattr(u, "prompt_tokens", 0) or 0
-            total_usage["completion_tokens"] += getattr(u, "completion_tokens", 0) or 0
-            total_usage["total_tokens"] += getattr(u, "total_tokens", 0) or 0
-            total_usage["cache_read_tokens"] += getattr(u, "cache_read_input_tokens", 0) or 0
-            total_usage["cache_creation_tokens"] += getattr(u, "cache_creation_input_tokens", 0) or 0
+            tracker.record(
+                "llm_call",
+                input_tokens=getattr(u, "prompt_tokens", 0) or 0,
+                output_tokens=getattr(u, "completion_tokens", 0) or 0,
+            )
 
         choice = response.choices[0]
         assistant_msg = choice.message
@@ -565,20 +830,30 @@ def verify_claim_direct(cfg) -> Path:
 
             logger.info("Tool result: %s", result[:200])
 
-        # Check stopping after tool dispatch
-        if should_stop(workspace, cfg.sufficiency_threshold):
-            logger.info("Stopping: verdict emitted or sufficiency reached.")
+        # Check stopping after tool dispatch.
+        # Only stop on an emitted verdict here — sufficiency alone is not enough
+        # because the agent still needs one more turn to call deliver_verdict.
+        verdict_path = workspace / "verdict.json"
+        if verdict_path.exists():
+            logger.info("Stopping: verdict emitted.")
             break
 
     else:
         logger.info("Reached max calls (%d).", max_calls)
 
+    # If the loop exited without a verdict, force one from the current state.
+    verdict_path = workspace / "verdict.json"
+    if not verdict_path.exists():
+        logger.info("No verdict emitted — forcing check_sufficiency + emit_verdict.")
+        _force_verdict(workspace, claim, sub_env, log_path)
+
     # Log final usage
-    logger.info("Total token usage: %s", json.dumps(total_usage))
+    summary = tracker.summary()
+    logger.info("Total token usage: %s", json.dumps(summary))
 
     # Save usage stats
     usage_path = output_dir / "token_usage.json"
-    usage_path.write_text(json.dumps(total_usage, indent=2))
+    usage_path.write_text(json.dumps(summary, indent=2))
 
     # Generate notebook from jupytext log
     notebook_path = output_dir / "evidence_report.ipynb"

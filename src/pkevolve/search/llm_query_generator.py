@@ -11,6 +11,7 @@ import logging
 
 from pkevolve.verification.prompts import (
     QUERY_GENERATION as QUERY_GENERATION_PROMPT,
+    QUERY_GENERATION_S2 as QUERY_GENERATION_S2_PROMPT,
     GENERATE_GAP_QUERY,
 )
 
@@ -95,18 +96,21 @@ def _sanitize_query(query: str) -> str:
 def generate_search_query(
     claim: str,
     llm: Callable,
-    max_attempts: int = 2
+    max_attempts: int = 2,
+    subclaims: list[str] | None = None,
+    extraction_context: list[str] | None = None,
 ) -> str:
     """
-    LLM-driven query formulation for initial search.
-
-    Uses an LLM to generate a comprehensive PubMed query from a scientific claim.
-    Includes validation and sanitization to handle common LLM mistakes.
+    LLM-driven query formulation for initial PubMed search.
 
     Args:
         claim: The scientific claim to verify
         llm: LLM callable that takes a prompt string and returns a response string
         max_attempts: Maximum number of attempts to generate a valid query
+        subclaims: Optional subclaims; when provided, the prompt includes them so
+            the sub-agent can pick up aliases introduced during decomposition.
+        extraction_context: Optional disambiguation/synonym notes to incorporate
+            into the query generation prompt.
 
     Returns:
         PubMed query string
@@ -114,10 +118,20 @@ def generate_search_query(
     Raises:
         ValueError: If unable to generate a valid query after max_attempts
     """
+    subclaims_section = ""
+    if subclaims:
+        joined = "\n".join(f"- {s}" for s in subclaims)
+        subclaims_section = f"\n\nSubclaims (use these to pick up aliases and alternative names):\n{joined}"
+
+    context_section = ""
+    if extraction_context:
+        notes = "\n".join(f"- {n}" for n in extraction_context)
+        context_section = f"\n\nSupplementary context (use to refine query terms):\n{notes}"
+
     for attempt in range(max_attempts):
         try:
             # Generate query using LLM
-            prompt = QUERY_GENERATION_PROMPT.format(claim=claim)
+            prompt = QUERY_GENERATION_PROMPT.format(claim=claim) + subclaims_section + context_section
             response = llm(prompt)
 
             # Extract query from response (handle various formats)
@@ -156,6 +170,62 @@ def generate_search_query(
         fallback = " ".join(claim.split()[:10])
         logger.info(f"[Fallback Query] {fallback}")
         return fallback
+
+
+def generate_search_query_s2(
+    claim: str,
+    llm: Callable,
+    subclaims: list[str] | None = None,
+    max_attempts: int = 2,
+    extraction_context: list[str] | None = None,
+) -> str:
+    """LLM-driven query formulation for Semantic Scholar search.
+
+    Args:
+        claim: The scientific claim to verify
+        llm: LLM callable that takes a prompt string and returns a response string
+        subclaims: Optional subclaims for alias-enriched query generation.
+        max_attempts: Maximum number of attempts to generate a valid query
+        extraction_context: Optional disambiguation/synonym notes to incorporate
+            into the query generation prompt.
+
+    Returns:
+        Semantic Scholar query string (plain keywords, no PubMed field tags)
+    """
+    subclaims_section = ""
+    if subclaims:
+        joined = "\n".join(f"- {s}" for s in subclaims)
+        subclaims_section = f"\n\nSubclaims (use these to pick up aliases and alternative names):\n{joined}"
+
+    context_section = ""
+    if extraction_context:
+        notes = "\n".join(f"- {n}" for n in extraction_context)
+        context_section = f"\n\nSupplementary context (use to refine query terms):\n{notes}"
+
+    for attempt in range(max_attempts):
+        try:
+            prompt = QUERY_GENERATION_S2_PROMPT.format(
+                claim=claim,
+                subclaims_section=subclaims_section,
+            ) + context_section
+            response = llm(prompt)
+            query = _sanitize_query(response.strip())
+            if _validate_query(query):
+                logger.info(f"[S2 Query] Generated: {query}")
+                return query
+            else:
+                logger.warning(f"S2 attempt {attempt + 1}/{max_attempts}: invalid query")
+        except Exception as e:
+            logger.error(f"Error generating S2 query on attempt {attempt + 1}: {e}")
+            if attempt >= max_attempts - 1:
+                raise
+
+    # Fallback: capitalized entity words from claim
+    words = claim.split()
+    entities = [w for w in words if w and w[0].isupper() and len(w) > 2]
+    fallback = " ".join(entities[:5]) if len(entities) >= 2 else " ".join(claim.split()[:8])
+    logger.warning(f"S2 fallback query: {fallback}")
+    return fallback
 
 
 def generate_gap_query(

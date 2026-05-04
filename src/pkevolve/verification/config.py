@@ -281,6 +281,19 @@ class LLMSettings(BaseSettings):
         default=True,
         description="Disable Qwen thinking mode to save tokens.",
     )
+    thinking_budget_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Enable Claude extended thinking when > 0. Sets budget_tokens for the thinking block. Requires temperature=1.",
+    )
+    timeout: int = Field(
+        default=300,
+        description="Connection and read timeout in seconds.",
+    )
+    stream: bool = Field(
+        default=False,
+        description="Use streaming API to prevent timeouts.",
+    )
 
     @property
     def effective_subagent_model(self) -> str:
@@ -315,9 +328,13 @@ class VerificationSettings(BaseSettings):
         description="Scientific claim to verify. Always provided via CLI "
                     "(--claim).",
     )
-    mode: Literal["sdk"] = Field(
+    mode: Literal["sdk", "direct"] = Field(
         default="sdk",
-        description="Orchestration mode (Claude Agent SDK + nb_execute).",
+        description=(
+            "Orchestration mode. "
+            "'sdk': Claude Agent SDK + Jupyter kernel (nb_execute). "
+            "'direct': LiteLLM + bash + jupytext (no kernel, no MCP)."
+        ),
     )
 
     max_iterations: int = Field(
@@ -365,6 +382,16 @@ class VerificationSettings(BaseSettings):
     notebook_path: Optional[Path] = Field(
         default=None,
         description="Path for the output notebook (Mode A only).",
+    )
+
+    # ── Prompt options ────────────────────────────────────────────────
+    include_subclaim_examples: bool = Field(
+        default=True,
+        description="Inject few-shot subclaim decomposition examples into the system prompt.",
+    )
+    disable_web_search: bool = Field(
+        default=False,
+        description="Remove web_search from the agent's tool set (direct mode only).",
     )
 
     # ── Logging ───────────────────────────────────────────────────────
@@ -440,7 +467,7 @@ class VerificationSettings(BaseSettings):
         from pkevolve.verification.llm_factory import make_llm
 
         extra_body = None
-        if self.disable_thinking:
+        if self.llm.disable_thinking:
             extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
 
         return make_llm(
@@ -449,6 +476,8 @@ class VerificationSettings(BaseSettings):
             base_url=self.subagent_base_url,
             temperature=self.temperature,
             extra_body=extra_body,
+            timeout=self.llm.timeout,
+            stream=self.llm.stream,
         )
 
     # ── Builders ──────────────────────────────────────────────────────
@@ -480,9 +509,12 @@ class VerificationSettings(BaseSettings):
             "LLM_MODEL": self.subagent_model,
             "LLM_TEMPERATURE": str(self.llm.temperature),
             "LLM_DISABLE_THINKING": "1" if self.llm.disable_thinking else "0",
+            "LLM_TIMEOUT": str(self.llm.timeout),
+            "LLM_STREAM": "1" if self.llm.stream else "0",
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
             "SUFFICIENCY_BACKEND": self.sufficiency_backend,
             "MAX_ITERATIONS": str(self.max_iterations),
+            "SUFFICIENCY_BACKEND": self.sufficiency_backend,
             # Label config for setup_kernel() inside the Jupyter kernel
             "LABEL_CONFIG_JSON": self.labels.model_dump_json(),
             # Notebook MCP truncation limit
@@ -613,7 +645,7 @@ class VerificationSettings(BaseSettings):
             help="Scientific claim to verify.",
         )
         parser.add_argument(
-            "--mode", choices=["sdk", "repl"], default=None,
+            "--mode", choices=["sdk", "direct"], default=None,
             help="Orchestration mode (default: sdk).",
         )
         parser.add_argument("--model", default=None, help="Model identifier for the outer agent.")

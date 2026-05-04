@@ -17,10 +17,12 @@
 # ──────────────────────────────────────────────────────────────────────
 
 # Orchestration mode: "sdk" (Claude Agent SDK + nb_execute) or "repl"
-mode: sdk
+# mode: sdk
+mode: direct
 
 # Verification workflow parameters
 max_iterations: 4
+max_turns: 10 # Total steps = max_iterations * max_turns
 sufficiency_threshold: 0.80
 
 # LLM configuration
@@ -35,8 +37,9 @@ llm:
 
   # Subagent configuration (shared by both Claude and GLM)
   subagent_model: qwen3.5-9b  # Must match vLLM model ID exactly
-  subagent_base_url: "http://codon-gpu-008.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
-  temperature: 0.7
+  # subagent_model: qwen3.6-27b  # Must match vLLM model ID exactly
+  subagent_base_url: "http://codon-gpu-006.ebi.ac.uk:8000/v1/" # vLLM endpoint for subagent
+  temperature: 0.0
   disable_thinking: true  # Disable Qwen thinking mode to save tokens
 
 # Output paths (relative paths resolve from cwd)
@@ -45,7 +48,11 @@ llm:
 sufficiency_backend: mlp
 mlp_model_dir: results/ablation/models/tau_0.50_seed_42
 
+# Prompt options
+include_subclaim_examples: false
+disable_web_search: false
+
 # Logging
-verbose: True
+verbose: false
 
 # uv run python -m pkevolve.verification.evidence_programming  --config experiments/test_config.yaml  --claim "PRKDC directly activates AKT1 (either through post-translational modification, complex formation, stabilization, or regulation of expression)."

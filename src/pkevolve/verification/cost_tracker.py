@@ -44,18 +44,13 @@ class CostTracker:
     }
     FALLBACK_PRICING = (3.00, 15.00)
 
-    @classmethod
-    def pricing_for(cls, model: str) -> tuple[float, float]:
-        """Return (input_price, output_price) for a model string."""
-        model_key = model.split("/", 1)[-1] if "/" in model else model
-        return cls.DEFAULT_PRICING.get(model_key, cls.FALLBACK_PRICING)
-
     def __init__(self, model: str = ""):
         self.model = model
         self._trace: list[TraceEntry] = []
         self._step = 0
         # Strip provider prefix (e.g. "vertex_ai/", "anthropic/") before lookup
-        in_price, out_price = self.pricing_for(model)
+        model_key = model.split("/", 1)[-1] if "/" in model else model
+        in_price, out_price = self.DEFAULT_PRICING.get(model_key, self.FALLBACK_PRICING)
         self._in_price = in_price
         self._out_price = out_price
 

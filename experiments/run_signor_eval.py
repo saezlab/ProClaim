@@ -7,7 +7,19 @@ forward and flipped claims, and sequentially runs `evidence_programming.py`
 for multiple repetitions per claim. Results are appended incrementally to an
 output CSV. Token usage and cost estimates are parsed from the verdict artifacts.
 
-time uv run python -m pkevolve.verification.evidence_programming --config experiments/configs/test_config.yaml --claim "AURKA directly activates AR (either through post-translational modification, complex formation, or direct regulation of expression)." --output-dir results/test_signor_with_workflow_1 --notebook-path results/test_signor_with_workflow_1/evidence_report.ipynb
+Example command:
+    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
+        --claim "SRC directly inhibits CTTN." \
+        --output-dir results/test_direct_1
+
+    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
+        --claim "GNAS directly activates ADCY1 (either through post-translational modification, complex formation, or direct regulation of expression)." \
+        --output-dir results/test_direct_1
+
+Claim-level modified variant (directness constraint baked in, for testing without ICL):
+    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
+        --claim "CRTC2 directly activates AKT1 (direct physical interaction, not through intermediate proteins; either through post-translational modification, complex formation, or direct regulation of expression)." \
+        --output-dir results/test_direct_1_no_intermediary
 """
 
 import argparse
@@ -90,13 +102,13 @@ def construct_signor_claim(source: str, target: str, interaction: str, flip: boo
 
     # Formulate claim sentence
     if is_positive:
-        claim_str = f"{source} directly activates {target} (either through post-translational modification, complex formation, or direct regulation of expression)."
+        claim_str = f"{source} directly activates {target}."
     elif is_negative:
-        claim_str = f"{source} directly inhibits {target} (either through post-translational modification, complex formation, or direct regulation of expression)."
+        claim_str = f"{source} directly inhibits {target}."
     else:
         # Non-directional interactions (e.g., binding, complex formation)
         # These are never flipped
-        claim_str = f"{source} directly interacts with {target} (e.g., physical binding)."
+        claim_str = f"{source} directly interacts with {target}."
 
     return claim_str
 
@@ -129,6 +141,18 @@ def get_model_from_config(config_path: Path) -> str:
         logger.warning(f"Failed to load model from {config_path}: {e}")
     return "unknown-model"
 
+
+def get_mode_from_config(config_path: Path) -> str:
+    """Extracts the orchestration mode from the given YAML config."""
+    try:
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f)
+                return config.get("mode", "sdk")
+    except Exception as e:
+        logger.warning(f"Failed to load mode from {config_path}: {e}")
+    return "sdk"
+
 def parse_verdict_file(verdict_path: Path) -> Dict[str, Any]:
     """ Safely parse a verdict.json file to extract required fields. """
     try:
@@ -146,82 +170,121 @@ def parse_verdict_file(verdict_path: Path) -> Dict[str, Any]:
             "reasoning": str(e)
         }
 
+def _parse_tokens_from_run_log(output_dir: Path) -> Dict[str, int]:
+    """Parse SDK-mode token usage from run.log (INFO: Usage: {...} lines)."""
+    in_tok = out_tok = cache_creation_tok = cache_read_tok = 0
+    run_log_path = output_dir / "run.log"
+    if run_log_path.exists():
+        try:
+            log_content = run_log_path.read_text()
+            for line in log_content.splitlines():
+                if "INFO: Usage:" in line and "input_tokens" in line:
+                    try:
+                        usage_str = line.split("INFO: Usage: ")[1].replace("'", '"')
+                        usage_dict = json.loads(usage_str)
+                        in_tok += usage_dict.get("input_tokens", 0)
+                        out_tok += usage_dict.get("output_tokens", 0)
+                        cache_creation_tok += usage_dict.get("cache_creation_input_tokens", 0)
+                        cache_read_tok += usage_dict.get("cache_read_input_tokens", 0)
+                    except Exception as e:
+                        logger.debug(f"Failed to parse usage line: {e}")
+        except Exception as e:
+            logger.warning(f"Could not read run.log: {e}")
+    return {
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+        "cache_creation_tokens": cache_creation_tok,
+        "cache_read_tokens": cache_read_tok,
+    }
+
+
+def _parse_tokens_from_usage_json(output_dir: Path) -> Dict[str, int]:
+    """Parse direct-mode token usage from token_usage.json (LiteLLM format)."""
+    usage_path = output_dir / "token_usage.json"
+    if usage_path.exists():
+        try:
+            data = json.loads(usage_path.read_text())
+            return {
+                "input_tokens": data.get("input_tokens", data.get("prompt_tokens", 0)),
+                "output_tokens": data.get("output_tokens", data.get("completion_tokens", 0)),
+                "cache_creation_tokens": data.get("cache_creation_tokens", 0),
+                "cache_read_tokens": data.get("cache_read_tokens", 0),
+            }
+        except Exception as e:
+            logger.warning(f"Could not read token_usage.json: {e}")
+    return {"input_tokens": 0, "output_tokens": 0, "cache_creation_tokens": 0, "cache_read_tokens": 0}
+
+
+def _compute_cost(tokens: Dict[str, int], in_price: float, out_price: float) -> float:
+    in_tok = tokens["input_tokens"]
+    out_tok = tokens["output_tokens"]
+    cache_creation_tok = tokens["cache_creation_tokens"]
+    cache_read_tok = tokens["cache_read_tokens"]
+    cost = (
+        (in_tok / 1_000_000) * in_price
+        + (cache_creation_tok / 1_000_000) * in_price * 1.25
+        + (cache_read_tok / 1_000_000) * in_price * 0.1
+        + (out_tok / 1_000_000) * out_price
+    )
+    return round(cost, 4)
+
+
 def run_evaluation(
-    claim: str, 
-    output_dir: Path, 
-    config_path: Path, 
+    claim: str,
+    output_dir: Path,
+    config_path: Path,
     in_price: float = DEFAULT_PRICING[0],
     out_price: float = DEFAULT_PRICING[1],
-    env_vars: Dict[str, str] = None
+    env_vars: Dict[str, str] = None,
+    mode: str = "sdk",
 ) -> Dict[str, Any]:
-    """ Runs evidence_programming.py via subprocess to evaluate the given claim. """
-    
+    """Runs evidence_programming (sdk) or evidence_programming_direct (direct)
+    via subprocess to evaluate the given claim."""
+
     verdict_path = output_dir / "workspace" / "verdict.json"
-    
+
     if verdict_path.exists():
         logger.info(f"Verdict already exists, skipping run: {output_dir}")
         stats = parse_verdict_file(verdict_path)
-
-        # Try to parse token usage from existing run.log
-        in_tok = 0
-        out_tok = 0
-        cache_creation_tok = 0
-        cache_read_tok = 0
-
-        run_log_path = output_dir / "run.log"
-        if run_log_path.exists():
-            try:
-                log_content = run_log_path.read_text()
-                for line in log_content.splitlines():
-                    if "INFO: Usage:" in line and "input_tokens" in line:
-                        try:
-                            usage_str = line.split("INFO: Usage: ")[1].replace("'", '"')
-                            usage_dict = json.loads(usage_str)
-                            in_tok += usage_dict.get("input_tokens", 0)
-                            out_tok += usage_dict.get("output_tokens", 0)
-                            cache_creation_tok += usage_dict.get("cache_creation_input_tokens", 0)
-                            cache_read_tok += usage_dict.get("cache_read_input_tokens", 0)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-        # Calculate cost with correct Anthropic prompt caching pricing
-        cost_input = (in_tok / 1_000_000) * in_price
-        cost_cache_write = (cache_creation_tok / 1_000_000) * in_price * 1.25
-        cost_cache_read = (cache_read_tok / 1_000_000) * in_price * 0.1
-        cost_output = (out_tok / 1_000_000) * out_price
-        cost = cost_input + cost_cache_write + cost_cache_read + cost_output
-
-        stats["input_tokens"] = in_tok
-        stats["output_tokens"] = out_tok
-        stats["cache_creation_tokens"] = cache_creation_tok
-        stats["cache_read_tokens"] = cache_read_tok
-        stats["total_input_tokens"] = in_tok + cache_creation_tok + cache_read_tok
-        stats["cost_estimate"] = round(cost, 4)
+        if mode == "direct":
+            tokens = _parse_tokens_from_usage_json(output_dir)
+        else:
+            tokens = _parse_tokens_from_run_log(output_dir)
+        stats.update(tokens)
+        stats["total_input_tokens"] = (
+            tokens["input_tokens"] + tokens["cache_creation_tokens"] + tokens["cache_read_tokens"]
+        )
+        stats["cost_estimate"] = _compute_cost(tokens, in_price, out_price)
         return stats
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    notebook_path = output_dir / "evidence_report.ipynb"
-    
-    # Build subprocess command
-    cmd = [
-        "uv", "run", "python", "-m", "pkevolve.verification.evidence_programming",
-        "--config", str(config_path),
-        "--claim", claim,
-        "--output-dir", str(output_dir),
-        "--notebook-path", str(notebook_path)
-    ]
-    
+
+    if mode == "direct":
+        cmd = [
+            "uv", "run", "python", "-m", "pkevolve.verification.evidence_programming_direct",
+            "--config", str(config_path),
+            "--claim", claim,
+            "--output-dir", str(output_dir),
+        ]
+    else:
+        notebook_path = output_dir / "evidence_report.ipynb"
+        cmd = [
+            "uv", "run", "python", "-m", "pkevolve.verification.evidence_programming",
+            "--config", str(config_path),
+            "--claim", claim,
+            "--output-dir", str(output_dir),
+            "--notebook-path", str(notebook_path),
+        ]
+
     env = os.environ.copy()
     if env_vars:
         env.update(env_vars)
-        
-    logger.info(f"Running LLM Agent verifying claim: '{claim}' -> {output_dir.name}")
+
+    logger.info(f"Running [{mode}] verifying claim: '{claim}' -> {output_dir.name}")
     start_time = time.time()
-    
+
     process = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    
+
     if process.returncode != 0:
         logger.error(f"Run failed for {output_dir.name} with exit code {process.returncode}")
         logger.error(process.stderr[-1000:])
@@ -231,60 +294,25 @@ def run_evaluation(
             "reasoning": "Subprocess crashed or timed out.",
             "input_tokens": 0,
             "output_tokens": 0,
-            "cost_estimate": 0.0
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+            "total_input_tokens": 0,
+            "cost_estimate": 0.0,
         }
-        
+
     logger.info(f"Run finished in {time.time() - start_time:.1f}s")
 
-    # Parse token usage from run.log (not stderr, since logging goes to file)
-    in_tok = 0
-    out_tok = 0
-    cache_creation_tok = 0
-    cache_read_tok = 0
+    if mode == "direct":
+        tokens = _parse_tokens_from_usage_json(output_dir)
+    else:
+        tokens = _parse_tokens_from_run_log(output_dir)
 
-    run_log_path = output_dir / "run.log"
-    if run_log_path.exists():
-        try:
-            log_content = run_log_path.read_text()
-            for line in log_content.splitlines():
-                if "INFO: Usage:" in line and "input_tokens" in line:
-                    # Example: INFO: Usage: {'input_tokens': 38, 'cache_creation_input_tokens': 23359, ...}
-                    try:
-                        # Extract the dict portion after "Usage: "
-                        usage_str = line.split("INFO: Usage: ")[1]
-                        # Convert single quotes to double quotes for JSON parsing
-                        usage_str = usage_str.replace("'", '"')
-                        usage_dict = json.loads(usage_str)
-
-                        in_tok += usage_dict.get("input_tokens", 0)
-                        out_tok += usage_dict.get("output_tokens", 0)
-                        cache_creation_tok += usage_dict.get("cache_creation_input_tokens", 0)
-                        cache_read_tok += usage_dict.get("cache_read_input_tokens", 0)
-                    except Exception as e:
-                        logger.debug(f"Failed to parse usage line: {e}")
-                        pass
-        except Exception as e:
-            logger.warning(f"Could not read run.log: {e}")
-
-    # Calculate cost with Anthropic prompt caching pricing
-    # Regular input tokens = normal input price
-    # Cache writes (creation) = 125% of input price (25% premium to write to cache)
-    # Cache reads = 10% of input price (90% discount)
-    cost_input = (in_tok / 1_000_000) * in_price
-    cost_cache_write = (cache_creation_tok / 1_000_000) * in_price * 1.25
-    cost_cache_read = (cache_read_tok / 1_000_000) * in_price * 0.1
-    cost_output = (out_tok / 1_000_000) * out_price
-
-    cost = cost_input + cost_cache_write + cost_cache_read + cost_output
-    
     stats = parse_verdict_file(verdict_path)
-    stats["input_tokens"] = in_tok
-    stats["output_tokens"] = out_tok
-    stats["cache_creation_tokens"] = cache_creation_tok
-    stats["cache_read_tokens"] = cache_read_tok
-    stats["total_input_tokens"] = in_tok + cache_creation_tok + cache_read_tok
-    stats["cost_estimate"] = round(cost, 4)
-
+    stats.update(tokens)
+    stats["total_input_tokens"] = (
+        tokens["input_tokens"] + tokens["cache_creation_tokens"] + tokens["cache_read_tokens"]
+    )
+    stats["cost_estimate"] = _compute_cost(tokens, in_price, out_price)
     return stats
 
 
@@ -313,20 +341,25 @@ def main():
         else:
             raise FileNotFoundError(f"Could not find default target: {DEFAULT_INPUT_CSV}")
 
+    config_path = Path(args.config)
+
+    # Determine mode, model, and pricing
+    mode = get_mode_from_config(config_path)
+
     # Resolve output paths (namespaced by run-tag when provided)
     if args.run_tag:
-        results_dir = PROJECT_ROOT / "results" / f"signor_eval_{args.run_tag}"
+        results_dir = PROJECT_ROOT / "results" / f"signor_{mode}_eval_{args.run_tag}"
         default_csv = results_dir / "results.csv"
     else:
         results_dir = DEFAULT_RESULTS_DIR
         default_csv = DEFAULT_OUTPUT_CSV
 
     output_path = Path(args.output_csv) if args.output_csv else default_csv
-    config_path = Path(args.config)
-    
-    # Determine model and pricing
+    logger.info(f"Orchestration mode: {mode}")
     model_name = get_model_from_config(config_path)
-    in_price, out_price = CLAUDE_PRICING.get(model_name, DEFAULT_PRICING)
+    # Strip LiteLLM provider prefix for pricing lookup (e.g. "anthropic/claude-sonnet-4-20250514")
+    model_key = model_name.split("/")[-1] if "/" in model_name else model_name
+    in_price, out_price = CLAUDE_PRICING.get(model_key, DEFAULT_PRICING)
     logger.info(f"Using pricing for model '{model_name}': ${in_price:.2f}/1M input, ${out_price:.2f}/1M output")
 
     # Prepare environment variables to pass to subprocesses
@@ -398,7 +431,7 @@ def main():
                  run_dir = results_dir / run_dir_name
                  
                  logger.info(f"Running Repetition {rep}/{args.reps} (Flipped: {flip})")
-                 stats = run_evaluation(claim_str, run_dir, config_path, in_price, out_price, env_vars=env_vars)
+                 stats = run_evaluation(claim_str, run_dir, config_path, in_price, out_price, env_vars=env_vars, mode=mode)
                  
                  # Append straight to CSV safely
                  row_dict = {
