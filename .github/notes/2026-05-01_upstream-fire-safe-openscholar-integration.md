@@ -8,9 +8,10 @@
 
 ## Design choices
 
-- FIRE and SAFE now preserve the upstream prompting and control flow, but do not use the upstream Serper dependency directly.
+- FIRE preserves the upstream prompting and control flow. SAFE preserves the upstream control flow, but its final-verdict prompt is patched to reuse the repo's shared SUPPORT / REFUTE / UNCERTAIN definitions.
 - Instead, both upstream search hooks are patched to call the repo's existing shared web helper `baselines.react_baseline._do_search`, matching the requested "use do search instead" direction.
 - FIRE and SAFE are now web-only in the baseline runner. The earlier local reimplementation supported `search_backend=s2`, but the upstream repos do not expose an equivalent Semantic Scholar mode.
+- The runner no longer passes `search_backend` into FIRE or SAFE and no longer creates a fixed `safe/web/...` namespace in results paths; both baselines now write to `results/baselines/{fire,safe}/<model>/...`.
 - SAFE is integrated through the upstream `rate_atomic_fact` stage rather than the full prompt-response pipeline because our datasets already provide atomic claims rather than long-form responses that need fact decomposition.
 
 ## Runtime integration details

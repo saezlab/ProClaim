@@ -9,6 +9,7 @@ from pathlib import Path
 from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.label_utils import (
     normalize_label,
+    verdict_defs_block,
 )
 from baselines.shared.llm import LLMBackend
 from baselines.shared.logging_utils import write_claim_log
@@ -34,17 +35,13 @@ class SAFEBaseline:
         max_steps: int = 5,
         max_retries: int = 10,
         num_search_results: int = 3,
-        search_backend: str = "web",
     ) -> None:
-        if search_backend != "web":
-            raise ValueError("The upstream SAFE implementation only supports web search.")
-
         self._llm = llm
         self.model = llm.model
         self.max_steps = max_steps
         self.max_retries = max_retries
         self.num_search_results = num_search_results
-        self.search_backend = search_backend
+        self.search_backend = "web"
         self.log_dir: Path | None = None
         self._check_atomic_fact = self._load_safe_checker()
 
@@ -133,6 +130,33 @@ class SAFEBaseline:
             SAFE_REPO_ROOT,
             "eval.safe.rate_atomic_fact",
         )
+
+        # Keep SAFE's upstream loop, but reuse the repo's shared verdict
+        # definitions so its prompt taxonomy matches the other baselines.
+        rate_atomic_fact._VERDICT_DEFS = verdict_defs_block(indent="  ")
+        rate_atomic_fact._FINAL_ANSWER_FORMAT = f"""\\
+Instructions:
+1. You have been given a STATEMENT and some KNOWLEDGE points.
+2. Determine whether the given STATEMENT is supported by the given KNOWLEDGE. \
+The STATEMENT does not need to be explicitly supported by the KNOWLEDGE, but \
+should be strongly implied by the KNOWLEDGE.
+3. Before showing your answer, think step-by-step and show your specific \
+reasoning. As part of your reasoning, summarize the main points of the \
+KNOWLEDGE.
+4. If the STATEMENT is supported by the KNOWLEDGE, be sure to show the \
+supporting evidence.
+5. After stating your reasoning, restate the STATEMENT and then determine your \
+final answer based on your reasoning and the STATEMENT.
+6. Your final answer should be one of \"{rate_atomic_fact.SUPPORTED_LABEL}\", \
+\"{rate_atomic_fact.NOT_SUPPORTED_LABEL}\", or \"{rate_atomic_fact.UNCERTAIN_LABEL}\". Wrap your final answer in square brackets.
+{rate_atomic_fact._VERDICT_DEFS}
+
+KNOWLEDGE:
+{rate_atomic_fact._KNOWLEDGE_PLACEHOLDER}
+
+STATEMENT:
+{rate_atomic_fact._STATEMENT_PLACEHOLDER}
+"""
 
         def _patched_search(
             search_query: str,

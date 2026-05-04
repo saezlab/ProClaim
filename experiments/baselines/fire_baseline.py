@@ -35,17 +35,13 @@ class FIREBaseline:
         max_steps: int = 5,
         max_retries: int = 10,
         num_search_results: int = 5,
-        search_backend: str = "web",
     ) -> None:
-        if search_backend != "web":
-            raise ValueError("The upstream FIRE implementation only supports web search.")
-
         self._llm = llm
         self.model = self._llm.model
         self.max_steps = max_steps
         self.max_retries = max_retries
         self.num_search_results = num_search_results
-        self.search_backend = search_backend
+        self.search_backend = "web"
         self.log_dir: Path | None = None
         self._verify_atomic_claim = self._load_fire_verifier()
 
@@ -136,6 +132,30 @@ class FIREBaseline:
             "eval.fire.verify_atomic_claim",
         )
 
+        def _patched_sentence_similarity(
+            new_sent: str,
+            sentences: list[str],
+            threshold: float = 0.9,
+        ) -> int:
+            if not sentences:
+                return 0
+
+            embedding_device = verify_atomic_claim.torch.device(verify_atomic_claim.device)
+            single_embedding = verify_atomic_claim.sbert_model.encode(
+                new_sent,
+                convert_to_tensor=True,
+            ).to(embedding_device)
+            list_embeddings = verify_atomic_claim.sbert_model.encode(
+                sentences,
+                convert_to_tensor=True,
+            ).to(embedding_device)
+            similarities = verify_atomic_claim.util.cos_sim(single_embedding, list_embeddings)
+            return sum(
+                1
+                for index in range(len(sentences))
+                if similarities[0][index].item() > threshold
+            )
+
         def _patched_search(
             search_query: str,
             search_type: str = "web",
@@ -146,5 +166,6 @@ class FIREBaseline:
             del search_type, serper_api_key, search_postamble
             return do_search(search_query, k=num_searches)
 
+        verify_atomic_claim.get_sentence_similarity = _patched_sentence_similarity
         verify_atomic_claim.call_search = _patched_search
         return verify_atomic_claim.verify_atomic_claim

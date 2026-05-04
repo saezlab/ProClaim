@@ -4,7 +4,7 @@
 
 ## Summary
 
-Recent work updated both the baseline evaluation stack and the sandbox-vs-wild analysis tooling. On the baseline side, FIRE and SAFE were switched from local reimplementations to thin wrappers around the upstream repositories, OpenScholar was pointed at its in-repo checkout, deprecated FIRE+S2 paths were marked as historical-only, and the SLURM runner was updated to reflect the supported baseline set and shared datasets location. On the analysis side, the transition plotting script was expanded to merge SIGNOR-Fact and ConnectomeDB-Fact by default, preserve the legacy top-level output path for aggregate runs, switch the third setting from the older `s2_plus_ref` baseline to ProClaim direct-eval outputs, and generate a simpler three-panel NeurIPS-oriented consensus figure in addition to the existing alluvial and confusion-matrix outputs.
+Recent work updated both the baseline evaluation stack and the sandbox-vs-wild analysis tooling. On the baseline side, FIRE and SAFE were switched from local reimplementations to thin wrappers around the upstream repositories, OpenScholar was pointed at its in-repo checkout, the unsupported FIRE+S2 path was removed, and the SLURM runner was updated to reflect the supported baseline set and shared datasets location. On the analysis side, the transition plotting script was expanded to merge SIGNOR-Fact and ConnectomeDB-Fact by default, preserve the legacy top-level output path for aggregate runs, switch the third setting from the older `s2_plus_ref` baseline to ProClaim direct-eval outputs, and generate a simpler three-panel NeurIPS-oriented consensus figure in addition to the existing alluvial and confusion-matrix outputs.
 
 ## New Files
 
@@ -19,7 +19,6 @@ Recent work updated both the baseline evaluation stack and the sandbox-vs-wild a
 | `experiments/baselines/fire_baseline.py` | Replaced the local FIRE loop with an upstream FIRE wrapper, restricted the integration to web search, and routed prompt/search logging through the adapter-backed execution path. |
 | `experiments/baselines/safe_baseline.py` | Replaced the local SAFE loop with an upstream SAFE wrapper, restricted the integration to web search, and recorded prompt/search usage through the adapter-backed execution path. |
 | `experiments/baselines/open_scholar_baseline.py` | Corrected the default OpenScholar repository root to `experiments/OpenScholar`. |
-| `experiments/configs/fire_s2_config.yaml` | Marked the FIRE+S2 preset as deprecated historical configuration that now fails fast if used unchanged. |
 | `experiments/README.md` | Updated baseline documentation to reflect the upstream FIRE/SAFE integrations, the web-only constraint for those baselines, and the deprecated FIRE+S2 variant. |
 | `scripts/run_all_baselines_slurm.sh` | Removed `fire_s2` from the submitted baseline set, added the shared `--datasets-dir` path, and updated the help text and numbering accordingly. |
 | `scripts/analysis/plot_sandbox_vs_wild_transitions.py` | Added multi-dataset loading for SIGNOR and ConnectomeDB, restored top-level aggregate outputs, switched Setting 3 defaults from `s2_plus_ref` JSONL outputs to ProClaim direct-eval JSONLs, renamed Setting 3 captions accordingly, retained the triple confusion-matrix figure, and added a separate three-panel NeurIPS consensus summary figure with setting-specific captions and tighter paper-scale typography. |
@@ -84,7 +83,7 @@ Suggested NeurIPS paragraph:
 
 - Fixed the aggregate sandbox-vs-wild plotting workflow so the default combined SIGNOR+ConnectomeDB run updates the expected top-level analysis outputs instead of leaving stale single-dataset figures visible there.
 - Corrected the default OpenScholar checkout path from a workspace-level location to the in-repo `experiments/OpenScholar` directory.
-- Removed `fire_s2` from the active SLURM baseline submission path while keeping the config as a documented historical artifact, preventing silent submission of an unsupported variant.
+- Removed `fire_s2` from the active SLURM baseline submission path and later deleted the unused config, preventing silent submission of an unsupported variant.
 - Removed stale Setting 3 wording that still referred to retrieved-plus-reference evidence after the figure switched to ProClaim inputs.
 - Fixed repeated y-axis category labels on the second and third panels of the NeurIPS summary figure.
 - Simplified the NeurIPS panel captions to one-line setting descriptions so the explanatory text remains readable at presentation size.

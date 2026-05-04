@@ -1,7 +1,6 @@
 baseline: safe
 model: anthropic/claude-sonnet-4-6
 temperature: 0.0
-search_backend: web
 top_k: 3
 max_steps: 5
 repeats: 1
