@@ -142,7 +142,6 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             llm=llm,
             max_steps=args.max_steps,
             num_search_results=args.top_k,
-            search_backend=args.search_backend,
         )
     elif name == "ace":
         from baselines.ace_baseline import ACEBaseline
@@ -167,7 +166,6 @@ def build_baseline(name: str, args: argparse.Namespace, seed: int | None = None)
             llm=llm,
             max_steps=args.max_steps,
             num_search_results=args.top_k,
-            search_backend=args.search_backend,
         )
     else:
         raise ValueError(f"Unknown baseline: {name!r}. Supported: random, llm_only, single_paper, retrieval, open_scholar, fire, ace, react, safe")
@@ -240,7 +238,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--top-k", dest="top_k", type=int, default=5, help="Number of retrieved items (S2 abstracts for retrieval; passages for open_scholar).")
     # ── Retrieval-specific ─────────────────────────────────────────────
     p.add_argument("--search-backend", dest="search_backend", default="s2", choices=["web", "s2"],
-                    help="Search backend for retrieval, react, and safe baselines: 'web' (DuckDuckGo) or 's2' (Semantic Scholar). Default: s2.")
+                    help="Search backend for retrieval and react baselines: 'web' (DuckDuckGo) or 's2' (Semantic Scholar). FIRE and SAFE always use the shared web-search helper. Default: s2.")
     p.add_argument("--no-strip-query", dest="strip_query", action="store_false", default=True,
                     help="Disable stripping dataset-specific boilerplate from claims before S2 search.")
     # ── OpenScholar-specific ──────────────────────────────────────────
@@ -282,10 +280,8 @@ def main() -> None:
         pass  # no model
     elif args.baseline == "retrieval":
         baseline_subdir = f"retrieval/{args.search_backend}/{model_slug}/top{args.top_k}"
-    elif args.baseline in {"react", "safe"}:
+    elif args.baseline == "react":
         baseline_subdir = f"react/{args.search_backend}/{model_slug}"
-        if args.baseline == "safe":
-            baseline_subdir = f"safe/{args.search_backend}/{model_slug}"
     else:
         baseline_subdir = f"{args.baseline}/{model_slug}"
 

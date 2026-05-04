@@ -276,8 +276,9 @@ fi
 # ---------------------------------------------------------------------------
 if baseline_selected fire; then
 echo "Submitting: FIRE: Claude-Sonnet-4.6 ..."
+FIRE_SBATCH="#SBATCH --gres=gpu:1"
 submit_job "fire-claude" "FIRE: Claude-Sonnet-4.6" \
-    "# ANTHROPIC_API_KEY loaded from .env" "" \
+    "# ANTHROPIC_API_KEY loaded from .env" "${FIRE_SBATCH}" \
     "${CONFIGS_DIR}/fire_config.yaml"
 JID="$SUBMITTED_JOB_ID"
 echo "  -> Job ID: ${JID}"

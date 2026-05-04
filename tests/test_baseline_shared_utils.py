@@ -16,11 +16,13 @@ from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.logging_utils import write_claim_log
 from baselines.shared.search_utils import format_s2_detailed_results
 from baselines.shared.single_shot import run_single_shot_verdict
+from baselines.fire_baseline import FIREBaseline
 
 
 class _FakeLLM:
     def __init__(self, text: str) -> None:
         self._text = text
+        self.model = "anthropic/claude-sonnet-4-6"
 
     def complete(self, system: str, user: str, *, response_format: str = "json_object"):
         return self._text, 11, 7
@@ -84,3 +86,58 @@ def test_run_single_shot_verdict_tracks_and_parses_output():
     assert verdict.evidence == ["PMID1"]
     assert verdict.summary["input_tokens"] == 11
     assert verdict.summary["output_tokens"] == 7
+
+
+class _FakeTensor:
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def to(self, device):
+        self.device = device
+        return self
+
+    def item(self) -> float:
+        return self.value
+
+
+class _FakeEncoder:
+    def encode(self, text, convert_to_tensor: bool = True):
+        assert convert_to_tensor is True
+        return _FakeTensor(1.0)
+
+
+class _FakeTorch:
+    @staticmethod
+    def device(name: str) -> str:
+        if name == "cuda":
+            raise AssertionError("wrapper should not force CUDA on CPU hosts")
+        return name
+
+
+class _FakeUpstreamFireModule:
+    def __init__(self) -> None:
+        self.device = "cpu"
+        self.torch = _FakeTorch()
+        self.sbert_model = _FakeEncoder()
+        self.util = type(
+            "_FakeUtil",
+            (),
+            {"cos_sim": staticmethod(lambda single, many: [[_FakeTensor(1.0) for _ in many]])},
+        )
+        self.get_sentence_similarity = None
+        self.call_search = None
+        self.verify_atomic_claim = lambda *args, **kwargs: None
+
+
+def test_fire_wrapper_patches_sentence_similarity_for_cpu(monkeypatch):
+    fake_module = _FakeUpstreamFireModule()
+
+    monkeypatch.setattr(
+        "baselines.fire_baseline.import_upstream_module",
+        lambda repo_root, module_name: fake_module,
+    )
+
+    baseline = FIREBaseline(_FakeLLM('{"final_answer": "SUPPORT"}'))
+
+    assert baseline._verify_atomic_claim is fake_module.verify_atomic_claim
+    assert fake_module.get_sentence_similarity("abc", ["abc", "def"]) == 2

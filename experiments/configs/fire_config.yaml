@@ -11,7 +11,7 @@
 #       --config experiments/configs/fire_config.yaml
 #
 # Prerequisites:
-#   - ddgs installed for web search, or S2_API_KEY for higher-throughput S2 use
+#   - ddgs installed for web search
 #   - OPENAI_API_KEY or ANTHROPIC_API_KEY set (depending on model)
 #
 # Any CLI flag overrides the value set here.
@@ -28,9 +28,6 @@ baseline: fire
 
 # ── Model (LiteLLM format: "provider/model-id") ──────────────────────
 model: anthropic/claude-sonnet-4-6
-
-# Search backend
-search_backend: web
 
 # Maximum iterative search steps
 max_steps: 5
