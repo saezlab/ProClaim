@@ -465,7 +465,6 @@ def build_subprocess_env(cfg) -> dict:
     env["MLP_MODEL_DIR"] = cfg.mlp_model_dir or "results/models/classifier_best"
     env["SUFFICIENCY_BACKEND"] = cfg.sufficiency_backend
     env["MAX_ITERATIONS"] = str(cfg.max_iterations)
-    env["SUFFICIENCY_BACKEND"] = cfg.sufficiency_backend
     env["LABEL_CONFIG_JSON"] = cfg.labels.model_dump_json()
     env["NB_MAX_OUTPUT_CHARS"] = str(cfg.max_output_chars)
 
