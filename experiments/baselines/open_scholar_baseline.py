@@ -226,6 +226,8 @@ class OpenScholarBaseline:
         item = raw_data["data"][0] if "data" in raw_data else raw_data[0]
         raw_output: str = item.get("output", "")
         cost_usd = float(item.get("total_cost", 0.0))
+        input_tokens = int(item.get("total_input_tokens", 0) or 0)
+        output_tokens = int(item.get("total_output_tokens", 0) or 0)
 
         verdict = self._parse_verdict(raw_output)
 
@@ -237,9 +239,8 @@ class OpenScholarBaseline:
             confidence=0.0,
             reasoning=verdict.get("reasoning", raw_output[:500] if raw_output else ""),
             evidence=verdict.get("evidence", []),
-            # OpenScholar reports cost in USD but not token counts
-            input_tokens=0,
-            output_tokens=0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             cost_usd=cost_usd,
             latency_seconds=latency,
             baseline_name=self.name,

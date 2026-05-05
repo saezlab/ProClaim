@@ -44,6 +44,16 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 LABELS = ["SUPPORT", "REFUTE", "UNCERTAIN"]
 COLORS = {"SUPPORT": "#4CAF50", "REFUTE": "#E53935", "UNCERTAIN": "#91A0AF"}
 
+NEURIPS_SEGMENT_FONTSIZE = 14
+NEURIPS_SEGMENT_PERCENT_FONTSIZE = 19
+NEURIPS_TICK_FONTSIZE = 17
+NEURIPS_YLABEL_FONTSIZE = 17
+NEURIPS_XLABEL_FONTSIZE = 20
+NEURIPS_TITLE_FONTSIZE = 21
+NEURIPS_SUBTITLE_FONTSIZE = 20
+NEURIPS_ACCURACY_FONTSIZE = 20
+NEURIPS_LEGEND_FONTSIZE = 21
+
 _BASELINE_ROOT = PROJECT_ROOT / "results/baselines"
 _MODEL = "anthropic--claude-sonnet-4-6"
 
@@ -793,14 +803,14 @@ def draw_neurips_consensus_panel(
             )
 
             if width >= 14:
-                label = f"{predicted_label}\n{width:.0f}%"
+                label = f"{width:.0f}%"
                 ax.text(
                     left + width / 2,
                     y_positions[row_idx],
                     label,
                     ha="center",
                     va="center",
-                    fontsize=11,
+                    fontsize=NEURIPS_SEGMENT_PERCENT_FONTSIZE,
                     fontweight="bold" if is_consensus else "normal",
                     color=_text_color_for_fill(facecolor),
                 )
@@ -809,39 +819,43 @@ def draw_neurips_consensus_panel(
     error_rate = 1 - accuracy
     ax.set_xlim(0, 100)
     ax.set_xticks([0, 50, 100])
-    ax.set_xticklabels(["0%", "50%", "100%"], fontsize=14)
+    ax.set_xticklabels(["0%", "50%", "100%"], fontsize=NEURIPS_TICK_FONTSIZE)
     ax.set_yticks(y_positions)
     if show_y_labels:
         ax.set_yticklabels(
             [f"{label}\n(n={int(total)})" for label, total in zip(LABELS, row_totals)],
-            fontsize=14,
+            fontsize=NEURIPS_YLABEL_FONTSIZE,
         )
     else:
         ax.set_yticklabels([])
         ax.tick_params(axis="y", length=0)
-    ax.set_ylim(len(LABELS) - 0.5, -0.85)
+    ax.set_ylim(len(LABELS) - 0.5, -0.68)
     # ax.grid(axis="x", color="#D1D5DB", linewidth=0.8, alpha=0.8)
     ax.set_axisbelow(True)
-    ax.set_xlabel("Predictions in each label category (%)", fontsize=14)
-    ax.set_title(title, fontsize=18, fontweight="bold", loc="center", y=1.12, pad=0)
+    ax.set_xlabel(
+        "Predictions in each label category (%)",
+        fontsize=NEURIPS_XLABEL_FONTSIZE,
+        labelpad=4,
+    )
+    ax.set_title(title, fontsize=NEURIPS_TITLE_FONTSIZE, fontweight="bold", loc="center", y=1.18, pad=0)
     ax.text(
         0.5,
-        1.015,
+        1.075,
         setting_description,
         transform=ax.transAxes,
         ha="center",
         va="bottom",
-        fontsize=17,
+        fontsize=NEURIPS_SUBTITLE_FONTSIZE,
         color="#374151",
     )
     ax.text(
         0.5,
-        0.925,
+        1.000,
         f"Prediction-label agreement {accuracy:.1%}",
         transform=ax.transAxes,
         ha="center",
         va="bottom",
-        fontsize=17,
+        fontsize=NEURIPS_ACCURACY_FONTSIZE,
         color="#111827",
     )
     for spine in ["top", "right", "left"]:
@@ -902,9 +916,9 @@ def draw_neurips_consensus_summary(
         handles=legend_handles,
         ncol=4,
         loc="lower center",
-        bbox_to_anchor=(0.5, 0.06),
+        bbox_to_anchor=(0.5, 0.035),
         frameon=False,
-        fontsize=18,
+        fontsize=NEURIPS_LEGEND_FONTSIZE,
     )
 
 
@@ -1066,7 +1080,7 @@ def main():
         #     fontweight="bold",
         #     y=0.96,
         # )
-        fig1e.subplots_adjust(left=0.08, right=0.98, top=0.74, bottom=0.24, wspace=0.36)
+        fig1e.subplots_adjust(left=0.08, right=0.98, top=0.88, bottom=0.30, wspace=0.36)
         p1e = out_dir / "sandbox_vs_wild_neurips_consensus_summary.pdf"
         fig1e.savefig(p1e, bbox_inches="tight", dpi=200)
         fig1e.savefig(p1e.with_suffix(".png"), bbox_inches="tight", dpi=150)
