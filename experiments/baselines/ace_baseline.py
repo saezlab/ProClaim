@@ -25,6 +25,7 @@ from pathlib import Path
 
 from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.llm import LLMBackend
+from baselines.shared.logging_utils import write_claim_log
 from baselines.shared.label_utils import normalize_label, verdict_defs_block, verdict_names, verdict_options_str
 from baselines.shared.verdict import BaselineResult
 
@@ -168,10 +169,7 @@ class ACEBaseline:
             self._playbook = _CLAIM_VERIFICATION_PLAYBOOK
 
         # Cost estimation — reuse CostTracker pricing table
-        model_key = self.model.split("/", 1)[-1] if "/" in self.model else self.model
-        in_price, out_price = CostTracker.DEFAULT_PRICING.get(
-            model_key, CostTracker.FALLBACK_PRICING,
-        )
+        in_price, out_price = CostTracker.pricing_for(self.model)
         self._in_price = in_price    # USD per 1M input tokens
         self._out_price = out_price  # USD per 1M output tokens
 
@@ -209,17 +207,19 @@ class ACEBaseline:
         predicted = normalize_label(final_answer)
 
         # Write per-claim log
-        if self.log_dir is not None:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            log_path = self.log_dir / f"{claim_id}.log"
-            with open(log_path, "w") as lf:
-                lf.write(f"=== claim_id: {claim_id} ===\n")
-                lf.write(f"=== claim ===\n{claim}\n\n")
-                lf.write(f"=== final_answer: {final_answer} ===\n")
-                lf.write(f"=== predicted: {predicted} ===\n")
-                lf.write(f"=== response ===\n{gen_response}\n")
-                lf.write(f"=== prompt_sent ===\n{prompt}\n")
-                lf.write(f"=== playbook ===\n{self._playbook}\n")
+        write_claim_log(
+            self.log_dir,
+            claim_id,
+            [
+                (f"claim_id: {claim_id}", ""),
+                ("claim", claim),
+                (f"final_answer: {final_answer}", ""),
+                (f"predicted: {predicted}", ""),
+                ("response", gen_response),
+                ("prompt_sent", prompt),
+                ("playbook", self._playbook),
+            ],
+        )
 
         return BaselineResult(
             claim_id=claim_id,

@@ -7,13 +7,13 @@ Scripts and shared infrastructure for running and evaluating baselines against S
 | Script | Purpose |
 |--------|---------|
 | `run_baselines_datasets.py` | Run a baseline on pre-processed CSV datasets (SIGNOR, ConnectomeDB, SciFact-Open, CIViC-Fact); prints a summary table of Macro F1 / FPR / FNR / Cost (mean ± std over repeats). Accepts `--config` to load baseline parameters from a YAML file. |
-| `run_connectomedb_all.sh` | Run all 9 baselines sequentially on one or more datasets. Uses `flock` to prevent concurrent instances (avoids S2 rate-limit races). Supports resume — re-running skips already-completed claims. |
+| `run_connectomedb_all.sh` | Run all baselines sequentially on one or more datasets. Uses `flock` to prevent concurrent instances (avoids S2 rate-limit races). Supports resume — re-running skips already-completed claims. |
 | `run_signor_eval.py` | End-to-end SIGNOR evaluation using the full evidence-programming pipeline (runs `pkevolve.verification.evidence_programming` as a subprocess). Config: `configs/signor_eval_config.yaml`. |
 
 ### Quick start
 
 ```bash
-# ── Run all 9 baselines on a dataset (sequential, flock-guarded) ──
+# ── Run all baselines on a dataset (sequential, flock-guarded) ──
 bash experiments/run_connectomedb_all.sh                       # connectomedb (default)
 bash experiments/run_connectomedb_all.sh signor                # signor only
 bash experiments/run_connectomedb_all.sh connectomedb signor   # both datasets
@@ -37,6 +37,9 @@ uv run python experiments/run_baselines_datasets.py \
 uv run python experiments/run_baselines_datasets.py \
     --config experiments/configs/react_config.yaml
 
+uv run python experiments/run_baselines_datasets.py \
+    --config experiments/configs/safe_config.yaml
+
 # CLI flags override config values, e.g. smoke-test with 1 claim:
 uv run python experiments/run_baselines_datasets.py \
     --config experiments/configs/open_scholar_config.yaml \
@@ -54,6 +57,7 @@ YAML config files for `run_baselines_datasets.py`. Load with `--config`; any CLI
 | `s2_retrieval_config.yaml` | `retrieval` | `anthropic/claude-sonnet-4-6`, search_backend=s2, top_k=5, 1 repeat |
 | `open_scholar_config.yaml` | `open_scholar` | `anthropic/claude-sonnet-4-6`, S2 adaptive retrieval on (`retrieval: true`), top_k=10, 1 repeat |
 | `fire_config.yaml` | `fire` | `anthropic/claude-sonnet-4-6`, max_steps=5, 1 repeat |
+| `safe_config.yaml` | `safe` | `anthropic/claude-sonnet-4-6`, top_k=3, max_steps=5, 1 repeat |
 | `ace_config.yaml` | `ace` | `anthropic/claude-sonnet-4-6`, max_tokens=4096, 1 repeat |
 | `react_config.yaml` | `react` | `anthropic/claude-sonnet-4-6`, max_steps=10, 1 repeat |
 | `signor_eval_config.yaml` | *(evidence-programming)* | Config for `run_signor_eval.py` (model, mode, iteration budget) |
@@ -63,7 +67,7 @@ YAML keys mirror `argparse` `dest` names (e.g. `model`, `max_steps`, `top_k`, `r
 
 ## run_connectomedb_all.sh
 
-Runs all 9 baselines sequentially on one or more datasets. Accepts dataset names as positional arguments (default: `connectomedb`).
+Runs all baselines sequentially on one or more datasets. Accepts dataset names as positional arguments (default: `connectomedb`).
 
 ### Baselines run (in order)
 
@@ -77,7 +81,8 @@ Runs all 9 baselines sequentially on one or more datasets. Accepts dataset names
 | 6 | Adaptive retrieval | `react` (S2) | `anthropic/claude-sonnet-4-6` |
 | 7 | Adaptive retrieval | `ace` | `anthropic/claude-sonnet-4-6` |
 | 8 | Adaptive retrieval | `fire` | `anthropic/claude-sonnet-4-6` |
-| 9 | Adaptive retrieval | `open_scholar` | `claude-sonnet-4-6` (S2 retrieval, no oracle evidence) |
+| 9 | Adaptive retrieval | `safe` | `anthropic/claude-sonnet-4-6` |
+| 10 | Adaptive retrieval | `open_scholar` | `claude-sonnet-4-6` (S2 retrieval, no oracle evidence) |
 
 ```
 LLM-only:
@@ -93,6 +98,7 @@ ReAct + web search
 ReAct + S2
 ACE
 FIRE
+SAFE
 OpenScholar-Sonnet-4.6 (no evidence)
 ```
 
@@ -110,10 +116,11 @@ Installable baseline classes. All baselines share the same infrastructure from `
 | `random_baseline.py` | `RandomBaseline` | Chance floor — uniform draw from {SUPPORT, REFUTE, NEI} |
 | `llm_only.py` | `LLMOnly` | Parametric knowledge ceiling — single LLM call, no retrieval |
 | `retrieval_baseline.py` | `RetrievalBaseline` | Fixed-k RAG — searches Semantic Scholar or the web (controlled by `--search-backend`) with the raw claim, retrieves top-k results, and classifies with a single LLM call. No iteration or feedback. The "paste search results into an LLM" baseline. |
-| `open_scholar_baseline.py` | `OpenScholarBaseline` | RAG baseline — routes each claim through the [OpenScholar](../../OpenScholar) pipeline (Claude Sonnet 4.6 by default). When the dataset CSV provides an `evidence` snippet (e.g. SIGNOR, ConnectomeDB), it is forwarded as a retrieved passage alongside any live S2-retrieved passages. With `--retrieval`, OpenScholar runs its full feedback loop (keyword extraction → S2 search → re-rank → answer edit). Outputs `claim_verdict` JSON (SUPPORT / REFUTE / UNCERTAIN → normalised to SUPPORT / REFUTE / NEI). Results saved as `BaselineResult` JSONL, identical in schema to `llm_only`. |
-| `fire_baseline.py` | `FIREBaseline` | Iterative retrieval baseline — [FIRE](../../fire) dynamically decides whether to search the web or finalise a verdict at each step, integrating reasoning and retrieval. Binary output (True/False) mapped to SUPPORT/REFUTE; failures → UNCERTAIN. Runs as subprocess in FIRE's own `.venv`. |
+| `open_scholar_baseline.py` | `OpenScholarBaseline` | RAG baseline — routes each claim through the upstream [OpenScholar](OpenScholar) pipeline under `experiments/OpenScholar` (Claude Sonnet 4.6 by default). When the dataset CSV provides an `evidence` snippet (e.g. SIGNOR, ConnectomeDB), it is forwarded as a retrieved passage alongside any live S2-retrieved passages. With `--retrieval`, OpenScholar runs its full feedback loop (keyword extraction → S2 search → re-rank → answer edit). Outputs `claim_verdict` JSON (SUPPORT / REFUTE / UNCERTAIN → normalised to SUPPORT / REFUTE / NEI). Results saved as `BaselineResult` JSONL, identical in schema to `llm_only`. |
+| `fire_baseline.py` | `FIREBaseline` | Iterative retrieval baseline — routes each claim through the upstream [FIRE](fire) verification loop in-process. The original FIRE search step is patched to use the repo's shared `do_search` web helper, while the upstream control flow and prompts remain intact. Binary output (True/False) is mapped to SUPPORT / REFUTE; failures default to UNCERTAIN. Upstream FIRE is web-only in this integration, and the SLURM launcher requests a GPU for FIRE jobs because the upstream sentence-similarity path may use CUDA. |
 | `ace_baseline.py` | `ACEBaseline` | Agentic context engineering baseline — [ACE](../../ace) Generator agent classifies claims using a self-improving playbook. By default runs in eval_only mode with a built-in claim-verification playbook (no training). Runs as subprocess in ACE's own `.venv`. |
 | `react_baseline.py` | `ReActBaseline` | Unconstrained agentic reasoning baseline — ReAct (Yao et al., ICLR 2023) Thought → Action → Observation loop with web search tools. The agent decides when to stop with no external sufficiency signal. Uses native tool-use API. The "why not just use a ReAct agent?" baseline. |
+| `safe_baseline.py` | `SAFEBaseline` | SAFE baseline — routes each atomic claim through the upstream SAFE `rate_atomic_fact` loop in-process. The original SAFE search step is patched to use the repo's shared `do_search` web helper, and the SAFE final-verdict prompt is rewritten to reuse the shared SUPPORT / REFUTE / UNCERTAIN definitions used by the other baselines. Failures default to UNCERTAIN. Upstream SAFE is web-only in this integration. |
 
 ### Unified CLI flags
 
@@ -126,16 +133,16 @@ All baselines share a single set of core flags. Baseline-specific flags only tak
 | `--model` | `anthropic/claude-sonnet-4-6` | LiteLLM model string (`provider/model-id`). For OpenScholar the provider prefix is split into `--model_name` / `--api` automatically. |
 | `--temperature` | `0.0` | LLM sampling temperature (0.0–1.0). |
 | `--max-tokens` | `4096` | Max generation tokens per LLM call. |
-| `--max-steps` | `10` | Maximum iterative search/reasoning steps (fire, react). |
+| `--max-steps` | `10` | Maximum iterative search/reasoning steps (fire, react, safe). |
 | `--top-k` | `5` | Number of retrieved items (S2 abstracts for retrieval; passages for open_scholar). |
 | `--limit` | `0` | Limit number of claims per dataset (0 = all). |
 | `--output-dir` | `results/baselines` | Directory to save results. |
 
-#### Retrieval-specific (retrieval & react baselines)
+#### Retrieval-specific (retrieval and react baselines)
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--search-backend` | `s2` | Search backend: `web` (DuckDuckGo) or `s2` (Semantic Scholar). Used by both `retrieval` and `react` baselines. |
+| `--search-backend` | `s2` | Search backend: `web` (DuckDuckGo) or `s2` (Semantic Scholar). Used by `retrieval` and `react`. `fire` and `safe` ignore this flag and always use the shared web-search helper. |
 | `--no-strip-query` | (stripping on) | Disable stripping dataset-specific boilerplate from claims before S2 search. |
 
 #### OpenScholar-specific
@@ -158,8 +165,9 @@ All baselines share a single set of core flags. Baseline-specific flags only tak
 - **All LLM baselines**: An LLM API key recognised by litellm (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
 - **Retrieval / OpenScholar**: `S2_API_KEY` (defaults to `""`, anonymous, rate-limited) when using `--search-backend s2`.
 - **Retrieval (web) / ReAct (web)**: `ddgs` package (free, no API key).
-- **OpenScholar**: OpenScholar checked out at `<workspace>/OpenScholar` with `.venv` intact.
-- **FIRE**: `ddgs` package (free, no API key).
+- **OpenScholar**: OpenScholar checked out at `experiments/OpenScholar` with `.venv` intact.
+- **FIRE (web)**: `ddgs` package (free, no API key).
+- **SAFE (web)**: `ddgs` package (free, no API key).
 - **ACE**: ACE cloned at `<workspace>/ace` (reference only; runs in-process).
 
 ## Output format
@@ -170,11 +178,20 @@ All baselines write results as **JSON Lines** (one `BaselineResult` per line) to
 results/baselines/<baseline>/<model-slug>/<dataset>_seed<N>.jsonl
 ```
 
+Retrieval and ReAct runs add their backend slug to keep web and S2 outputs separate:
+
+```
+results/baselines/retrieval/<backend>/<model-slug>/top<K>/<dataset>_seed<N>.jsonl
+results/baselines/react/<backend>/<model-slug>/<dataset>_seed<N>.jsonl
+```
+
 Aggregated metrics (mean ± std over repeats) are written to:
 
 ```
 results/baselines/<baseline>/<model-slug>/<dataset>_metrics.json
 ```
+
+Baselines that emit per-claim `.log` files now include the prompt text sent to the model. For subprocess-backed OpenScholar runs, the log records the effective task input payload and command invocation.
 
 `BaselineResult` fields:
 

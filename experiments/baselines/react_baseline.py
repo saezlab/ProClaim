@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import logging
 import re
-import threading
 import time
 import warnings
 from pathlib import Path
@@ -43,12 +42,18 @@ from langgraph.prebuilt import create_react_agent
 
 from baselines.shared.cost_tracker import CostTracker
 from baselines.shared.llm import LLMBackend
+from baselines.shared.logging_utils import write_claim_log
 from baselines.shared.label_utils import (
     normalize_label,
     validate_verdict,
     verdict_defs_block,
     verdict_names,
     verdict_or_str,
+)
+from baselines.shared.search_utils import (
+    ddg_text_search_with_retry,
+    format_ddg_body_results,
+    format_s2_detailed_results,
 )
 from baselines.shared.verdict import BaselineResult
 from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
@@ -108,48 +113,12 @@ Strategy:
 _NUM_SEARCH_RESULTS = 5
 
 
-# Serialize DuckDuckGo calls — ddgs hangs when called concurrently
-# (LangGraph's ToolNode dispatches parallel tool calls).
-_DDG_LOCK = threading.Lock()
-
-
-def _ddg_search(query: str, k: int = 3) -> str:
-    """Query DuckDuckGo via the ddgs package (free, no API key)."""
-    try:
-        from ddgs import DDGS
-    except ImportError:
-        raise RuntimeError("ddgs not installed. Run: pip install ddgs")
-
-    snippets: list[str] = []
-    try:
-        with _DDG_LOCK:
-            ddgs = DDGS()
-            for result in ddgs.text(query, max_results=k):
-                body = result.get("body", "")
-                if body:
-                    snippets.append(body)
-    except Exception as exc:
-        logger.warning("DuckDuckGo search failed for %r: %s", query, exc)
-
-    return " ".join(snippets) if snippets else "No relevant search results found."
-
-
 def _do_search(query: str, k: int = 3, _max_retries: int = 3) -> str:
     """Execute a web search with retries on transient errors."""
-    last_exc: Exception | None = None
-    for attempt in range(_max_retries):
-        try:
-            return _ddg_search(query, k=k)
-        except Exception as exc:
-            last_exc = exc
-            wait = 2 ** attempt * 2
-            logger.warning(
-                "Search error (attempt %d/%d), retrying in %ds: %s",
-                attempt + 1, _max_retries, wait, exc,
-            )
-            time.sleep(wait)
-    logger.error("Search failed after %d retries: %s", _max_retries, last_exc)
-    return "Search temporarily unavailable. No results found."
+    return format_ddg_body_results(
+        ddg_text_search_with_retry(query, k=k, max_retries=_max_retries),
+        empty_message="Search temporarily unavailable. No results found.",
+    )
 
 
 # ── Semantic Scholar search backend ──────────────────────────────────
@@ -174,35 +143,7 @@ def _s2_search(query: str, k: int = 3) -> str:
         return "ERROR: Semantic Scholar rate-limit exhausted after retries. Try again later."
     if not papers:
         return "No relevant papers found on Semantic Scholar."
-    return _format_s2_papers(papers)
-
-
-def _format_s2_papers(papers: list[dict]) -> str:
-    """Format S2 paper dicts into numbered evidence passages."""
-    parts: list[str] = []
-    for i, paper in enumerate(papers, 1):
-        title = paper.get("title", "Untitled")
-        year = paper.get("year", "")
-        abstract = (paper.get("abstract") or "").strip()
-        if not abstract:
-            abstract = "(no abstract available)"
-
-        authors = paper.get("authors") or []
-        author_str = ", ".join(a.get("name", "") for a in authors[:3])
-        if len(authors) > 3:
-            author_str += " et al."
-
-        ext_ids = paper.get("externalIds") or {}
-        pmid = ext_ids.get("PubMed", "")
-        pmid_str = f"  PMID: {pmid}" if pmid else ""
-
-        cites = paper.get("citationCount", "")
-        cite_str = f"  Citations: {cites}" if cites else ""
-
-        parts.append(
-            f"[{i}] {title} ({year}) — {author_str}{pmid_str}{cite_str}\n{abstract}"
-        )
-    return "\n\n".join(parts)
+    return format_s2_detailed_results(papers)
 
 
 # ── LangChain tool (module-level, used by all instances) ─────────────
@@ -287,6 +228,7 @@ class ReActBaseline:
 
         # Build the LangGraph ReAct agent
         system_prompt = _build_system_prompt(search_backend)
+        self._system_prompt = system_prompt
         self._agent = create_react_agent(
             self._llm,
             tools=tools,
@@ -294,10 +236,7 @@ class ReActBaseline:
         )
 
         # Cost estimation
-        model_key = self.model.split("/", 1)[-1] if "/" in self.model else self.model
-        in_price, out_price = CostTracker.DEFAULT_PRICING.get(
-            model_key, CostTracker.FALLBACK_PRICING,
-        )
+        in_price, out_price = CostTracker.pricing_for(self.model)
         self._in_price = in_price
         self._out_price = out_price
 
@@ -315,13 +254,14 @@ class ReActBaseline:
         search_queries: list[str] = []
         total_in = 0
         total_out = 0
+        user_prompt = f"Verify this scientific claim:\n\n{claim}"
 
         try:
             # LangGraph recursion_limit: each "step" uses 2 graph nodes
             # (agent node + tool node), so limit = 2 * max_steps + 2 (extra
             # for the final answer turn).
             result = self._agent.invoke(
-                {"messages": [HumanMessage(content=f"Verify this scientific claim:\n\n{claim}")]},
+                {"messages": [HumanMessage(content=user_prompt)]},
                 config={"recursion_limit": 2 * self.max_steps + 2},
             )
 
@@ -360,17 +300,19 @@ class ReActBaseline:
         latency = time.monotonic() - t0
 
         # Write per-claim log
-        if self.log_dir is not None:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            log_path = self.log_dir / f"{claim_id}.log"
-            with open(log_path, "w") as lf:
-                lf.write(f"=== claim_id: {claim_id} ===\n")
-                lf.write(f"=== claim ===\n{claim}\n\n")
-                lf.write(f"=== verdict: {verdict} ===\n")
-                lf.write(f"=== searches ({len(search_queries)}) ===\n")
-                for q in search_queries:
-                    lf.write(f"  Q: {q}\n")
-                lf.write(f"\n=== reasoning ===\n{reasoning}\n")
+        write_claim_log(
+            self.log_dir,
+            claim_id,
+            [
+                (f"claim_id: {claim_id}", ""),
+                ("claim", claim),
+                ("system prompt", self._system_prompt),
+                ("user prompt", user_prompt),
+                (f"verdict: {verdict}", ""),
+                (f"searches ({len(search_queries)})", "\n".join(f"  Q: {query}" for query in search_queries)),
+                ("reasoning", reasoning),
+            ],
+        )
 
         predicted = validate_verdict(verdict)
 

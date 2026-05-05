@@ -512,6 +512,7 @@ class VerificationSettings(BaseSettings):
             "LLM_TIMEOUT": str(self.llm.timeout),
             "LLM_STREAM": "1" if self.llm.stream else "0",
             "MLP_MODEL_DIR": self.mlp_model_dir or "results/models/classifier_best",
+            "SUFFICIENCY_BACKEND": self.sufficiency_backend,
             "MAX_ITERATIONS": str(self.max_iterations),
             "SUFFICIENCY_BACKEND": self.sufficiency_backend,
             # Label config for setup_kernel() inside the Jupyter kernel

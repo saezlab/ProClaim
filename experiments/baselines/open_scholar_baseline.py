@@ -25,18 +25,15 @@ import time
 from pathlib import Path
 
 from baselines.shared.label_utils import normalize_label
+from baselines.shared.logging_utils import write_claim_log
 from baselines.shared.verdict import BaselineResult
 
 logger = logging.getLogger(__name__)
 
-# Resolve paths relative to *this* file:
-#   baselines/open_scholar_baseline.py
-#   ../../..  → grn-llm-correct/
-#   ../../../../OpenScholar → OpenScholar root
+# Resolve paths relative to *this* file.
 _BASELINES_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _BASELINES_DIR.parent.parent      # grn-llm-correct/
-_WORKSPACE_ROOT = _PROJECT_ROOT.parent             # workspace/
-_DEFAULT_OPEN_SCHOLAR_DIR = _WORKSPACE_ROOT / "OpenScholar"
+_DEFAULT_OPEN_SCHOLAR_DIR = _PROJECT_ROOT / "experiments" / "OpenScholar"
 _DEFAULT_ENV_FILE = _PROJECT_ROOT / ".env"
 
 
@@ -196,15 +193,21 @@ class OpenScholarBaseline:
             # Write per-claim log for post-hoc debugging and echo subprocess
             # output through the logger so it appears in the log file rather
             # than on raw stdout (which can be a broken pipe).
-            if self.log_dir is not None:
-                self.log_dir.mkdir(parents=True, exist_ok=True)
-                log_path = self.log_dir / f"{claim_id}.log"
-                with open(log_path, "w") as _lf:
-                    _lf.write(f"=== claim_id: {claim_id} ===\n")
-                    _lf.write(f"=== framed_input ===\n{framed_input}\n\n")
-                    _lf.write(f"=== stdout ===\n{proc.stdout or ''}\n")
-                    _lf.write(f"=== stderr ===\n{proc.stderr or ''}\n")
-                    _lf.write(f"=== returncode: {proc.returncode} ===\n")
+            write_claim_log(
+                self.log_dir,
+                claim_id,
+                [
+                    (f"claim_id: {claim_id}", ""),
+                    ("task_name", self.task_name),
+                    ("prompt", framed_input),
+                    ("input payload", json.dumps({"input": framed_input, "ctxs": ctxs, "answer": ""}, indent=2)),
+                    ("command", " ".join(cmd)),
+                    ("framed_input", framed_input),
+                    ("stdout", proc.stdout or ""),
+                    ("stderr", proc.stderr or ""),
+                    (f"returncode: {proc.returncode}", ""),
+                ],
+            )
 
             if proc.stdout:
                 logger.debug("OpenScholar stdout [%s]:\n%s", claim_id, proc.stdout)
@@ -223,6 +226,8 @@ class OpenScholarBaseline:
         item = raw_data["data"][0] if "data" in raw_data else raw_data[0]
         raw_output: str = item.get("output", "")
         cost_usd = float(item.get("total_cost", 0.0))
+        input_tokens = int(item.get("total_input_tokens", 0) or 0)
+        output_tokens = int(item.get("total_output_tokens", 0) or 0)
 
         verdict = self._parse_verdict(raw_output)
 
@@ -234,9 +239,8 @@ class OpenScholarBaseline:
             confidence=0.0,
             reasoning=verdict.get("reasoning", raw_output[:500] if raw_output else ""),
             evidence=verdict.get("evidence", []),
-            # OpenScholar reports cost in USD but not token counts
-            input_tokens=0,
-            output_tokens=0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             cost_usd=cost_usd,
             latency_seconds=latency,
             baseline_name=self.name,

@@ -2,12 +2,7 @@
 Evidence API — pure Python library for evidence manipulation.
 
 All functions operate on EvidenceState objects in-memory. No disk I/O,
-no MCP dependency. The LLM agent calls these functions directly via
-nb_execute in the Jupyter kernel::
-
-    papers = search_pubmed("MAPK1 activation", state)
-    result = check_sufficiency(state, llm)
-    state = compress_evidence(state, state.claim)
+no MCP dependency. 
 """
 
 import json
