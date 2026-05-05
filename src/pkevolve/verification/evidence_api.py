@@ -20,6 +20,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
+
+# Load .env file from project root (relative to this file)
+_script_dir = Path(__file__).resolve().parent
+_project_root = _script_dir.parent.parent.parent
+load_dotenv(_project_root / ".env")
+
 from pkevolve.verification.compressor import SufficiencyPreservingCompressor
 from pkevolve.verification.data_models import (
     Conflict,

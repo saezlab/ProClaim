@@ -491,6 +491,9 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict, log_path: Path) -
     prompts the subagent LLM to evaluate the evidence and decide SUPPORT/REFUTE/UNCERTAIN,
     then calls emit_verdict.  No hardcoded verdict defaults — the LLM makes the call.
     """
+    from pkevolve.verification.config import get_label_config as _get_label_cfg
+    _verdict_names = ', '.join(_get_label_cfg().verdict_names())
+
     abs_workspace = str(workspace.resolve())
     script = textwrap.dedent(f"""\
         from pkevolve.verification.evidence_api import (
@@ -527,29 +530,30 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict, log_path: Path) -
             f"  [{{f.stance}}] {{f.text[:200]}}" for f in state.facts[:20]
         ) or "  (none)"
 
-        verdict_prompt = f\"\"\"You are a scientific evidence evaluator. Based on the evidence below,
-determine the verdict for this claim using exactly one of the defined labels.
-
-Claim: {{state.claim}}
-
-Verdict label definitions:
-{{label_cfg.verdict_prompt_block()}}
-
-Evidence summary:
-{{summary}}
-
-Extracted facts:
-{{facts_text}}
-
-Gaps identified:
-{{chr(10).join(f"  - {{g}}" for g in gaps[:5]) or "  (none)"}}
-
-Output your answer in this exact format:
-VERDICT: <one of {', '.join(label_cfg.verdict_names())}>
-CONFIDENCE: <0.0-1.0>
-REASONING: <one paragraph>
-KEY_EVIDENCE: <bullet 1> | <bullet 2> | <bullet 3>
-\"\"\"
+        verdict_prompt = (
+            "You are a scientific evidence evaluator. Based on the evidence below,\\n"
+            "determine the verdict for this claim using exactly one of the defined labels.\\n"
+            "\\n"
+            f"Claim: {{state.claim}}\\n"
+            "\\n"
+            "Verdict label definitions:\\n"
+            f"{{label_cfg.verdict_prompt_block()}}\\n"
+            "\\n"
+            "Evidence summary:\\n"
+            f"{{summary}}\\n"
+            "\\n"
+            "Extracted facts:\\n"
+            f"{{facts_text}}\\n"
+            "\\n"
+            "Gaps identified:\\n"
+            f"{{chr(10).join(f'  - {{g}}' for g in gaps[:5]) or '  (none)'}}\\n"
+            "\\n"
+            "Output your answer in this exact format:\\n"
+            f"VERDICT: <one of {_verdict_names}>\\n"
+            "CONFIDENCE: <0.0-1.0>\\n"
+            "REASONING: <one paragraph>\\n"
+            "KEY_EVIDENCE: <bullet 1> | <bullet 2> | <bullet 3>\\n"
+        )
 
         response = llm(verdict_prompt)
         print("LLM verdict response:", response[:600])
@@ -596,9 +600,14 @@ KEY_EVIDENCE: <bullet 1> | <bullet 2> | <bullet 3>
         )
     """)
 
+    import tempfile
+
     try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tf:
+            tf.write(script)
+            tmp_path = tf.name
         result = subprocess.run(
-            ["python3", "-c", script],
+            ["python3", tmp_path],
             capture_output=True,
             text=True,
             timeout=300,
@@ -607,6 +616,11 @@ KEY_EVIDENCE: <bullet 1> | <bullet 2> | <bullet 3>
         output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()
     except Exception as exc:
         output = f"[ERROR: forced verdict script failed: {exc}]"
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
     append_to_jupytext_log(log_path, "# Forced verdict (max turns reached)", output)
     logger.info("Forced verdict: %s", output[:300])

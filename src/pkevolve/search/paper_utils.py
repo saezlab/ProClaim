@@ -12,6 +12,7 @@ This module consolidates all useful paper search functions from test scripts:
 import os
 import json
 import requests
+from pathlib import Path
 from typing import List, Dict, Optional, Any
 from xml.etree import ElementTree as ET
 from datetime import datetime, date
@@ -76,7 +77,9 @@ def clean_text(text: str) -> str:
 
 
 # Load environment variables from .env file
-load_dotenv()
+_script_dir = Path(__file__).resolve().parent
+_project_root = _script_dir.parent.parent.parent
+load_dotenv(_project_root / ".env")
 
 # ============================================================================
 # HTTP Session with Retries

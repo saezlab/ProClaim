@@ -43,3 +43,6 @@ include_subclaim_examples: false
 
 # Logging
 verbose: false
+
+# Web-search
+disable_web_search: false

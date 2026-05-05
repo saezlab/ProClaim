@@ -19,6 +19,7 @@ Output: <input_dir>/results_baseline_cost.csv  (original file untouched)
 Usage:
     python scripts/convert_cost_to_baseline.py <results.csv> [--model MODEL]
     python scripts/convert_cost_to_baseline.py results/signor_direct_eval_20260427_221617/results.csv
+    python scripts/convert_cost_to_baseline.py results/connectomedb_eval_20260424_171117/results.csv
 """
 
 import argparse

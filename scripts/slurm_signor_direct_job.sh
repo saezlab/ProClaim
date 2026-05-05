@@ -90,7 +90,16 @@ if [[ "$CLOUD_SUBAGENT" == "false" ]]; then
     # ---------------------------------------------------------------------------
     echo "[3/4] Waiting for vLLM health endpoint..."
     HEALTH_WAIT=0
+    HEALTH_MAX=1800  # 30-minute cap; avoids hanging forever if vLLM crashes
     until curl -sf "http://localhost:${VLLM_PORT}/health" >/dev/null 2>&1; do
+        if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+            echo "ERROR: vLLM process (PID ${VLLM_PID}) died before becoming healthy. Exiting."
+            exit 1
+        fi
+        if [[ $HEALTH_WAIT -ge $HEALTH_MAX ]]; then
+            echo "ERROR: vLLM did not become healthy after ${HEALTH_MAX}s. Exiting."
+            exit 1
+        fi
         sleep 10
         HEALTH_WAIT=$((HEALTH_WAIT + 10))
         echo "      Still waiting... ${HEALTH_WAIT}s elapsed"

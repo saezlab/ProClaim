@@ -7,6 +7,8 @@ Usage:
         --tau025_dir results/signor_direct_eval_20260430_094006 \
         --tau050_dir results/signor_direct_eval_20260427_221617 \
         --out results/mlp_tau_eval_ablation/signor_direct_tau_ablation_plots
+
+signor_direct_eval_20260501_154319, this is tau 0.5 with no web search
 """
 
 import json
