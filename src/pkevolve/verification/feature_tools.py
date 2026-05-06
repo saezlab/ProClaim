@@ -28,8 +28,11 @@ Usage:
     metadata = meta_extractor.extract_metadata("36194155")
 """
 
+import atexit
 import logging
 import math
+import subprocess
+import threading
 import time
 import json
 import os
@@ -48,47 +51,76 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Entity Coverage — spaCy-based NER
+# Entity Coverage — scispaCy NER via .venv310 subprocess
 # ---------------------------------------------------------------------------
 
-_spacy_nlp = None
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_VENV310_PYTHON = _PROJECT_ROOT / ".venv310" / "bin" / "python"
+_NER_WORKER = _PROJECT_ROOT / "scripts" / "ner_worker.py"
+
+_ner_proc: subprocess.Popen | None = None
+_ner_lock = threading.Lock()
 
 
-def _get_spacy_nlp():
-    """Load spaCy NLP model (singleton, loaded on first call)."""
-    global _spacy_nlp
-    if _spacy_nlp is None:
-        import spacy
-        try:
-            # Try loading scispaCy model
-            _spacy_nlp = spacy.load("en_core_sci_sm")
-        except OSError:
-            # Fallback or try to import it directly if not linked
-            try:
-                import en_core_sci_sm
-                _spacy_nlp = en_core_sci_sm.load()
-            except ImportError:
-                logger.warning("en_core_sci_sm not found. Falling back to en_core_web_sm.")
-                _spacy_nlp = spacy.load("en_core_web_sm")
-    return _spacy_nlp
+def _start_ner_process() -> "subprocess.Popen | None":
+    if not _VENV310_PYTHON.exists() or not _NER_WORKER.exists():
+        logger.warning(
+            "NER worker unavailable (missing %s). Entity coverage will be empty.",
+            _VENV310_PYTHON,
+        )
+        return None
+
+    logger.info("Starting NER worker subprocess (%s)...", _VENV310_PYTHON)
+    proc = subprocess.Popen(
+        [str(_VENV310_PYTHON), str(_NER_WORKER)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        ready = json.loads(proc.stdout.readline())
+        if ready.get("ready"):
+            logger.info("NER worker ready (model: %s)", ready.get("model"))
+            atexit.register(proc.terminate)
+            return proc
+        logger.warning("NER worker startup failed: %s", ready.get("error"))
+    except Exception as exc:
+        logger.warning("NER worker bad startup message: %s", exc)
+    proc.terminate()
+    return None
+
+
+def _get_ner_process() -> "subprocess.Popen | None":
+    global _ner_proc
+    with _ner_lock:
+        if _ner_proc is None or _ner_proc.poll() is not None:
+            _ner_proc = _start_ner_process()
+        return _ner_proc
 
 
 def extract_entities(text: str) -> set[str]:
-    """Extract named entities from text using scispaCy (or fallback).
+    """Extract named entities via the .venv310 scispaCy subprocess.
 
-    Uses a biomedical NER model (en_core_sci_sm) to extract entities like
-    genes, diseases, chemicals, etc.
-
-    Returns a set of lowercased entity surface forms.
-    Empty string returns an empty set.
+    Uses en_core_sci_sm (biomedical NER). Returns lowercased entity strings.
+    Returns empty set if the subprocess is unavailable or the text is empty.
     """
     if not text or not text.strip():
         return set()
-    nlp = _get_spacy_nlp()
-    doc = nlp(text)
 
-    # scispaCy is trained to detect biomedical entities directly in doc.ents
-    return {ent.text.lower() for ent in doc.ents}
+    proc = _get_ner_process()
+    if proc is None:
+        return set()
+
+    with _ner_lock:
+        try:
+            proc.stdin.write(json.dumps({"text": text}) + "\n")
+            proc.stdin.flush()
+            result = json.loads(proc.stdout.readline())
+            return set(result.get("entities", []))
+        except Exception as exc:
+            logger.warning("NER subprocess error: %s", exc)
+            return set()
 
 
 def compute_entity_coverage(claim: str, evidence_text: str) -> NLPFeatureVector:
