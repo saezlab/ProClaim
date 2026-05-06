@@ -1,3 +1,4 @@
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
 baseline: safe
 model: anthropic/claude-sonnet-4-6
 temperature: 0.0

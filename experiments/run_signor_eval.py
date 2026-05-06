@@ -2,10 +2,11 @@
 """
 End-to-end evaluation script for the SIGNOR dataset using the RLM framework.
 
-This script iterates through the SIGNOR ground truth CSV, generates both
-forward and flipped claims, and sequentially runs `evidence_programming.py`
-for multiple repetitions per claim. Results are appended incrementally to an
-output CSV. Token usage and cost estimates are parsed from the verdict artifacts.
+This script iterates through the claim-level SIGNOR dataset, where each row
+already contains a concrete claim and label, and sequentially runs
+`evidence_programming.py` for multiple repetitions per claim. Results are
+appended incrementally to an output CSV. Token usage and cost estimates are
+parsed from the verdict artifacts.
 
 Example command:
     time uv run python -m proclaim.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
@@ -40,10 +41,19 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT_CSV = "/hps/nobackup/saezrodriguez/shared_datasets/signor*/ground_truth.csv"
+DEFAULT_INPUT_CSV = PROJECT_ROOT / "datasets" / "signor.csv"
 DEFAULT_OUTPUT_CSV = PROJECT_ROOT / "results" / "signor_eval_results.csv"
 DEFAULT_RESULTS_DIR = PROJECT_ROOT / "results" / "signor_eval"
 DEFAULT_CONFIG = PROJECT_ROOT / "experiments" / "configs" / "signor_eval_config.yaml"
+REQUIRED_INPUT_COLUMNS = {
+    "id",
+    "flip",
+    "claim",
+    "label",
+    "original_label",
+    "entity_a",
+    "entity_b",
+}
 
 # Token pricing per 1M tokens (input, output) in USD
 CLAUDE_PRICING = {
@@ -66,65 +76,24 @@ logging.basicConfig(
 logger = logging.getLogger("signor_eval")
 
 # ---------------------------------------------------------------------------
-# Claim Generation Logic
+# Input validation
 # ---------------------------------------------------------------------------
 
-def construct_signor_claim(source: str, target: str, interaction: str, flip: bool = False) -> str:
-    """
-    Constructs the natural language claim from the entities and interaction.
+def validate_input_schema(df: pd.DataFrame) -> None:
+    missing = sorted(REQUIRED_INPUT_COLUMNS - set(df.columns))
+    if missing:
+        raise ValueError(
+            "SIGNOR input CSV must use the claim-level dataset schema. "
+            f"Missing columns: {', '.join(missing)}"
+        )
 
-    Flip logic:
-    - Only called with flip=True for edges whose original label is SUPPORTED
-    - Positive (activation) edges are flipped to negative (inhibition)
-    - Negative (inhibition) edges are flipped to positive (activation)
-    - Non-directional edges (e.g., binding) are NOT flipped
-    """
-    # Group definitions based on signor_utils.py
-    is_positive = interaction in [
-        'up-regulates',
-        'up-regulates activity',
-        'up-regulates quantity',
-        'up-regulates quantity by expression'
-    ]
-    is_negative = interaction in [
-        'down-regulates',
-        'down-regulates activity',
-        'down-regulates quantity by destabilization'
-    ]
 
-    # Apply flip logic: flip both positive and negative directional edges
-    if flip and is_positive:
-        is_positive = False
-        is_negative = True
-    elif flip and is_negative:
-        is_negative = False
-        is_positive = True
-
-    # Formulate claim sentence
-    if is_positive:
-        claim_str = f"{source} directly activates {target}."
-    elif is_negative:
-        claim_str = f"{source} directly inhibits {target}."
-    else:
-        # Non-directional interactions (e.g., binding, complex formation)
-        # These are never flipped
-        claim_str = f"{source} directly interacts with {target}."
-
-    return claim_str
-
-def get_flipped_label(original_label: str, flip: bool) -> str:
-    """ Maps the ground truth label depending on flip status. """
-    if not flip:
-        return original_label
-        
-    mapped_label = original_label.upper()
-    if mapped_label == "SUPPORTED":
-        return "WRONG"  # REFUTED
-    elif mapped_label == "WRONG":
-        return "SUPPORTED"
-    elif mapped_label == "UNCERTAIN":
-        return "UNCERTAIN"
-    return mapped_label
+def _to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    return bool(value)
 
 # ---------------------------------------------------------------------------
 # Execution and Result Parsing
@@ -322,7 +291,7 @@ def run_evaluation(
 
 def main():
     parser = argparse.ArgumentParser(description="End-to-End Evaluation of SIGNOR Dataset")
-    parser.add_argument("--input-csv", type=str, help="Path to SIGNOR ground_truth.csv")
+    parser.add_argument("--input-csv", type=str, default=str(DEFAULT_INPUT_CSV), help="Path to the claim-level SIGNOR dataset CSV.")
     parser.add_argument("--run-tag", type=str, default=None, help="Run tag for namespaced output directory (e.g. 20260330_142500).")
     parser.add_argument("--output-csv", type=str, default=None, help="Path to write results (derived from --run-tag if omitted).")
     parser.add_argument("--config", type=str, default=str(DEFAULT_CONFIG), help="Base VerificationSettings YAML.")
@@ -333,13 +302,6 @@ def main():
     args = parser.parse_args()
     
     input_path = args.input_csv
-    if not input_path:
-        import glob
-        matches = glob.glob(DEFAULT_INPUT_CSV)
-        if matches:
-            input_path = matches[0]
-        else:
-            raise FileNotFoundError(f"Could not find default target: {DEFAULT_INPUT_CSV}")
 
     config_path = Path(args.config)
 
@@ -371,6 +333,7 @@ def main():
 
     logger.info(f"Reading dataset: {input_path}")
     df = pd.read_csv(input_path)
+    validate_input_schema(df)
     
     if args.limit > 0:
         df = df.iloc[args.row_start:args.row_start + args.limit]
@@ -409,55 +372,50 @@ def main():
     # Process each row
     total_rows = len(df)
     for idx, row in df.iterrows():
-        sid = row.get("SIGNOR_ID", f"ROW_{idx}")
-        entity_a = row.get("ENTITYA", "UnknownA")
-        entity_b = row.get("ENTITYB", "UnknownB")
-        effect = row.get("EFFECT", "unknown")
-        orig_label = row.get("Label", "UNCERTAIN")
-        
+        sid = row["id"]
+        entity_a = row["entity_a"]
+        entity_b = row["entity_b"]
+        orig_label = row["original_label"]
+        claim_str = row["claim"]
+        flip = _to_bool(row["flip"])
+        expected_label = row["label"]
+
         logger.info(f"--- Processing [{idx+1}/{total_rows}] {sid} : {entity_a} -> {entity_b} ---")
-        
-        flip_variants = [False, True] if orig_label.upper() == "SUPPORTED" else [False]
-        for flip in flip_variants:
-             # Create string formats and labels
-             claim_str = construct_signor_claim(entity_a, entity_b, effect, flip=flip)
-             expected_label = get_flipped_label(orig_label, flip=flip)
-             
-             for rep in range(1, args.reps + 1):
-                 if (sid, flip, rep) in existing_runs:
-                     continue
-                 
-                 run_dir_name = f"{sid}/flip_{flip}/rep_{rep}"
-                 run_dir = results_dir / run_dir_name
-                 
-                 logger.info(f"Running Repetition {rep}/{args.reps} (Flipped: {flip})")
-                 stats = run_evaluation(claim_str, run_dir, config_path, in_price, out_price, env_vars=env_vars, mode=mode)
-                 
-                 # Append straight to CSV safely
-                 row_dict = {
-                     "SIGNOR_ID": sid,
-                     "ENTITYA": entity_a,
-                     "ENTITYB": entity_b,
-                     "Original_Label": orig_label,
-                     "Flipped_Label": expected_label,
-                     "Claim_String": claim_str,
-                     "Is_Flipped": flip,
-                     "Repetition": rep,
-                     "Agent_Verdict": stats.get("verdict"),
-                     "Agent_Confidence": stats.get("confidence"),
-                     "Reasoning_Snippet": str(stats.get("reasoning"))[:500],
-                     "Output_Directory": str(run_dir.relative_to(PROJECT_ROOT)),
-                     "Input_Tokens": stats.get("input_tokens", 0),
-                     "Output_Tokens": stats.get("output_tokens", 0),
-                     "Cache_Creation_Tokens": stats.get("cache_creation_tokens", 0),
-                     "Cache_Read_Tokens": stats.get("cache_read_tokens", 0),
-                     "Total_Input_Tokens": stats.get("total_input_tokens", 0),
-                     "Cost_Estimate": stats.get("cost_estimate", 0.0)
-                 }
-                 
-                 with open(output_path, "a", newline="") as f:
-                     writer = csv.DictWriter(f, fieldnames=out_cols)
-                     writer.writerow(row_dict)
+
+        for rep in range(1, args.reps + 1):
+            if (sid, flip, rep) in existing_runs:
+                continue
+
+            run_dir_name = f"{sid}/flip_{flip}/rep_{rep}"
+            run_dir = results_dir / run_dir_name
+
+            logger.info(f"Running Repetition {rep}/{args.reps} (Flipped: {flip})")
+            stats = run_evaluation(claim_str, run_dir, config_path, in_price, out_price, env_vars=env_vars, mode=mode)
+
+            row_dict = {
+                "SIGNOR_ID": sid,
+                "ENTITYA": entity_a,
+                "ENTITYB": entity_b,
+                "Original_Label": orig_label,
+                "Flipped_Label": expected_label,
+                "Claim_String": claim_str,
+                "Is_Flipped": flip,
+                "Repetition": rep,
+                "Agent_Verdict": stats.get("verdict"),
+                "Agent_Confidence": stats.get("confidence"),
+                "Reasoning_Snippet": str(stats.get("reasoning"))[:500],
+                "Output_Directory": str(run_dir.relative_to(PROJECT_ROOT)),
+                "Input_Tokens": stats.get("input_tokens", 0),
+                "Output_Tokens": stats.get("output_tokens", 0),
+                "Cache_Creation_Tokens": stats.get("cache_creation_tokens", 0),
+                "Cache_Read_Tokens": stats.get("cache_read_tokens", 0),
+                "Total_Input_Tokens": stats.get("total_input_tokens", 0),
+                "Cost_Estimate": stats.get("cost_estimate", 0.0)
+            }
+
+            with open(output_path, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=out_cols)
+                writer.writerow(row_dict)
 
 if __name__ == "__main__":
     main()

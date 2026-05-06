@@ -1,0 +1,30 @@
+# ConnectomeDB smoke-test config
+#
+# Default behaviour: no local endpoint required.
+# - Outer agent uses Anthropic via LiteLLM.
+# - Subagent calls also use Anthropic via LiteLLM.
+#
+# Optional local override:
+# - Set LLM_BASE_URL to an OpenAI-compatible endpoint.
+# - Override llm.subagent_model if you want a local model ID.
+
+mode: direct
+
+max_iterations: 1
+sufficiency_threshold: 0.80
+max_turns: 6
+
+llm:
+  model: anthropic/claude-haiku-4-5
+  subagent_model: anthropic/claude-haiku-4-5
+  subagent_base_url: ""
+  temperature: 0.0
+  disable_thinking: true
+
+sufficiency_backend: haiku
+
+output_dir: results/connectomedb_smoke_eval
+
+include_subclaim_examples: false
+verbose: false
+disable_web_search: false

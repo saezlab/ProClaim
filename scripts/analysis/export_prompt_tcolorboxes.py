@@ -308,15 +308,15 @@ def build_proclaim_direct_templates(groups: set[str]) -> list[PromptTemplate]:
         templates.extend(
             [
                 PromptTemplate(
-                    "ProClaim Direct System Prompt",
+                    "ProClaim System Prompt",
                     verification_prompts.DIRECT_SYSTEM_PROMPT,
                     "orchestrator",
                 ),
-                PromptTemplate(
-                    "ProClaim Direct Subclaim Examples",
-                    verification_prompts.SUBCLAIM_EXAMPLES,
-                    "orchestrator",
-                ),
+                # PromptTemplate(
+                #     "ProClaim Subclaim Examples",
+                #     verification_prompts.SUBCLAIM_EXAMPLES,
+                #     "orchestrator",
+                # ),
             ]
         )
 
@@ -324,35 +324,35 @@ def build_proclaim_direct_templates(groups: set[str]) -> list[PromptTemplate]:
         templates.extend(
             [
                 PromptTemplate(
-                    "ProClaim Direct Fact Extraction",
+                    "ProClaim Fact Extraction",
                     verification_prompts.EXTRACT_FACTS,
                     "subagents",
                 ),
                 PromptTemplate(
-                    "ProClaim Direct Evidence Synthesis",
+                    "ProClaim Evidence Synthesis",
                     verification_prompts.SYNTHESIZE_SUBCLAIM,
                     "subagents",
                 ),
                 PromptTemplate(
-                    "ProClaim Direct Conflict Detection",
+                    "ProClaim Conflict Detection",
                     verification_prompts.DETECT_CONFLICTS,
                     "subagents",
                 ),
                 PromptTemplate(
-                    "ProClaim Direct Gap Identification",
+                    "ProClaim Gap Identification",
                     verification_prompts.IDENTIFY_GAPS,
                     "subagents",
                 ),
-                PromptTemplate(
-                    "ProClaim Direct Gap Query Formulation",
-                    verification_prompts.FORMULATE_GAP_QUERIES,
-                    "subagents",
-                ),
-                PromptTemplate(
-                    "ProClaim Direct Failed-Paper Query Refinement",
-                    verification_prompts.REFINE_SEARCH_QUERY,
-                    "subagents",
-                ),
+                # PromptTemplate(
+                #     "ProClaim Gap Query Formulation",
+                #     verification_prompts.FORMULATE_GAP_QUERIES,
+                #     "subagents",
+                # ),
+                # PromptTemplate(
+                #     "ProClaim Failed-Paper Query Refinement",
+                #     verification_prompts.REFINE_SEARCH_QUERY,
+                #     "subagents",
+                # ),
             ]
         )
 
@@ -360,31 +360,31 @@ def build_proclaim_direct_templates(groups: set[str]) -> list[PromptTemplate]:
         templates.extend(
             [
                 PromptTemplate(
-                    "ProClaim Direct PubMed Query Generation",
+                    "ProClaim PubMed Query Generation",
                     verification_prompts.QUERY_GENERATION,
                     "search",
                 ),
                 PromptTemplate(
-                    "ProClaim Direct Semantic Scholar Query Generation",
+                    "ProClaim Semantic Scholar Query Generation",
                     verification_prompts.QUERY_GENERATION_S2,
                     "search",
                 ),
                 PromptTemplate(
-                    "ProClaim Direct Gap-Targeted Query Generation",
+                    "ProClaim Gap-Targeted Query Generation",
                     verification_prompts.GENERATE_GAP_QUERY,
                     "search",
                 ),
             ]
         )
 
-    if "sufficiency" in groups:
-        templates.append(
-            PromptTemplate(
-                "ProClaim Direct LLM Sufficiency Classifier",
-                llm_sufficiency.PROMPT_TEMPLATE,
-                "sufficiency",
-            )
-        )
+    # if "sufficiency" in groups:
+    #     templates.append(
+    #         PromptTemplate(
+    #             "ProClaim LLM Sufficiency Classifier",
+    #             llm_sufficiency.PROMPT_TEMPLATE,
+    #             "sufficiency",
+    #         )
+    #     )
 
     return templates
 

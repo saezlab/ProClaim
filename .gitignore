@@ -224,6 +224,8 @@ data/signor/
 *.pdf
 *.json
 *.csv
+!datasets/
+!datasets/*.csv
 *.pth
 *.txt
 
