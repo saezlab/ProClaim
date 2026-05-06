@@ -26,8 +26,8 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "results" / "analysis" / "metrics"
 
 DATASET_ORDER = ["signor", "connectomedb"]
 DATASET_TITLES = {
-    "signor": "SIGNOR-Fact",
-    "connectomedb": "ConnectomeDB-Fact",
+    "signor": "SIGNOR",
+    "connectomedb": "ConnectomeDB",
 }
 DATASET_HEADER_COLORS = {
     "signor": "headerteal",
@@ -66,13 +66,13 @@ ROW_SPECS = [
     RowSpec(label="ReAct + S2", baseline="react", variant="s2", model="anthropic--claude-sonnet-4-6"),
     RowSpec(label="FIRE", baseline="fire", model="anthropic--claude-sonnet-4-6"),
     RowSpec(label="SAFE", baseline="safe", model="anthropic--claude-sonnet-4-6"),
-    RowSpec(label="OS-Sonnet-4.6", baseline="open_scholar", model="anthropic--claude-sonnet-4-6"),
-    RowSpec(
-        label="OS-Sonnet-4.6 + oracle",
-        baseline="open_scholar",
-        model="oracle",
-        dataset_scope=frozenset({"signor"}),
-    ),
+    RowSpec(label="OpenScholar", baseline="open_scholar", model="anthropic--claude-sonnet-4-6"),
+    # RowSpec(
+    #     label="OS-Sonnet-4.6 + oracle",
+    #     baseline="open_scholar",
+    #     model="oracle",
+    #     dataset_scope=frozenset({"signor"}),
+    # ),
     RowSpec(label="", is_rule=True),
     RowSpec(label=r"\textbf{ProClaim} (ours)", is_ours=True),
 ]
@@ -194,7 +194,6 @@ def build_row_metrics(
             "delta": None if spec.is_ours or ours_metrics is None else metric_value(ours_metrics, "accuracy") - accuracy,
             "macro_fpr": metric_value(metrics, "macro_fpr"),
             "macro_fnr": metric_value(metrics, "macro_fnr"),
-            "avg_cost_usd": metric_value(metrics, "avg_cost_usd"),
         }
     return row_metrics
 
@@ -204,7 +203,6 @@ def compute_bests(row_metrics: dict[int, dict[str, float] | None]) -> dict[str, 
     delta_values: list[float] = []
     fpr_values: list[float] = []
     fnr_values: list[float] = []
-    cost_values: list[float] = []
 
     for metrics in row_metrics.values():
         if metrics is None:
@@ -212,7 +210,6 @@ def compute_bests(row_metrics: dict[int, dict[str, float] | None]) -> dict[str, 
         accuracy_values.append(metrics["accuracy"])
         fpr_values.append(metrics["macro_fpr"])
         fnr_values.append(metrics["macro_fnr"])
-        cost_values.append(metrics["avg_cost_usd"])
         if metrics["delta"] is not None:
             delta_values.append(metrics["delta"])
 
@@ -221,7 +218,6 @@ def compute_bests(row_metrics: dict[int, dict[str, float] | None]) -> dict[str, 
         "delta": min(delta_values) if delta_values else None,
         "macro_fpr": min(fpr_values) if fpr_values else None,
         "macro_fnr": min(fnr_values) if fnr_values else None,
-        "avg_cost_usd": min(cost_values) if cost_values else None,
     }
 
 
@@ -230,7 +226,7 @@ def format_number(value: float | None, bold: bool = False) -> str:
         return "--"
     text = f"{value:.2f}"
     if bold:
-        return rf"\textbf{{{text}}}"
+        return rf"\underline{{{text}}}"
     return text
 
 
@@ -257,7 +253,7 @@ def is_best(value: float | None, best_value: float | None) -> bool:
 
 
 def tabular_spec() -> str:
-    return "@{} l | c c *{3}{c} @{}"
+    return "@{} l | c c c c @{}"
 
 
 def table_title(datasets: list[str]) -> str:
@@ -276,7 +272,7 @@ def dataset_header_line(datasets: list[str]) -> str:
     return (
         " "
         + " & "
-        + rf"\multicolumn{{5}}{{c}}{{\cellcolor{{{table_header_color(datasets)}}}\textbf{{{table_title(datasets)}}}}}"
+        + rf"\multicolumn{{4}}{{c}}{{\cellcolor{{{table_header_color(datasets)}}}\textbf{{{table_title(datasets)}}}}}"
         + r" \\"
     )
 
@@ -284,11 +280,10 @@ def dataset_header_line(datasets: list[str]) -> str:
 def column_header_line() -> str:
     headers = [
         r"\textbf{Method}",
-        r"$\textbf{AGR}\uparrow$",
+        r"Agreement$\uparrow$",
         r"$\boldsymbol{\Delta}\uparrow$",
-        r"$\textbf{FPR}\downarrow$",
-        r"$\textbf{FNR}\downarrow$",
-        r"$\textbf{Cost}\downarrow$",
+        r"FPR$\downarrow$",
+        r"FNR$\downarrow$",
     ]
     return " & ".join(headers) + r" \\"
 
@@ -299,7 +294,7 @@ def render_table(
     bests: dict[str, float | None],
     label: str,
 ) -> str:
-    column_count = 6
+    column_count = 5
     lines = [
         rf"\begin{{tabular}}{{{tabular_spec()}}}",
         r"\toprule",
@@ -315,10 +310,9 @@ def render_table(
         if spec.section:
             lines.append(rf"\multicolumn{{{column_count}}}{{@{{}}l}}{{\textit{{{spec.section}}}}} \\[2pt]")
             continue
-
         metrics = row_metrics[index]
         if metrics is None:
-            lines.append(" & ".join([spec.label, "--", "--", "--", "--", "--"]) + r" \\")
+            lines.append(" & ".join([spec.label, "--", "--", "--", "--"]) + " \\\\")
             continue
 
         lines.append(
@@ -329,7 +323,6 @@ def render_table(
                     format_delta(metrics["delta"]),
                     format_number(metrics["macro_fpr"], bold=is_best(metrics["macro_fpr"], bests["macro_fpr"])),
                     format_number(metrics["macro_fnr"], bold=is_best(metrics["macro_fnr"], bests["macro_fnr"])),
-                    format_number(metrics["avg_cost_usd"], bold=is_best(metrics["avg_cost_usd"], bests["avg_cost_usd"])),
                 ]
             )
             + r" \\"
