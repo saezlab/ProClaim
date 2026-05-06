@@ -11,7 +11,7 @@ This repository is the supplementary code package for the NeurIPS submission. Th
 - Evaluation entry points under `experiments/`
 - Analysis and utility scripts under `scripts/`
 - Configuration files under `configs/`
-- Example outputs and cached artefacts under `results/`
+- Example outputs and cached artefacts under `results/` (unzip baselines.7z for baseline results)
 
 Some experiment folders contain third-party baselines preserved in-tree for comparison. Their own licenses and README files remain in those subdirectories.
 
@@ -69,7 +69,6 @@ experiments/       Evaluation runners and baselines
 scripts/           Analysis, batching, and helper scripts
 configs/           Dataset- and baseline-specific YAML configs
 results/           Output artefacts and analysis tables
-tests/             Automated tests
 ```
 
 ## Environment Variables
