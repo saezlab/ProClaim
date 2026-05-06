@@ -14,7 +14,7 @@ interval across **all** ``S2Client`` instances in all processes on this host:
 * With an API key (authenticated tier): 1.1 s between requests (same server-side
   limit; the key increases daily quota, not per-second throughput).
 
-The rate state is persisted to ``/tmp/pkevolve_s2_last_request`` using
+The rate state is persisted to ``/tmp/proclaim_s2_last_request`` using
 ``fcntl.flock`` for cross-process mutual exclusion, so concurrent subprocesses
 spawned by the evidence-programming pipeline share the same rate window.
 
@@ -67,7 +67,7 @@ _global_lock = threading.Lock()
 
 # File-based timestamp (wall clock) shared across subprocesses on this host.
 # Overridable via S2_RATE_FILE env var for multi-user HPC environments.
-_S2_RATE_FILE = Path(os.environ.get("S2_RATE_FILE", "/tmp/pkevolve_s2_last_request"))
+_S2_RATE_FILE = Path(os.environ.get("S2_RATE_FILE", "/tmp/proclaim_s2_last_request"))
 _S2_LOCK_FILE = Path(str(_S2_RATE_FILE) + ".lock")
 
 

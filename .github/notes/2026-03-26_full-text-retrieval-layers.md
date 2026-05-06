@@ -10,8 +10,8 @@ Added two new retrieval layers to `full_text.py` to reduce false negatives cause
 
 | File | Changes |
 |------|---------|
-| `src/pkevolve/verification/full_text.py` | Added `_fetch_semantic_scholar()` (Layer 1.5) and `_fetch_pubmed_structured_abstract()` (Layer 4); added `_S2_GRAPH_BASE` constant; wired both into `fetch_full_text()`; updated module docstring |
-| `src/pkevolve/verification/evidence_api.py` | Updated `get_full_text_article()` docstring to reflect the new 6-layer chain; clarified that the final `paper.abstract` fallback is now rarely reached |
+| `src/proclaim/verification/full_text.py` | Added `_fetch_semantic_scholar()` (Layer 1.5) and `_fetch_pubmed_structured_abstract()` (Layer 4); added `_S2_GRAPH_BASE` constant; wired both into `fetch_full_text()`; updated module docstring |
+| `src/proclaim/verification/evidence_api.py` | Updated `get_full_text_article()` docstring to reflect the new 6-layer chain; clarified that the final `paper.abstract` fallback is now rarely reached |
 
 ## Architecture
 

@@ -42,7 +42,7 @@ Cost savings are modest (~5%) because (a) cache creation cost ($3.75/MTok) parti
 
 | File | Purpose |
 |------|---------|
-| `src/pkevolve/verification/evidence_programming_direct.py` | 749-line Direct API orchestrator: outer LLM loop with bash tool-use, per-iteration context refresh, Anthropic prompt caching, jupytext-format execution log, custom notebook generation |
+| `src/proclaim/verification/evidence_programming_direct.py` | 749-line Direct API orchestrator: outer LLM loop with bash tool-use, per-iteration context refresh, Anthropic prompt caching, jupytext-format execution log, custom notebook generation |
 | `experiments/configs/test_direct_config.yaml` | Smoke-test config using Claude Sonnet as both agent and subagent |
 | `experiments/configs/test_direct_vllm_config.yaml` | Test config with Claude agent + Qwen3-8B subagent on local vLLM |
 | `doc/ctx_management_improvements.md` | Design notes for context management architecture |
@@ -51,9 +51,9 @@ Cost savings are modest (~5%) because (a) cache creation cost ($3.75/MTok) parti
 
 | File | Change |
 |------|--------|
-| `src/pkevolve/verification/llm_factory.py` | Rewrote to use LiteLLM exclusively. Removed positional `base_url`/`api_key` params, made them keyword-only. Added `_CLOUD_PREFIXES` tuple to auto-detect cloud providers and skip `api_base` for them. Simplified module docstring. |
-| `src/pkevolve/verification/config.py` | Updated `VerificationSettings.make_subagent_llm()` call signature to match new `make_llm(model=..., api_key=..., base_url=...)` keyword-only API. |
-| `src/pkevolve/verification/evidence_api.py` | Updated `setup_kernel()` to use new `make_llm()` signature. Added `setup_workspace()` function (~100 lines) for stateless bash-mode bootstrapping — loads or creates `EvidenceState`, builds LLM callable from env vars, initialises label config. |
+| `src/proclaim/verification/llm_factory.py` | Rewrote to use LiteLLM exclusively. Removed positional `base_url`/`api_key` params, made them keyword-only. Added `_CLOUD_PREFIXES` tuple to auto-detect cloud providers and skip `api_base` for them. Simplified module docstring. |
+| `src/proclaim/verification/config.py` | Updated `VerificationSettings.make_subagent_llm()` call signature to match new `make_llm(model=..., api_key=..., base_url=...)` keyword-only API. |
+| `src/proclaim/verification/evidence_api.py` | Updated `setup_kernel()` to use new `make_llm()` signature. Added `setup_workspace()` function (~100 lines) for stateless bash-mode bootstrapping — loads or creates `EvidenceState`, builds LLM callable from env vars, initialises label config. |
 | `pyproject.toml` | Added `jupytext>=1.16` dependency. |
 
 ## Architecture

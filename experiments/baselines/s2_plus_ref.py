@@ -32,7 +32,7 @@ from baselines.shared.single_shot import run_single_shot_verdict
 from baselines.shared.verdict import BaselineResult
 from baselines.single_paper import _fetch_abstract, _format_single_passage
 from baselines.shared.search_utils import format_s2_passages
-from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
+from proclaim.search.semantic_scholar import S2Client, S2RateLimitError
 
 logger = logging.getLogger(__name__)
 

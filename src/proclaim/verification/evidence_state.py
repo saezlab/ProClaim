@@ -17,7 +17,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from pkevolve.verification.data_models import (
+from proclaim.verification.data_models import (
     Conflict,
     Fact,
     PaperRecord,

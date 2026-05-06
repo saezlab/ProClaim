@@ -35,7 +35,7 @@ Qwen3-8B exhibits the identical pattern (29,096 chars thinking → empty output)
 
 **Proposed fix:** Add an explicit escape clause to the `extract_facts()` prompt: *"If the paper does not contain any facts relevant to the claim or its subclaims, output an empty JSON array `[]` immediately. Do not deliberate."*
 
-**Files:** `src/pkevolve/verification/subagents.py` L59–105 (prompt construction)
+**Files:** `src/proclaim/verification/subagents.py` L59–105 (prompt construction)
 
 ---
 
@@ -62,7 +62,7 @@ The `trace.json` shows `filter_papers_by_stance()` removes 79–88% of papers ev
 
 **Proposed fix:** Add a lightweight relevance pre-screen (e.g., co-occurrence of both gene names in abstract, or a fast LLM binary-relevance check) *before* expensive fact extraction and feature computation.
 
-**Files:** `src/pkevolve/verification/evidence_api.py` L1557–1610 (`filter_papers_by_stance`), L783–906 (`extract_and_add_facts*`)
+**Files:** `src/proclaim/verification/evidence_api.py` L1557–1610 (`filter_papers_by_stance`), L783–906 (`extract_and_add_facts*`)
 
 ---
 
@@ -78,7 +78,7 @@ The `min_papers_per_iteration=3` override doesn't even trigger here because the 
 
 **Proposed fix:** (a) Detect feature stagnation — if MLP confidence changes < 0.01 for 2 consecutive iterations, allow early verdict. (b) Expose a `force_verdict` parameter in `emit_verdict()` that skips sufficiency requirements. (c) Fix the underlying RC-2 feature-zero problem per prior analysis.
 
-**Files:** `src/pkevolve/verification/evidence_api.py` L1476–1551 (`check_sufficiency`)
+**Files:** `src/proclaim/verification/evidence_api.py` L1476–1551 (`check_sufficiency`)
 
 ---
 
@@ -116,7 +116,7 @@ Key differences:
 - Claude's confidence values (0.90–0.95) are better calibrated than Qwen's blanket 1.0, which inflates the confidence signal.
 - Claude wraps output in ` ```json ``` ` fences — requires `_parse_facts_response()` to strip markdown formatting, a known fragility.
 
-**Files:** `src/pkevolve/verification/subagents.py` (prompt + `_parse_facts_response`)
+**Files:** `src/proclaim/verification/subagents.py` (prompt + `_parse_facts_response`)
 
 ---
 
@@ -135,7 +135,7 @@ The notebook reveals the Claude orchestrator progressively abandoning the struct
 - `extract_and_add_facts_batch()` return value should include failed PMIDs with error reasons, plus a built-in retry mechanism
 - `emit_verdict()` should accept an optional `override_confidence` flag that bypasses the sufficiency threshold
 
-**Files:** `src/pkevolve/verification/evidence_api.py`, `src/pkevolve/verification/evidence_programming.py` (system prompt workflow steps)
+**Files:** `src/proclaim/verification/evidence_api.py`, `src/proclaim/verification/evidence_programming.py` (system prompt workflow steps)
 
 ---
 
@@ -159,10 +159,10 @@ The notebook reveals the Claude orchestrator progressively abandoning the struct
 | `results/verification/signor_eval_test/workspace/trace.json` | 4 filter operations showing paper attrition |
 | `results/verification/signor_eval_test/workspace/evidence_state.json` | Empty (state saved to different path) |
 | `results/verification/signor_eval_test/workspace/debug_logs/*.json` | 5 subagent debug logs (Qwen 3.5 9B, Qwen3-8B, Claude Haiku 4.5) |
-| `src/pkevolve/verification/evidence_api.py` | Evidence API (search, extract, filter, sufficiency, verdict) |
-| `src/pkevolve/verification/subagents.py` | LLM subagent functions (fact extraction, gap identification) |
-| `src/pkevolve/verification/evidence_programming.py` | Claude Agent SDK orchestrator + system prompt |
-| `src/pkevolve/verification/llm_factory.py` | LLM client factory (timeout, retry logic) |
+| `src/proclaim/verification/evidence_api.py` | Evidence API (search, extract, filter, sufficiency, verdict) |
+| `src/proclaim/verification/subagents.py` | LLM subagent functions (fact extraction, gap identification) |
+| `src/proclaim/verification/evidence_programming.py` | Claude Agent SDK orchestrator + system prompt |
+| `src/proclaim/verification/llm_factory.py` | LLM client factory (timeout, retry logic) |
 
 ---
 
@@ -184,12 +184,12 @@ With thinking enabled, the Qwen model allocates part of its `max_tokens` budget 
 
 ### What to change
 
-#### 1. `src/pkevolve/verification/config.py` — `make_subagent_llm()` (~L298)
+#### 1. `src/proclaim/verification/config.py` — `make_subagent_llm()` (~L298)
 
 **Current code:**
 ```python
 def make_subagent_llm(self):
-    from pkevolve.verification.llm_factory import make_llm
+    from proclaim.verification.llm_factory import make_llm
     return make_llm(
         base_url=self.subagent_base_url,
         api_key=self.api_key,
@@ -200,7 +200,7 @@ def make_subagent_llm(self):
 **Planned change:** Add `extra_body` with `enable_thinking: False`:
 ```python
 def make_subagent_llm(self):
-    from pkevolve.verification.llm_factory import make_llm
+    from proclaim.verification.llm_factory import make_llm
     return make_llm(
         base_url=self.subagent_base_url,
         api_key=self.api_key,
@@ -211,7 +211,7 @@ def make_subagent_llm(self):
 
 **Why here:** This is the primary factory used by `VerificationSettings` when the system is run via config / CLI. All subagent calls (fact extraction, synthesis, conflict detection, gap identification) go through this callable.
 
-#### 2. `src/pkevolve/verification/evidence_api.py` — `setup_kernel()` (~L1822)
+#### 2. `src/proclaim/verification/evidence_api.py` — `setup_kernel()` (~L1822)
 
 **Current code:**
 ```python

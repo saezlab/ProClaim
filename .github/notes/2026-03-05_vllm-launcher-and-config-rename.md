@@ -14,9 +14,9 @@ Additionally fixed `vllm_node_setup.sh` to auto-select the correct tool-call and
 |------|---------|
 | `start_vllm_ihpc.sh` (outside repo) | Added `--gpu-type` flag (default `a100`), interpolated into SLURM `--gres`; fixed `--reconnect` and `--logs` to use direct SSH instead of multiplexed connections that caused premature tunnel death; made SLURM polling loop tolerate up to 3 consecutive SSH failures before giving up |
 | `vllm_node_setup.sh` (outside repo) | Added `case` statement on model name to auto-select `--tool-call-parser` and `--reasoning-parser` per model family; wrapped `vllm serve` in `singularity exec --nv` (bare `vllm` binary doesn't exist on compute nodes) |
-| `src/pkevolve/verification/evidence_state.py` | Made `save(path)` argument optional — defaults to `_workspace/evidence_state.json`; accepts directories (auto-appends `evidence_state.json`) |
-| `src/pkevolve/verification/config.py` | Renamed `anthropic_base_url` → `agent_base_url`, `openai_base_url` → `subagent_base_url`; changed `alias` to `validation_alias` + `populate_by_name=True` to fix pydantic-settings priority bug where YAML values were silently ignored; updated properties, CLI arg parser, and override merging |
-| `src/pkevolve/verification/repl_orchestrator.py` | Updated `cfg.openai_base_url` → `cfg.subagent_base_url` |
+| `src/proclaim/verification/evidence_state.py` | Made `save(path)` argument optional — defaults to `_workspace/evidence_state.json`; accepts directories (auto-appends `evidence_state.json`) |
+| `src/proclaim/verification/config.py` | Renamed `anthropic_base_url` → `agent_base_url`, `openai_base_url` → `subagent_base_url`; changed `alias` to `validation_alias` + `populate_by_name=True` to fix pydantic-settings priority bug where YAML values were silently ignored; updated properties, CLI arg parser, and override merging |
+| `src/proclaim/verification/repl_orchestrator.py` | Updated `cfg.openai_base_url` → `cfg.subagent_base_url` |
 | `scripts/verification/demo_evidence_programming.py` | Updated system prompt template to use `cfg.subagent_base_url`; added auto-save guidance to SYSTEM_PROMPT (tells agent not to call `state.save()` manually) |
 | `experiments/example_config.yaml` | Renamed YAML keys to `subagent_base_url` / `agent_base_url` |
 | `doc/sdk_vs_repl_modes.md` | Updated config example to use new field names |

@@ -1,6 +1,6 @@
-# PKEvolve: Knowledge Graph Curation
+# ProClaim: In-the-Wild Scientific Claim Verification
 
-PKEvolve is an AI tool for correcting Gene Regulatory Networks (GRNs) using Large Language Models (LLMs).
+ProClaim is a sufficiency-aware agentic verifier for open-domain scientific claim verification. It determines a claim's consensual stance from the existing literature through iterative evidence construction.
 
 ## Installation
 
@@ -19,27 +19,20 @@ uv sync --extra fulltext
 ## Usage
 
 ```bash
-# Run the main QA pipeline
-uv run python scripts/qa_pipeline/run_qa.py --help
+# Run evaluation
+uv run python experiments/run_signor_eval.py --help
 
-# Run analysis on results
-uv run python scripts/analysis/analyze_qa_results.py --help
-
-# Convert direct-eval baseline CSV output to baseline-style JSONL
-uv run python scripts/analysis/convert_direct_eval_csv_to_jsonl.py --help
-
-# Print baseline metrics tables and save a log under results/analysis/metrics
+# Print baseline metrics tables
 uv run python scripts/analysis/print_baseline_metrics_table.py --help
 ```
 
 ## Repository Structure
 
 ```
-src/pkevolve/      # Core library (LLM evaluator, paper retrieval, GNN, verification)
-scripts/           # CLI entry points (qa_pipeline/, analysis/, claude_sdk/, context_labeling/)
-data/signor/       # Ground truth edges (true_positive_edges.csv, true_negative_edges.csv)
+src/proclaim/      # Core library (verifier, retrieval, sufficiency classifier)
+scripts/           # Analysis and utility scripts
 results/           # Output artefacts
-experiments/       # Config files for eval runs
+experiments/       # Evaluation runs and baselines
 ```
 
 ## Environment

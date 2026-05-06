@@ -7,7 +7,7 @@ L1 deduplication only (lossless). Removes duplicate facts with identical
 
 import logging
 
-from pkevolve.verification.evidence_state import EvidenceState
+from proclaim.verification.evidence_state import EvidenceState
 
 logger = logging.getLogger(__name__)
 

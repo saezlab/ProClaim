@@ -11,62 +11,62 @@ No flip variants are generated — each claim is run as-is.
 
 To test a single claim (e.g., AFDN EPHA7) directly from the terminal, you can use:
 Intracellular interaction:
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "AFDN as ligand directly interacts with EPHA7 as receptor." \
     --output-dir results/test_AFDN_EPHA7
 
 Wrong direction:
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "ITGB2 as ligand directly interacts with THY1 as receptor." \
     --output-dir results/test_ITGB2_THY1
 
 In-cis interaction:
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "LY86 as ligand directly interacts with CD180 as receptor." \
     --output-dir results/test_LY86_CD180
 
 Not a ligand-receptor pair:
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "B2M as ligand directly interacts with CD1A as receptor." \
     --output-dir results/test_B2M_CD1A_no_context
 
 Not a protein-protein interaction:
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "AANAT as ligand directly interacts with MTNR1A as receptor." \
     --output-dir results/test_AANAT_MTNR1A_no_context
 
 --- Claim-level modified variants (extracellular constraint baked in, for testing without ICL) ---
 Intracellular interaction (should REFUTE — AFDN-EPHA7 only interacts after endocytosis):
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "AFDN as ligand directly interacts extracellularly with EPHA7 as receptor." \
     --output-dir results/test_AFDN_EPHA7_extracellular
 
 Wrong direction:
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "ITGB2 as ligand directly interacts extracellularly with THY1 as receptor." \
     --output-dir results/test_ITGB2_THY1_extracellular
 
 In-cis interaction (should REFUTE — LY86-CD180 interact on the same cell surface):
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "LY86 as ligand directly interacts extracellularly with CD180 as receptor." \
     --output-dir results/test_LY86_CD180_extracellular
 
 Not a ligand-receptor pair:
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "B2M as ligand directly interacts extracellularly with CD1A as receptor." \
     --output-dir results/test_B2M_CD1A_extracellular
 
 Not a protein-protein interaction:
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \
     --claim "AANAT as ligand directly interacts extracellularly with MTNR1A as receptor." \
     --output-dir results/test_AANAT_MTNR1A_extracellular
@@ -253,7 +253,7 @@ def run_evaluation(
 
     if mode == "direct":
         cmd = [
-            "uv", "run", "python", "-m", "pkevolve.verification.evidence_programming_direct",
+            "uv", "run", "python", "-m", "proclaim.verification.evidence_programming_direct",
             "--config", str(config_path),
             "--claim", claim,
             "--output-dir", str(output_dir),
@@ -261,7 +261,7 @@ def run_evaluation(
     else:
         notebook_path = output_dir / "evidence_report.ipynb"
         cmd = [
-            "uv", "run", "python", "-m", "pkevolve.verification.evidence_programming",
+            "uv", "run", "python", "-m", "proclaim.verification.evidence_programming",
             "--config", str(config_path),
             "--claim", claim,
             "--output-dir", str(output_dir),

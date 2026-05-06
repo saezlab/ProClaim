@@ -10,18 +10,18 @@ Added an `EVIDENCE_DEBUG` environment variable to gate verbose diagnostic output
 
 | File | Purpose |
 |------|---------|
-| `src/pkevolve/verification/prompts.py` | 509-line centralised prompt templates for all verification LLM prompts. Contains `EXTRACT_FACTS`, `SYNTHESIZE_SUBCLAIM`, `DETECT_CONFLICTS`, `IDENTIFY_GAPS`, `FORMULATE_GAP_QUERIES`, `REFINE_SEARCH_QUERY`, `DIRECT_SYSTEM_PROMPT`, `NOTEBOOK_SYSTEM_PROMPT`, and `NOTEBOOK_USER_PROMPT`. Placeholders use `str.format()` syntax. |
+| `src/proclaim/verification/prompts.py` | 509-line centralised prompt templates for all verification LLM prompts. Contains `EXTRACT_FACTS`, `SYNTHESIZE_SUBCLAIM`, `DETECT_CONFLICTS`, `IDENTIFY_GAPS`, `FORMULATE_GAP_QUERIES`, `REFINE_SEARCH_QUERY`, `DIRECT_SYSTEM_PROMPT`, `NOTEBOOK_SYSTEM_PROMPT`, and `NOTEBOOK_USER_PROMPT`. Placeholders use `str.format()` syntax. |
 
 ## Modified Files
 
 | File | Change |
 |------|--------|
-| `src/pkevolve/verification/evidence_api.py` | Added `_EVIDENCE_DEBUG` flag and `_debug_print()` helper. Converted ~30 verbose `print()` calls to `_debug_print()` (per-PMID extraction progress, S2 recommendation details, citation chaining status, elink errors, query text, paper filtering details, sufficiency history table). Kept essential one-line summaries as regular `print()`. Compacted `check_sufficiency` output from 10+ lines to a single summary line with verbose breakdown gated behind debug. Compacted `filter_papers_by_stance` output similarly. |
-| `src/pkevolve/verification/subagents.py` | Extracted six inline prompt templates to imports from `prompts.py` (`EXTRACT_FACTS`, `SYNTHESIZE_SUBCLAIM`, `DETECT_CONFLICTS`, `IDENTIFY_GAPS`, `FORMULATE_GAP_QUERIES`, `REFINE_SEARCH_QUERY`). Added `_EVIDENCE_DEBUG` flag. |
-| `src/pkevolve/verification/evidence_programming.py` | Replaced ~120-line inline `SYSTEM_PROMPT` with import from `prompts.py` (`NOTEBOOK_SYSTEM_PROMPT`). Also imports `NOTEBOOK_USER_PROMPT`. |
-| `src/pkevolve/verification/evidence_programming_direct.py` | Imports `DIRECT_SYSTEM_PROMPT` from `prompts.py`. Added system prompt instruction warning the LLM not to use deferred f-string placeholders (e.g. `{len(refute_facts)}`) in reasoning text before variables are defined. Added `EVIDENCE_DEBUG` propagation in `build_subprocess_env()`. |
-| `src/pkevolve/verification/llm_factory.py` | Minor: adjusted verbose logging. |
-| `src/pkevolve/verification/notebook_mcp.py` | Minor fix. |
+| `src/proclaim/verification/evidence_api.py` | Added `_EVIDENCE_DEBUG` flag and `_debug_print()` helper. Converted ~30 verbose `print()` calls to `_debug_print()` (per-PMID extraction progress, S2 recommendation details, citation chaining status, elink errors, query text, paper filtering details, sufficiency history table). Kept essential one-line summaries as regular `print()`. Compacted `check_sufficiency` output from 10+ lines to a single summary line with verbose breakdown gated behind debug. Compacted `filter_papers_by_stance` output similarly. |
+| `src/proclaim/verification/subagents.py` | Extracted six inline prompt templates to imports from `prompts.py` (`EXTRACT_FACTS`, `SYNTHESIZE_SUBCLAIM`, `DETECT_CONFLICTS`, `IDENTIFY_GAPS`, `FORMULATE_GAP_QUERIES`, `REFINE_SEARCH_QUERY`). Added `_EVIDENCE_DEBUG` flag. |
+| `src/proclaim/verification/evidence_programming.py` | Replaced ~120-line inline `SYSTEM_PROMPT` with import from `prompts.py` (`NOTEBOOK_SYSTEM_PROMPT`). Also imports `NOTEBOOK_USER_PROMPT`. |
+| `src/proclaim/verification/evidence_programming_direct.py` | Imports `DIRECT_SYSTEM_PROMPT` from `prompts.py`. Added system prompt instruction warning the LLM not to use deferred f-string placeholders (e.g. `{len(refute_facts)}`) in reasoning text before variables are defined. Added `EVIDENCE_DEBUG` propagation in `build_subprocess_env()`. |
+| `src/proclaim/verification/llm_factory.py` | Minor: adjusted verbose logging. |
+| `src/proclaim/verification/notebook_mcp.py` | Minor fix. |
 | `doc/ctx_management_improvements.md` | Added Q1 (What does the original agent see?) and Q2 (Which version reduces cost?) analysis sections with token cost tables and autocompact discussion. |
 
 ## Architecture

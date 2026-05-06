@@ -8,16 +8,16 @@ for multiple repetitions per claim. Results are appended incrementally to an
 output CSV. Token usage and cost estimates are parsed from the verdict artifacts.
 
 Example command:
-    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
+    time uv run python -m proclaim.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
         --claim "SRC directly inhibits CTTN." \
         --output-dir results/test_direct_1
 
-    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
+    time uv run python -m proclaim.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
         --claim "GNAS directly activates ADCY1 (either through post-translational modification, complex formation, or direct regulation of expression)." \
         --output-dir results/test_direct_1
 
 Claim-level modified variant (directness constraint baked in, for testing without ICL):
-    time uv run python -m pkevolve.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
+    time uv run python -m proclaim.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
         --claim "CRTC2 directly activates AKT1 (direct physical interaction, not through intermediate proteins; either through post-translational modification, complex formation, or direct regulation of expression)." \
         --output-dir results/test_direct_1_no_intermediary
 """
@@ -261,7 +261,7 @@ def run_evaluation(
 
     if mode == "direct":
         cmd = [
-            "uv", "run", "python", "-m", "pkevolve.verification.evidence_programming_direct",
+            "uv", "run", "python", "-m", "proclaim.verification.evidence_programming_direct",
             "--config", str(config_path),
             "--claim", claim,
             "--output-dir", str(output_dir),
@@ -269,7 +269,7 @@ def run_evaluation(
     else:
         notebook_path = output_dir / "evidence_report.ipynb"
         cmd = [
-            "uv", "run", "python", "-m", "pkevolve.verification.evidence_programming",
+            "uv", "run", "python", "-m", "proclaim.verification.evidence_programming",
             "--config", str(config_path),
             "--claim", claim,
             "--output-dir", str(output_dir),

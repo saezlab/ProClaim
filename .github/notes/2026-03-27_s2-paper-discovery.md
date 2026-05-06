@@ -10,15 +10,15 @@ Added three new paper discovery methods to the evidence API based on the Semanti
 
 | File | Purpose |
 |------|---------|
-| `src/pkevolve/search/semantic_scholar.py` | `S2Client` — thin wrapper around S2 Graph API with `search()`, `recommendations()`, `lookup_doi()` methods; 1 req/s rate limiting without API key |
+| `src/proclaim/search/semantic_scholar.py` | `S2Client` — thin wrapper around S2 Graph API with `search()`, `recommendations()`, `lookup_doi()` methods; 1 req/s rate limiting without API key |
 | `doc/s2_paper_discovery_plan.md` | Implementation plan covering architecture, API contracts, seed selection logic, and recommended call order |
 
 ## Modified Files
 
 | File | Changes |
 |------|---------|
-| `src/pkevolve/verification/evidence_api.py` | Added `_DOI_RE`, `_s2_paper_to_record()`, `_add_s2_records()`, `search_semantic_scholar()`, `search_semantic_scholar_recommendations()`, `expand_via_citations()` (~265 lines) |
-| `src/pkevolve/verification/README.md` | Updated Core API table to list new functions; expanded search method comparison table with Corpus and Best Call Point columns; added prose descriptions for the three new methods |
+| `src/proclaim/verification/evidence_api.py` | Added `_DOI_RE`, `_s2_paper_to_record()`, `_add_s2_records()`, `search_semantic_scholar()`, `search_semantic_scholar_recommendations()`, `expand_via_citations()` (~265 lines) |
+| `src/proclaim/verification/README.md` | Updated Core API table to list new functions; expanded search method comparison table with Corpus and Best Call Point columns; added prose descriptions for the three new methods |
 
 ## Architecture
 
@@ -57,7 +57,7 @@ ITERATION 1+  (gap filling + expansion)
 
 ## Key Design Decisions
 
-- **Separate `S2Client` module in `src/pkevolve/search/`:** Mirrors the existing `custom_pubmed.py` / `evidence_api.py` separation. HTTP concerns are isolated from evidence state manipulation, and the client is reusable outside the verification pipeline.
+- **Separate `S2Client` module in `src/proclaim/search/`:** Mirrors the existing `custom_pubmed.py` / `evidence_api.py` separation. HTTP concerns are isolated from evidence state manipulation, and the client is reusable outside the verification pipeline.
 
 - **Cross-source deduplication by DOI:** The same paper can arrive via PubMed (numeric PMID) and S2 (`S2:<hash>`). `_s2_paper_to_record()` performs a linear scan of `state.papers.values()` comparing `.doi` to prevent duplicates. Acceptable for <200 papers per run; a `doi → pmid` index can be added if this becomes a bottleneck.
 

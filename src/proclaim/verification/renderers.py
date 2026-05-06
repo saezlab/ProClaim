@@ -6,7 +6,7 @@ and display styled HTML tables/cards using IPython.display. Designed to
 be called from within Jupyter notebook code cells.
 
 Usage (inside a notebook cell):
-    from pkevolve.verification.renderers import render_papers
+    from proclaim.verification.renderers import render_papers
     render_papers("/path/to/workspace")
 """
 
@@ -30,7 +30,7 @@ def _stance_color(stance: str) -> str:
     Uses the configured label order: first label gets green, second gets red,
     remaining get gray. Falls back to gray for unknown stances.
     """
-    from pkevolve.verification.config import get_label_config
+    from proclaim.verification.config import get_label_config
     label_cfg = get_label_config()
     names = label_cfg.stance_names()
     for i, name in enumerate(names):
@@ -44,7 +44,7 @@ def _stance_icon(stance: str) -> str:
 
     First two configured labels get filled circles; rest get hollow circles.
     """
-    from pkevolve.verification.config import get_label_config
+    from proclaim.verification.config import get_label_config
     label_cfg = get_label_config()
     names = label_cfg.stance_names()
     for i, name in enumerate(names):
@@ -156,7 +156,7 @@ def render_facts(workspace: str) -> None:
     n_ref = sum(1 for f in facts if f.get("stance") == "REFUTE")
     n_neu = sum(1 for f in facts if f.get("stance") == "NEUTRAL")
 
-    from pkevolve.verification.config import get_label_config
+    from proclaim.verification.config import get_label_config
     _lc = get_label_config()
     stance_spans = " &nbsp; ".join(
         f"<span style='color:{_stance_color(name)}'>{_stance_icon(name)} {name}: "
@@ -348,7 +348,7 @@ def render_facts_from_state(state) -> None:
     n_ref = sum(1 for f in facts if str(f.get("stance", "")).upper() == "REFUTE")
     n_neu = sum(1 for f in facts if str(f.get("stance", "")).upper() == "NEUTRAL")
 
-    from pkevolve.verification.config import get_label_config
+    from proclaim.verification.config import get_label_config
     _lc = get_label_config()
     stance_spans = " &nbsp; ".join(
         f"<span style='color:{_stance_color(name)}'>{_stance_icon(name)} {name}: "
@@ -458,7 +458,7 @@ def render_verdict(workspace: str) -> None:
     gaps = v.get("gaps_remaining", [])
 
     # Build verdict color map dynamically from configured labels
-    from pkevolve.verification.config import get_label_config
+    from proclaim.verification.config import get_label_config
     _lc = get_label_config()
     vcolors = {}
     verdict_names = _lc.verdict_names()

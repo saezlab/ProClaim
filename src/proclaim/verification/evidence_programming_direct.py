@@ -14,7 +14,7 @@ Architecture:
   - State persistence: EvidenceState auto-saves to disk after every mutation
 
 Usage:
-  uv run python -m pkevolve.verification.evidence_programming_direct \\
+  uv run python -m proclaim.verification.evidence_programming_direct \\
       --config experiments/config.yaml \\
       --claim "Does MAPK1 directly activate H3-3A?"
 """
@@ -48,7 +48,7 @@ _MAX_OUTPUT_CHARS = int(os.environ.get("NB_MAX_OUTPUT_CHARS", "12000"))
 # System prompt: imported from prompts.py
 # ---------------------------------------------------------------------------
 
-from pkevolve.verification.prompts import DIRECT_SYSTEM_PROMPT as SYSTEM_PROMPT, SUBCLAIM_EXAMPLES
+from proclaim.verification.prompts import DIRECT_SYSTEM_PROMPT as SYSTEM_PROMPT, SUBCLAIM_EXAMPLES
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +435,7 @@ def should_stop(workspace: Path, threshold: float) -> bool:
     if not state_path.exists():
         return False
 
-    from pkevolve.verification.evidence_state import EvidenceState
+    from proclaim.verification.evidence_state import EvidenceState
     state = EvidenceState.load(state_path)
 
     if not state.sufficiency_history:
@@ -491,16 +491,16 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict, log_path: Path) -
     prompts the subagent LLM to evaluate the evidence and decide SUPPORT/REFUTE/UNCERTAIN,
     then calls emit_verdict.  No hardcoded verdict defaults — the LLM makes the call.
     """
-    from pkevolve.verification.config import get_label_config as _get_label_cfg
+    from proclaim.verification.config import get_label_config as _get_label_cfg
     _verdict_names = ', '.join(_get_label_cfg().verdict_names())
 
     abs_workspace = str(workspace.resolve())
     script = textwrap.dedent(f"""\
-        from pkevolve.verification.evidence_api import (
+        from proclaim.verification.evidence_api import (
             setup_workspace, populate_paper_features, check_sufficiency, emit_verdict,
             get_evidence_summary, MaxIterationsExceeded,
         )
-        from pkevolve.verification.config import get_label_config
+        from proclaim.verification.config import get_label_config
 
         state, llm, workspace = setup_workspace(
             claim={claim!r},
@@ -642,11 +642,11 @@ def verify_claim_direct(cfg) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize evidence state on disk
-    from pkevolve.verification.evidence_state import EvidenceState
+    from proclaim.verification.evidence_state import EvidenceState
     EvidenceState.init_new(claim=claim, subclaims=[claim], workspace=workspace)
 
     # Build system prompt
-    from pkevolve.verification.evidence_api import schema_docs, function_docs
+    from proclaim.verification.evidence_api import schema_docs, function_docs
     label_cfg = cfg.labels
     _web_search_step = (
         ""
@@ -715,7 +715,7 @@ def verify_claim_direct(cfg) -> Path:
         return {"role": "user", "content": text}
 
     # Token usage tracking
-    from pkevolve.verification.cost_tracker import CostTracker
+    from proclaim.verification.cost_tracker import CostTracker
     tracker = CostTracker(model=agent_model)
 
     logger.info(
@@ -880,7 +880,7 @@ def verify_claim_direct(cfg) -> Path:
     # Print verdict if available
     verdict_path = workspace / "verdict.json"
     if verdict_path.exists():
-        from pkevolve.verification.data_models import VerificationVerdict
+        from proclaim.verification.data_models import VerificationVerdict
         try:
             verdict = VerificationVerdict.model_validate_json(
                 verdict_path.read_text()
@@ -898,7 +898,7 @@ def verify_claim_direct(cfg) -> Path:
 # ---------------------------------------------------------------------------
 
 def main():
-    from pkevolve.verification.config import VerificationSettings
+    from proclaim.verification.config import VerificationSettings
 
     cfg = VerificationSettings.from_cli()
 

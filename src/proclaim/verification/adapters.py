@@ -71,7 +71,7 @@ class SignorAdapter(DatasetAdapter):
         if self._claims is not None:
             return self._claims
 
-        from pkevolve.utils.signor_utils import (
+        from proclaim.utils.signor_utils import (
             construct_signor_question,
             load_signor_data,
         )

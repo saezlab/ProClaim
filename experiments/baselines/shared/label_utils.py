@@ -13,7 +13,7 @@ blocks) so that individual baselines do not need to instantiate their own
 
 from __future__ import annotations
 
-from pkevolve.verification.config import LabelConfig
+from proclaim.verification.config import LabelConfig
 
 # ── Shared LabelConfig singleton ──────────────────────────────────────
 

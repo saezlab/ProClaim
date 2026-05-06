@@ -21,13 +21,13 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 
-from pkevolve.search.paper_utils import (
+from proclaim.search.paper_utils import (
     get_journal_info_by_pmid,
     get_openalex_citation_count,
     get_pubmed_metadata,
     get_session,
 )
-from pkevolve.verification.data_models import NLPFeatureVector, PaperFeatureVector
+from proclaim.verification.data_models import NLPFeatureVector, PaperFeatureVector
 
 logger = logging.getLogger(__name__)
 

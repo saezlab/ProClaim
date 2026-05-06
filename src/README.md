@@ -1,13 +1,13 @@
-# PKEvolve – Source Package
+# ProClaim – Source Package
 
-The `src/pkevolve/` package contains the core library for GRN edge
+The `src/proclaim/` package contains the core library for GRN edge
 verification. This document is the **top-level map**; detailed API
 reference lives in each subsystem's own README.
 
 ## Package Layout
 
 ```
-src/pkevolve/
+src/proclaim/
 ├── verification/       ← evidence programming loop  → see verification/README.md
 ├── llm/                ← LLM evaluator & paper rater
 ├── search/             ← paper retrieval (PubMed, web search, LangChain agent)
@@ -19,7 +19,7 @@ scripts/sufficiency_classifier/   ← MLP training pipeline  → see its README.
 
 ---
 
-## Verification Subsystem (`pkevolve/verification/`)
+## Verification Subsystem (`proclaim/verification/`)
 
 An evidence programming loop that verifies scientific claims (e.g. "MAPK1
 directly activates H3-3A") by iteratively searching PubMed, extracting
@@ -53,7 +53,7 @@ Steps 1–4 repeat until confidence ≥ threshold or the iteration cap is
 reached.
 
 > **Full module reference, data models, configuration, and code examples:**
-> see [`pkevolve/verification/README.md`](pkevolve/verification/README.md).
+> see [`proclaim/verification/README.md`](proclaim/verification/README.md).
 
 ---
 

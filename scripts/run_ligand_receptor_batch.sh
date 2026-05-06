@@ -106,7 +106,7 @@ for entry in "${CLAIMS[@]}"; do
 
     # Run agent — log to file instead of piping through tail (avoids SIGPIPE kills)
     RUN_LOG="${RESULTS_DIR}/${SAFE_NAME}_run.log"
-    uv run python -m pkevolve.verification.evidence_programming_direct \
+    uv run python -m proclaim.verification.evidence_programming_direct \
         --config "$CONFIG" \
         --claim "$CLAIM" \
         --output-dir "$OUTPUT_DIR" \

@@ -24,18 +24,18 @@ construction.
 
 | File | Changes |
 |------|---------|
-| `src/pkevolve/verification/evidence_programming.py` | Removed `verify_claim_repl_mode()`, Mode B CLI branch, Mode B docstring/usage examples. Simplified system prompt: agent now calls `setup_kernel(claim, workspace_path)` instead of a 30-line setup block with explicit LLM config. Removed `project_root`, `subagent_model`, `llm_base_url`, `mlp_model_dir` template vars from `.format()` call. |
-| `src/pkevolve/verification/config.py` | Narrowed `mode` field from `Literal["sdk", "repl"]` to `Literal["sdk"]`. Added `make_subagent_llm()` method for one-call LLM construction. Updated `build_sdk_env()` to inject `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `MLP_MODEL_DIR` into the SDK subprocess environment. |
-| `src/pkevolve/verification/kernel_runner.py` | Removed `inject_prelude()` method (~60 lines) — was only used by Mode B. Updated module docstring to remove Mode B references. |
-| `src/pkevolve/verification/evidence_api.py` | Added `setup_kernel(claim, workspace_path)` — reads LLM config from `os.environ` (`LLM_BASE_URL`, `LLM_API_KEY` with fallback chain, `LLM_MODEL`), creates `EvidenceState`, calls `make_llm()`, returns `(state, llm, workspace)`. |
-| `src/pkevolve/verification/notebook_mcp.py` | Updated docstring to remove "shared with repl_orchestrator" reference. |
+| `src/proclaim/verification/evidence_programming.py` | Removed `verify_claim_repl_mode()`, Mode B CLI branch, Mode B docstring/usage examples. Simplified system prompt: agent now calls `setup_kernel(claim, workspace_path)` instead of a 30-line setup block with explicit LLM config. Removed `project_root`, `subagent_model`, `llm_base_url`, `mlp_model_dir` template vars from `.format()` call. |
+| `src/proclaim/verification/config.py` | Narrowed `mode` field from `Literal["sdk", "repl"]` to `Literal["sdk"]`. Added `make_subagent_llm()` method for one-call LLM construction. Updated `build_sdk_env()` to inject `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `MLP_MODEL_DIR` into the SDK subprocess environment. |
+| `src/proclaim/verification/kernel_runner.py` | Removed `inject_prelude()` method (~60 lines) — was only used by Mode B. Updated module docstring to remove Mode B references. |
+| `src/proclaim/verification/evidence_api.py` | Added `setup_kernel(claim, workspace_path)` — reads LLM config from `os.environ` (`LLM_BASE_URL`, `LLM_API_KEY` with fallback chain, `LLM_MODEL`), creates `EvidenceState`, calls `make_llm()`, returns `(state, llm, workspace)`. |
+| `src/proclaim/verification/notebook_mcp.py` | Updated docstring to remove "shared with repl_orchestrator" reference. |
 | `experiments/example_config.yaml` | Updated subagent model from `qwen3-8b` to `qwen3.5-9b`. |
 
 ## Deleted Files
 
 | File | Reason |
 |------|--------|
-| `src/pkevolve/verification/repl_orchestrator.py` | Entire Mode B orchestrator (~370 lines): `SYSTEM_PROMPT`, `extract_code()`, `verify_claim_repl()`, `verify_claims_batch()`. No longer needed. |
+| `src/proclaim/verification/repl_orchestrator.py` | Entire Mode B orchestrator (~370 lines): `SYSTEM_PROMPT`, `extract_code()`, `verify_claim_repl()`, `verify_claims_batch()`. No longer needed. |
 
 ## Architecture
 

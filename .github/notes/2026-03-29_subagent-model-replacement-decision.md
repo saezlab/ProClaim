@@ -22,7 +22,7 @@ Fixing Qwen is technically possible (see the Fix Priority Matrix in the diagnosi
 
 ## Subagent Requirements
 
-The verification system has 5 subagent functions (`src/pkevolve/verification/subagents.py`), 4 of which require structured JSON output:
+The verification system has 5 subagent functions (`src/proclaim/verification/subagents.py`), 4 of which require structured JSON output:
 
 | Function | Output Format | Complexity | Key Requirement |
 |----------|--------------|------------|-----------------|

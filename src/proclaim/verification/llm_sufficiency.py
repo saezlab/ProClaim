@@ -1,4 +1,4 @@
-"""LLM-based sufficiency classifier for PKEvolve.
+"""LLM-based sufficiency classifier for ProClaim.
 
 Provides a drop-in alternative to the MLP classifier that uses a Qwen subagent
 (via the existing ``llm`` callable) to assess whether retrieved papers provide
@@ -16,7 +16,7 @@ import json
 import logging
 import re
 
-from pkevolve.verification.evidence_state import EvidenceState
+from proclaim.verification.evidence_state import EvidenceState
 
 logger = logging.getLogger(__name__)
 

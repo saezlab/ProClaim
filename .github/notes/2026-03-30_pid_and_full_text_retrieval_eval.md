@@ -14,7 +14,7 @@ Removed the hardcoded `notebook_demo` default output directory from `Verificatio
 
 | File | Change |
 |------|--------|
-| `src/pkevolve/verification/config.py` | Replaced hardcoded `"notebook_demo"` fallback in `resolved_output_dir` with a `PrivateAttr`-cached timestamp; added `uuid4` suffix for parallel-process safety |
+| `src/proclaim/verification/config.py` | Replaced hardcoded `"notebook_demo"` fallback in `resolved_output_dir` with a `PrivateAttr`-cached timestamp; added `uuid4` suffix for parallel-process safety |
 | `experiments/test_config.yaml` | Removed `output_dir` field — no longer required |
 
 ### Key Design Decisions
@@ -35,8 +35,8 @@ The verification agent's system prompt and API function list did not expose the 
 
 | File | Change |
 |------|--------|
-| `src/pkevolve/verification/evidence_api.py` | Added `search_semantic_scholar`, `search_semantic_scholar_recommendations`, `expand_via_citations` to the `_api_funcs` list so their signatures are injected into the agent's system prompt |
-| `src/pkevolve/verification/evidence_programming.py` | Updated `SYSTEM_PROMPT` workflow step 3 (initial search) to include S2 keyword search at iteration 0; updated step 12 (gap-filling) to list S2 recommendations and citation chaining as strategies |
+| `src/proclaim/verification/evidence_api.py` | Added `search_semantic_scholar`, `search_semantic_scholar_recommendations`, `expand_via_citations` to the `_api_funcs` list so their signatures are injected into the agent's system prompt |
+| `src/proclaim/verification/evidence_programming.py` | Updated `SYSTEM_PROMPT` workflow step 3 (initial search) to include S2 keyword search at iteration 0; updated step 12 (gap-filling) to list S2 recommendations and citation chaining as strategies |
 
 ---
 
@@ -50,9 +50,9 @@ Reference DOIs from JATS XML `<back><ref-list>` were previously appended as a te
 
 | File | Change |
 |------|--------|
-| `src/pkevolve/verification/data_models.py` | Added `reference_dois: list[str] = Field(default_factory=list)` to `PaperRecord` |
-| `src/pkevolve/verification/full_text.py` | `_extract_reference_dois()` returns `list[str]` instead of text block; `_fetch_pmc()` and `_fetch_europepmc()` return `tuple[Optional[str], list[str]]`; `fetch_full_text()` returns `tuple[Optional[str], list[str]]` — body text and DOIs separately |
-| `src/pkevolve/verification/evidence_api.py` | `get_full_text_article()` unpacks `(text, ref_dois)` and stores `paper.reference_dois`; `expand_via_citations()` reads from `paper.reference_dois` instead of regex-scanning `full_text` |
+| `src/proclaim/verification/data_models.py` | Added `reference_dois: list[str] = Field(default_factory=list)` to `PaperRecord` |
+| `src/proclaim/verification/full_text.py` | `_extract_reference_dois()` returns `list[str]` instead of text block; `_fetch_pmc()` and `_fetch_europepmc()` return `tuple[Optional[str], list[str]]`; `fetch_full_text()` returns `tuple[Optional[str], list[str]]` — body text and DOIs separately |
+| `src/proclaim/verification/evidence_api.py` | `get_full_text_article()` unpacks `(text, ref_dois)` and stores `paper.reference_dois`; `expand_via_citations()` reads from `paper.reference_dois` instead of regex-scanning `full_text` |
 
 ### Key Design Decisions
 
@@ -76,7 +76,7 @@ End-to-end test on PMID 24365180: `get_full_text_article` stores 47 DOIs on `pap
 
 | File | Change |
 |------|--------|
-| `src/pkevolve/verification/full_text.py` | Replaced six `return text[:max_chars], ...` call-sites with a shared `_maybe_warn_and_return` inner helper; updated `max_chars` docstring to reflect new semantics (warn-only, no truncation) |
+| `src/proclaim/verification/full_text.py` | Replaced six `return text[:max_chars], ...` call-sites with a shared `_maybe_warn_and_return` inner helper; updated `max_chars` docstring to reflect new semantics (warn-only, no truncation) |
 
 ### Key Design Decisions
 
@@ -96,8 +96,8 @@ Removed `expand_via_citations` from the agent's visible API surface. The functio
 
 | File | Change |
 |------|--------|
-| `src/pkevolve/verification/evidence_api.py` | Removed `expand_via_citations` from the `_api_funcs` list — signature is no longer injected into the system prompt |
-| `src/pkevolve/verification/evidence_programming.py` | Removed step 12c (`expand_via_citations`) from the gap-filling workflow; former step 12d (formulate_gap_queries) renumbered to 12c |
+| `src/proclaim/verification/evidence_api.py` | Removed `expand_via_citations` from the `_api_funcs` list — signature is no longer injected into the system prompt |
+| `src/proclaim/verification/evidence_programming.py` | Removed step 12c (`expand_via_citations`) from the gap-filling workflow; former step 12d (formulate_gap_queries) renumbered to 12c |
 
 ### Key Design Decisions
 

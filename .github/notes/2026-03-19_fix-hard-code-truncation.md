@@ -10,9 +10,9 @@ The notebook MCP server (`notebook_mcp.py`) hard-coded aggressive truncation lim
 
 | File | Changes |
 |---|---|
-| `src/pkevolve/verification/notebook_mcp.py` | Added `_smart_truncate()` helper with `[...TRUNCATED]` marker; replaced all 6 hard-coded `[:N]` slices; added `nb_read_output` MCP tool; limits now read from `NB_MAX_OUTPUT_CHARS` env var (default 12000) |
-| `src/pkevolve/verification/config.py` | Updated `max_output_chars` description to reflect it controls all notebook tool limits; value passed as `NB_MAX_OUTPUT_CHARS` env var in `build_sdk_env()` |
-| `src/pkevolve/verification/evidence_programming.py` | Registered `mcp__notebook-tools__nb_read_output` in `allowed_tools`; added system prompt rule to call `nb_read_output` when output is truncated |
+| `src/proclaim/verification/notebook_mcp.py` | Added `_smart_truncate()` helper with `[...TRUNCATED]` marker; replaced all 6 hard-coded `[:N]` slices; added `nb_read_output` MCP tool; limits now read from `NB_MAX_OUTPUT_CHARS` env var (default 12000) |
+| `src/proclaim/verification/config.py` | Updated `max_output_chars` description to reflect it controls all notebook tool limits; value passed as `NB_MAX_OUTPUT_CHARS` env var in `build_sdk_env()` |
+| `src/proclaim/verification/evidence_programming.py` | Registered `mcp__notebook-tools__nb_read_output` in `allowed_tools`; added system prompt rule to call `nb_read_output` when output is truncated |
 
 ## Key Design Decisions
 

@@ -16,12 +16,12 @@ signatures were altered.
 
 | File | Changes |
 |------|---------|
-| `src/pkevolve/verification/evidence_state.py` | Added `checkpoint_save()` auto-persistence; added `extracted_pmids: list[str]` field |
-| `src/pkevolve/verification/evidence_api.py` | Added `schema_docs()` with auto-generated Pydantic field listings including `PaperRecord`; field alias normalization (`statement`→`text`); fact deduplication; `add_facts_from_dicts()` rejects unknown PMIDs; `extract_and_add_facts()` tries full text before abstract and tracks `extracted_pmids`; `get_full_text_article()` filters elink by `pubmed_pmc` LinkName and cross-validates PMC text by title word overlap (≥25%) |
-| `src/pkevolve/verification/kernel_runner.py` | `inject_prelude()` now injects a robust `llm()` callable with 3× retry, exponential backoff, and `None`/empty `resp.choices` guard |
-| `src/pkevolve/verification/subagents.py` | `extract_facts()` returns `[]` if `llm()` returns empty string instead of passing `None` to parser |
-| `src/pkevolve/verification/data_models.py` | `PaperRecord.abstract` default changed from required to `""` (allows synthetic/summary records) |
-| `src/pkevolve/verification/repl_orchestrator.py` | System prompt updated with "Grounded Evidence Only" anti-fabrication rules and verdict quality gate |
+| `src/proclaim/verification/evidence_state.py` | Added `checkpoint_save()` auto-persistence; added `extracted_pmids: list[str]` field |
+| `src/proclaim/verification/evidence_api.py` | Added `schema_docs()` with auto-generated Pydantic field listings including `PaperRecord`; field alias normalization (`statement`→`text`); fact deduplication; `add_facts_from_dicts()` rejects unknown PMIDs; `extract_and_add_facts()` tries full text before abstract and tracks `extracted_pmids`; `get_full_text_article()` filters elink by `pubmed_pmc` LinkName and cross-validates PMC text by title word overlap (≥25%) |
+| `src/proclaim/verification/kernel_runner.py` | `inject_prelude()` now injects a robust `llm()` callable with 3× retry, exponential backoff, and `None`/empty `resp.choices` guard |
+| `src/proclaim/verification/subagents.py` | `extract_facts()` returns `[]` if `llm()` returns empty string instead of passing `None` to parser |
+| `src/proclaim/verification/data_models.py` | `PaperRecord.abstract` default changed from required to `""` (allows synthetic/summary records) |
+| `src/proclaim/verification/repl_orchestrator.py` | System prompt updated with "Grounded Evidence Only" anti-fabrication rules and verdict quality gate |
 | `scripts/verification/demo_evidence_programming.py` | SYSTEM_PROMPT `llm()` template updated with retry/backoff pattern matching kernel prelude; anti-fabrication rules added |
 | `doc/implementation_plan.md` | §2.1 schema updated (`abstract` default); §4.2 `llm()` example replaced with robust pattern; new §8 Stage 3.5 documents all 18 fixes |
 

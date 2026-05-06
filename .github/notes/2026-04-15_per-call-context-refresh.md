@@ -10,7 +10,7 @@ Replaced the nested outer/inner loop architecture in `evidence_programming_direc
 
 | File | Change |
 |------|--------|
-| `src/pkevolve/verification/evidence_programming_direct.py` | (1) Updated module docstring from "per-iteration" to "per-call" context refresh. (2) Rewrote `verify_claim_direct()` main loop from nested `for iteration / while tool_call_count` to single flat `while call_count < max_calls`. First call gets initial prompt; subsequent calls wrap execution log in `<execution_log>` tags. No `messages.append()` — context rebuilt fresh each call. `for/else` pattern logs "Reached max calls" on budget exhaustion. (3) Fixed `dispatch_tool()` `read_file` handler to append results to execution log via `append_to_jupytext_log(log_path, f"cat {fpath}", truncated)` — previously returned content directly, losing it on the next per-call refresh. Renamed `path` to `fpath` to avoid shadowing the stdlib. |
+| `src/proclaim/verification/evidence_programming_direct.py` | (1) Updated module docstring from "per-iteration" to "per-call" context refresh. (2) Rewrote `verify_claim_direct()` main loop from nested `for iteration / while tool_call_count` to single flat `while call_count < max_calls`. First call gets initial prompt; subsequent calls wrap execution log in `<execution_log>` tags. No `messages.append()` — context rebuilt fresh each call. `for/else` pattern logs "Reached max calls" on budget exhaustion. (3) Fixed `dispatch_tool()` `read_file` handler to append results to execution log via `append_to_jupytext_log(log_path, f"cat {fpath}", truncated)` — previously returned content directly, losing it on the next per-call refresh. Renamed `path` to `fpath` to avoid shadowing the stdlib. |
 
 ## Architecture
 

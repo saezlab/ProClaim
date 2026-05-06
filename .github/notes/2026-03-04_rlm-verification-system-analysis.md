@@ -12,7 +12,7 @@ Three areas of work on the REPL-based evidence verification system: (1) centrali
 
 | File | Purpose |
 |------|---------|
-| `src/pkevolve/verification/config.py` | Centralised `pydantic-settings` config: `APISettings`, `LLMSettings`, `VerificationSettings`. Factory methods: `from_cli()`, `from_yaml()`, `save_yaml()`, `build_sdk_env()`. Module-level `get_settings()` singleton. |
+| `src/proclaim/verification/config.py` | Centralised `pydantic-settings` config: `APISettings`, `LLMSettings`, `VerificationSettings`. Factory methods: `from_cli()`, `from_yaml()`, `save_yaml()`, `build_sdk_env()`. Module-level `get_settings()` singleton. |
 | `experiments/example_config.yaml` | Example YAML config for reproducible experiments. `claim` intentionally absent (CLI-only). |
 | `doc/sdk_vs_repl_modes.md` | SDK (Mode A) vs REPL (Mode B) architecture comparison and academic reproducibility guidance. |
 | `scripts/start_vllm_ihpc.sh` | One-command vLLM deployment on EBI HPC via SLURM (`--start`, `--stop`, `--reconnect`, `--status`, `--logs`). |
@@ -23,10 +23,10 @@ Three areas of work on the REPL-based evidence verification system: (1) centrali
 | File | Changes |
 |------|---------|
 | `scripts/verification/demo_evidence_programming.py` | Replaced ~80 lines of manual `argparse` + `_build_env()` with `VerificationSettings.from_cli()`. Added `--subagent-model` CLI arg. `SYSTEM_PROMPT` uses `{subagent_model}` for inner `llm()`. |
-| `src/pkevolve/verification/repl_orchestrator.py` | Added `cfg: VerificationSettings` and `subagent_model` params to `verify_claim_repl()`. Passes `subagent_model` to `inject_prelude(llm_model=...)`. |
-| `src/pkevolve/verification/orchestrator.py` | Added `cfg` kwarg; replaced inline `_build_env()` with `cfg.build_sdk_env()`. |
-| `src/pkevolve/verification/full_text.py` | `_get_unpaywall_email()` reads from `get_settings().api.unpaywall_email` with env-var fallback. |
-| `src/pkevolve/verification/__init__.py` | Lazy imports and `__all__` entries for config classes. |
+| `src/proclaim/verification/repl_orchestrator.py` | Added `cfg: VerificationSettings` and `subagent_model` params to `verify_claim_repl()`. Passes `subagent_model` to `inject_prelude(llm_model=...)`. |
+| `src/proclaim/verification/orchestrator.py` | Added `cfg` kwarg; replaced inline `_build_env()` with `cfg.build_sdk_env()`. |
+| `src/proclaim/verification/full_text.py` | `_get_unpaywall_email()` reads from `get_settings().api.unpaywall_email` with env-var fallback. |
+| `src/proclaim/verification/__init__.py` | Lazy imports and `__all__` entries for config classes. |
 | `pyproject.toml` | Added `pydantic-settings>=2.0`, `pyyaml>=6.0`. Added `[project.optional-dependencies] fulltext`. |
 
 ---

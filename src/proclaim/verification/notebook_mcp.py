@@ -8,7 +8,7 @@ to the notebook and (optionally) executes code in a persistent kernel.
 Kernel lifecycle is managed by KernelRunner. This module handles only
 the notebook file (nbformat) layer and MCP tool wrappers.
 
-Launch:  python -m pkevolve.verification.notebook_mcp
+Launch:  python -m proclaim.verification.notebook_mcp
 Connect: Claude Agent SDK connects via stdio transport.
 """
 
@@ -20,7 +20,7 @@ import nbformat
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
 
 from mcp.server.fastmcp import FastMCP
-from pkevolve.verification.kernel_runner import KernelRunner
+from proclaim.verification.kernel_runner import KernelRunner
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,7 @@ def nb_render_papers(workspace: str, notebook_path: str) -> str:
     notebook. Reads from evidence_state.json in the workspace. Call after
     search_pubmed_llm, search_pubmed, or other search functions."""
     code = (
-        "from pkevolve.verification.renderers import render_papers; "
+        "from proclaim.verification.renderers import render_papers; "
         f"render_papers({workspace!r})"
     )
     output = _add_code_cell(notebook_path, code, execute=True)
@@ -216,7 +216,7 @@ def nb_render_facts(workspace: str, notebook_path: str) -> str:
     red=REFUTE, gray=NEUTRAL). Reads from evidence_state.json. Call after
     fact extraction rounds."""
     code = (
-        "from pkevolve.verification.renderers import render_facts; "
+        "from proclaim.verification.renderers import render_facts; "
         f"render_facts({workspace!r})"
     )
     output = _add_code_cell(notebook_path, code, execute=True)
@@ -229,7 +229,7 @@ def nb_render_sufficiency(workspace: str, notebook_path: str) -> str:
     confidence and per-subclaim coverage, plus gap analysis. Reads from
     evidence_state.json. Call after check_sufficiency."""
     code = (
-        "from pkevolve.verification.renderers import render_sufficiency; "
+        "from proclaim.verification.renderers import render_sufficiency; "
         f"render_sufficiency({workspace!r})"
     )
     output = _add_code_cell(notebook_path, code, execute=True)
@@ -242,7 +242,7 @@ def nb_render_verdict(workspace: str, notebook_path: str) -> str:
     confidence, reasoning, key evidence, and remaining gaps. Reads from
     verdict.json in the workspace. Call after emit_verdict."""
     code = (
-        "from pkevolve.verification.renderers import render_verdict; "
+        "from proclaim.verification.renderers import render_verdict; "
         f"render_verdict({workspace!r})"
     )
     output = _add_code_cell(notebook_path, code, execute=True)

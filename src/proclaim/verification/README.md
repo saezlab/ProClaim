@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The `pkevolve.verification` package implements a **Metacognitive Evidence Verification** system. Given a scientific claim (e.g., a gene regulatory interaction), it searches PubMed for supporting/refuting papers, extracts grounded facts, computes NLP/metadata features, runs a trained MLP sufficiency classifier, and emits a structured verdict.
+The `proclaim.verification` package implements a **Metacognitive Evidence Verification** system. Given a scientific claim (e.g., a gene regulatory interaction), it searches PubMed for supporting/refuting papers, extracts grounded facts, computes NLP/metadata features, runs a trained MLP sufficiency classifier, and emits a structured verdict.
 
 ## Architecture Overview
 
@@ -263,14 +263,14 @@ Aggregated across all papers in the evidence pool by `FeatureAggregator`:
 ### From YAML (recommended)
 
 ```python
-from pkevolve.verification.config import VerificationSettings
+from proclaim.verification.config import VerificationSettings
 cfg = VerificationSettings.from_yaml("experiments/configs/signor_eval_config.yaml")
 ```
 
 ### From CLI
 
 ```bash
-uv run python -m pkevolve.verification.evidence_programming \
+uv run python -m proclaim.verification.evidence_programming \
     --config experiments/configs/signor_eval_config.yaml \
     --claim "Does MAPK1 phosphorylate H3?"
 ```
@@ -278,7 +278,7 @@ uv run python -m pkevolve.verification.evidence_programming \
 ### From CLI (direct mode)
 
 ```bash
-uv run python -m pkevolve.verification.evidence_programming_direct \
+uv run python -m proclaim.verification.evidence_programming_direct \
    --config experiments/configs/signor_eval_config.yaml \
    --claim "Does MAPK1 phosphorylate H3?"
 ```
@@ -323,8 +323,8 @@ When `evidence_programming_direct.py` runs, it typically produces or updates the
 ### Run a single verification
 
 ```python
-from pkevolve.verification.config import VerificationSettings
-from pkevolve.verification.evidence_programming import verify_claim_notebook
+from proclaim.verification.config import VerificationSettings
+from proclaim.verification.evidence_programming import verify_claim_notebook
 
 cfg = VerificationSettings.from_yaml("experiments/config.yaml", claim="Does X regulate Y?")
 result_path = await verify_claim_notebook(cfg)  # async — use asyncio.run() if not in async context
@@ -333,8 +333,8 @@ result_path = await verify_claim_notebook(cfg)  # async — use asyncio.run() if
 ### Run a single verification in direct mode
 
 ```python
-from pkevolve.verification.config import VerificationSettings
-from pkevolve.verification.evidence_programming_direct import verify_claim_direct
+from proclaim.verification.config import VerificationSettings
+from proclaim.verification.evidence_programming_direct import verify_claim_direct
 
 cfg = VerificationSettings.from_yaml("experiments/config.yaml", claim="Does X regulate Y?")
 result_path = verify_claim_direct(cfg)
@@ -343,12 +343,12 @@ result_path = verify_claim_direct(cfg)
 ### Use the evidence API directly (without notebook)
 
 ```python
-from pkevolve.verification.evidence_state import EvidenceState
-from pkevolve.verification.evidence_api import (
+from proclaim.verification.evidence_state import EvidenceState
+from proclaim.verification.evidence_api import (
     search_pubmed_progressive, extract_and_add_facts,
     populate_paper_features, check_sufficiency, emit_verdict
 )
-from pkevolve.verification.llm_factory import make_llm
+from proclaim.verification.llm_factory import make_llm
 
 llm = make_llm(base_url="http://localhost:8000/v1", api_key="EMPTY", model="my-model")
 state = EvidenceState.init_new(claim="...", subclaims=["..."], workspace=Path("workspace/"))
@@ -369,7 +369,7 @@ verdict = emit_verdict(
 ### Load and inspect an existing state
 
 ```python
-from pkevolve.verification.evidence_state import EvidenceState
+from proclaim.verification.evidence_state import EvidenceState
 state = EvidenceState.load(Path("workspace/evidence_state.json"))
 print(f"Papers: {len(state.papers)}, Facts: {len(state.facts)}")
 print(f"Last sufficiency: {state.sufficiency_history[-1].label}")
@@ -378,6 +378,6 @@ print(f"Last sufficiency: {state.sufficiency_history[-1].label}")
 ### Prewarm ML models (avoid cold-start latency)
 
 ```python
-from pkevolve.verification.model_registry import prewarm_all_models
+from proclaim.verification.model_registry import prewarm_all_models
 timings = prewarm_all_models()  # loads SBERT, NLI, MLP into memory
 ```

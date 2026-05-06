@@ -15,13 +15,13 @@ Resolution order (highest priority first):
 
 Usage — library code::
 
-    from pkevolve.verification.config import get_settings
+    from proclaim.verification.config import get_settings
     cfg = get_settings()
     print(cfg.api_key, cfg.model)
 
 Usage — CLI script::
 
-    from pkevolve.verification.config import VerificationSettings
+    from proclaim.verification.config import VerificationSettings
     cfg = VerificationSettings.from_cli()   # parses sys.argv
 
 Usage — from YAML file::
@@ -213,7 +213,7 @@ class APISettings(BaseSettings):
 
     # Full-text retrieval ------------------------------------------------
     unpaywall_email: str = Field(
-        default="pkevolve@example.com",
+        default="proclaim@example.com",
         description="Email address for Unpaywall API requests.",
     )
     elsevier_api_key: Optional[str] = Field(
@@ -464,7 +464,7 @@ class VerificationSettings(BaseSettings):
         If ``disable_thinking`` is True, passes extra_body to disable Qwen's
         built-in thinking mode (saves tokens).
         """
-        from pkevolve.verification.llm_factory import make_llm
+        from proclaim.verification.llm_factory import make_llm
 
         extra_body = None
         if self.llm.disable_thinking:
@@ -763,7 +763,7 @@ def set_label_config(config: LabelConfig) -> None:
     global _label_config
     _label_config = config
     # Rebuild the Stance enum (and Fact model) to match new labels
-    from pkevolve.verification.data_models import rebuild_stance_enum
+    from proclaim.verification.data_models import rebuild_stance_enum
     rebuild_stance_enum(config.stance_labels)
 
 

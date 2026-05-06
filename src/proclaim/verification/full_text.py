@@ -18,7 +18,7 @@ returns usable text rather than None for fact extraction.
 
 Usage::
 
-    from pkevolve.verification.full_text import fetch_full_text
+    from proclaim.verification.full_text import fetch_full_text
     text = fetch_full_text("35562995", doi="10.1234/example")
 """
 
@@ -321,11 +321,11 @@ def _resolve_doi(pmid: str) -> Optional[str]:
 def _fetch_semantic_scholar(pmid: str, title: str = "") -> Optional[str]:
     """Fetch full text via Semantic Scholar's ``openAccessPdf`` metadata.
 
-    Looks up the paper by PMID via :class:`~pkevolve.search.semantic_scholar.S2Client`
+    Looks up the paper by PMID via :class:`~proclaim.search.semantic_scholar.S2Client`
     (inheriting process-wide rate-limiting and 429 retry), retrieves the
     OA PDF URL, downloads the PDF, and extracts body text with pymupdf.
     """
-    from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
+    from proclaim.search.semantic_scholar import S2Client, S2RateLimitError
 
     try:
         client = S2Client()
@@ -344,7 +344,7 @@ def _fetch_semantic_scholar(pmid: str, title: str = "") -> Optional[str]:
         pdf_resp = requests.get(
             pdf_url,
             timeout=60,
-            headers={"User-Agent": "pkevolve/0.1 (scientific research tool)"},
+            headers={"User-Agent": "proclaim/0.1 (scientific research tool)"},
         )
         if pdf_resp.status_code != 200:
             logger.debug(
@@ -508,10 +508,10 @@ def _fetch_indra(pmid: str, title: str = "") -> Optional[str]:
 def _get_unpaywall_email() -> str:
     """Resolve Unpaywall email from config (env / .env / default)."""
     try:
-        from pkevolve.verification.config import get_settings
+        from proclaim.verification.config import get_settings
         return get_settings().api.unpaywall_email
     except Exception:
-        return os.getenv("UNPAYWALL_EMAIL", "pkevolve@example.com")
+        return os.getenv("UNPAYWALL_EMAIL", "proclaim@example.com")
 
 
 def _fetch_unpaywall_pdf(doi: str, title: str = "") -> Optional[str]:
@@ -547,7 +547,7 @@ def _fetch_unpaywall_pdf(doi: str, title: str = "") -> Optional[str]:
 
         # Download the PDF
         pdf_resp = requests.get(pdf_url, timeout=60, headers={
-            "User-Agent": "pkevolve/0.1 (mailto:pkevolve@example.com)",
+            "User-Agent": "proclaim/0.1 (mailto:proclaim@example.com)",
         })
         if pdf_resp.status_code != 200:
             logger.debug("PDF download failed (%d) for %s", pdf_resp.status_code, pdf_url)

@@ -1,7 +1,7 @@
 [project]
-name = "pkevolve"
+name = "proclaim"
 version = "0.1.0"
-description = "PKevolve: Knowledge Graph Curation"
+description = "ProClaim: Sufficiency-Aware Evidence Programming for In-the-Wild Scientific Claim Verification"
 requires-python = ">=3.10"
 dependencies = [
     "pandas",
@@ -54,7 +54,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pkevolve"]
+packages = ["src/proclaim"]
 
 [tool.uv]
 # pysb 1.16.0 (only version) fails to build — its ez_setup.py downloads from a

@@ -83,7 +83,7 @@ Removed all Z.AI-specific endpoints and `GLM_API_KEY`/`ZAI_API_KEY` references f
 | `doc/evaluation_plan.md` | Replaced Z.AI API references in model tables and authentication notes |
 | `doc/implementation_plan.md` | Replaced Z.AI base URL and `GLM_API_KEY` in LLM client code examples; replaced hardcoded `glm-4.6` model strings with `os.environ` lookups; updated env var export block |
 | `doc/sdk_vs_repl_modes.md` | Removed `Z.AI` from endpoint examples, REPL endpoint description, CLI usage examples, and YAML config example; updated transparency table |
-| `src/pkevolve/verification/README.md` | Updated settings table (`agent_base_url` default, `api.openai_api_key`); updated environment variables table to use `OPENAI_API_KEY` |
+| `src/proclaim/verification/README.md` | Updated settings table (`agent_base_url` default, `api.openai_api_key`); updated environment variables table to use `OPENAI_API_KEY` |
 
 ---
 

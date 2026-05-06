@@ -10,16 +10,16 @@ Fixed two critical bugs in the evidence verification subsystem that caused the n
 
 | File | Purpose |
 |------|---------|
-| `src/pkevolve/verification/full_text.py` | Layered full-text retrieval: PMC E-utilities → INDRA `get_full_text()` → Unpaywall+PDF (`pymupdf`). Each layer falls back to the next. INDRA is import-time optional. |
+| `src/proclaim/verification/full_text.py` | Layered full-text retrieval: PMC E-utilities → INDRA `get_full_text()` → Unpaywall+PDF (`pymupdf`). Each layer falls back to the next. INDRA is import-time optional. |
 
 ## Modified Files
 
 | File | Changes |
 |------|---------|
-| `src/pkevolve/verification/evidence_api.py` | Replaced inline PMC-only `get_full_text_article()` (~95 lines) with a thin wrapper delegating to `full_text.fetch_full_text()`. Wired DOI into `_search_and_add()` and `find_related_articles()` PaperRecord creation. |
-| `src/pkevolve/verification/data_models.py` | Added `doi: Optional[str] = None` field to `PaperRecord`. |
-| `src/pkevolve/verification/subagents.py` | Increased `extract_facts()` paper text truncation from 6,000 → 16,000 chars (GLM-4.6 supports 200K context). |
-| `src/pkevolve/verification/repl_orchestrator.py` | Changed `DEFAULT_BASE_URL` to `https://api.z.ai/api/paas/v4/`. Added `ZAI_API_KEY` to env-var resolution order. |
+| `src/proclaim/verification/evidence_api.py` | Replaced inline PMC-only `get_full_text_article()` (~95 lines) with a thin wrapper delegating to `full_text.fetch_full_text()`. Wired DOI into `_search_and_add()` and `find_related_articles()` PaperRecord creation. |
+| `src/proclaim/verification/data_models.py` | Added `doi: Optional[str] = None` field to `PaperRecord`. |
+| `src/proclaim/verification/subagents.py` | Increased `extract_facts()` paper text truncation from 6,000 → 16,000 chars (GLM-4.6 supports 200K context). |
+| `src/proclaim/verification/repl_orchestrator.py` | Changed `DEFAULT_BASE_URL` to `https://api.z.ai/api/paas/v4/`. Added `ZAI_API_KEY` to env-var resolution order. |
 | `scripts/verification/demo_evidence_programming.py` | Changed `GLM_OPENAI_BASE` to `/api/paas/v4/`. Added `ZAI_API_KEY` to env-var resolution. |
 | `pyproject.toml` | Added `[project.optional-dependencies] fulltext = ["pymupdf>=1.24", "requests"]`. INDRA noted as manual-install-only (pysb build fails on Python 3.12). |
 | `doc/ClaudeAgentSDK/CLAUDE.md` | Updated model names table with correct Anthropic + OpenAI-compatible endpoint columns. Added warning against `/api/openai`. |

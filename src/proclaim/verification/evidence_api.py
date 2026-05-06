@@ -22,8 +22,8 @@ _script_dir = Path(__file__).resolve().parent
 _project_root = _script_dir.parent.parent.parent
 load_dotenv(_project_root / ".env")
 
-from pkevolve.verification.compressor import SufficiencyPreservingCompressor
-from pkevolve.verification.data_models import (
+from proclaim.verification.compressor import SufficiencyPreservingCompressor
+from proclaim.verification.data_models import (
     Conflict,
     Fact,
     PaperRecord,
@@ -31,7 +31,7 @@ from pkevolve.verification.data_models import (
     SufficiencyResult,
     VerificationVerdict,
 )
-from pkevolve.verification.evidence_state import EvidenceState
+from proclaim.verification.evidence_state import EvidenceState
 
 logger = logging.getLogger(__name__)
 
@@ -115,14 +115,14 @@ def schema_docs() -> str:
     with the code.  Called at system-prompt construction time by both
     orchestrators.
     """
-    from pkevolve.verification.data_models import (
+    from proclaim.verification.data_models import (
         Fact as _Fact,
         Gap as _Gap,
         PaperRecord as _PR,
         SufficiencyResult as _SR,
         VerificationVerdict as _VV,
     )
-    from pkevolve.verification.config import get_label_config
+    from proclaim.verification.config import get_label_config
     _label_cfg = get_label_config()
 
     def _fields(model):
@@ -198,7 +198,7 @@ def function_docs() -> str:
     def _short_sig(fn) -> str:
         """Produce a signature with short type names (no module paths)."""
         sig = str(inspect.signature(fn))
-        # pkevolve.verification.data_models.Fact -> Fact, etc.
+        # proclaim.verification.data_models.Fact -> Fact, etc.
         sig = _re.sub(r"[a-z_]+(?:\.[a-z_]+)*\.([A-Z]\w*)", r"\1", sig)
         # typing qualifiers: Optional[Path] stays, Callable[[str], str] stays
         return sig
@@ -216,10 +216,10 @@ def function_docs() -> str:
     ]
 
     # Import model registry function for documentation
-    from pkevolve.verification.model_registry import prewarm_all_models as _prewarm
+    from proclaim.verification.model_registry import prewarm_all_models as _prewarm
 
     # Functions from subagents
-    from pkevolve.verification.subagents import (
+    from proclaim.verification.subagents import (
         extract_facts, synthesize_subclaim, detect_conflicts,
         formulate_gap_queries, refine_search_query,
     )
@@ -347,7 +347,7 @@ def _search_and_add(
 
     Returns (found_count, added_count, added_pmids).
     """
-    from pkevolve.search.custom_pubmed import RelevancePubMedSearcher
+    from proclaim.search.custom_pubmed import RelevancePubMedSearcher
 
     searcher = RelevancePubMedSearcher()
 
@@ -415,7 +415,7 @@ def search_pubmed_llm(
     Returns:
         List of added PMIDs (union of both queries, deduplicated)
     """
-    from pkevolve.search.llm_query_generator import generate_search_query
+    from proclaim.search.llm_query_generator import generate_search_query
 
     all_added: list[str] = []
 
@@ -487,7 +487,7 @@ def refine_search_for_failed_papers(
         >>>     new_pmids = refine_search_for_failed_papers(failed, state, llm)
         >>>     results2 = extract_and_add_facts(llm, new_pmids, state)
     """
-    from pkevolve.verification.subagents import refine_search_query
+    from proclaim.verification.subagents import refine_search_query
 
     if not failed_pmids:
         return []
@@ -721,7 +721,7 @@ def search_semantic_scholar(
     Returns:
         List of added paper IDs (PMID strings or ``S2:<id>``).
     """
-    from pkevolve.search.semantic_scholar import S2Client
+    from proclaim.search.semantic_scholar import S2Client
 
     client = S2Client()
     results = client.search(query, limit=max_results)
@@ -754,8 +754,8 @@ def search_semantic_scholar_dual(
     Returns:
         List of added paper IDs (union of both queries, deduplicated)
     """
-    from pkevolve.search.llm_query_generator import generate_search_query_s2
-    from pkevolve.search.semantic_scholar import S2Client
+    from proclaim.search.llm_query_generator import generate_search_query_s2
+    from proclaim.search.semantic_scholar import S2Client
 
     client = S2Client()
     all_added: list[str] = []
@@ -810,8 +810,8 @@ def search_semantic_scholar_recommendations(
     Returns:
         List of added paper IDs.
     """
-    from pkevolve.search.semantic_scholar import S2Client
-    from pkevolve.verification.config import get_label_config as _glc_s2
+    from proclaim.search.semantic_scholar import S2Client
+    from proclaim.verification.config import get_label_config as _glc_s2
     _lc_s2 = _glc_s2()
     _stance_names = _lc_s2.stance_names()
     # First configured stance is the "positive" stance (default: SUPPORT)
@@ -896,7 +896,7 @@ def expand_via_citations(
     Returns:
         List of added paper IDs.
     """
-    from pkevolve.search.semantic_scholar import S2Client
+    from proclaim.search.semantic_scholar import S2Client
 
     # Collect existing DOIs so we can skip already-known papers
     existing_dois: set[str] = {
@@ -968,7 +968,7 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
 
     Updates ``paper.full_text`` in state on success and returns the text.
     """
-    from pkevolve.verification.full_text import fetch_full_text
+    from proclaim.verification.full_text import fetch_full_text
 
     paper = state.papers.get(pmid)
     if not paper:
@@ -1124,7 +1124,7 @@ def add_facts_from_dicts(
             continue
         existing_keys.add(dedup_key)
 
-        from pkevolve.verification.config import get_label_config as _glc
+        from proclaim.verification.config import get_label_config as _glc
         _lc = _glc()
         raw_stance = norm.get("stance") or _lc.default_stance
         stance_str = _lc.validate_stance(raw_stance)
@@ -1157,7 +1157,7 @@ def add_facts_from_dicts(
 
 def _recompute_coverage(state: EvidenceState) -> None:
     """Recompute per-subclaim coverage scores."""
-    from pkevolve.verification.config import get_label_config as _glc_cov
+    from proclaim.verification.config import get_label_config as _glc_cov
     _default_stance = _glc_cov().default_stance
     for sc in state.subclaims:
         relevant = [
@@ -1224,7 +1224,7 @@ def _extract_and_add_facts_single(
     Returns:
         Number of facts added.
     """
-    from pkevolve.verification.subagents import extract_facts
+    from proclaim.verification.subagents import extract_facts
 
     # 1. Try full text (PMC lookup, cached in paper.full_text)
     paper_text = get_full_text_article(pmid, state)
@@ -1474,8 +1474,8 @@ def populate_paper_features(
         )
 
     # Sequential processing for small number of papers
-    from pkevolve.verification.feature_tools import compute_entity_coverage
-    from pkevolve.verification.model_registry import (
+    from proclaim.verification.feature_tools import compute_entity_coverage
+    from proclaim.verification.model_registry import (
         get_semantic_similarity_computer,
         get_nli_entailment_computer,
         get_metadata_extractor,
@@ -1607,8 +1607,8 @@ def populate_paper_features_parallel(
     """
     import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from pkevolve.verification.feature_tools import compute_entity_coverage
-    from pkevolve.verification.model_registry import (
+    from proclaim.verification.feature_tools import compute_entity_coverage
+    from proclaim.verification.model_registry import (
         get_semantic_similarity_computer,
         get_nli_entailment_computer,
         get_metadata_extractor,
@@ -1744,7 +1744,7 @@ def populate_paper_features_parallel(
 
 def get_evidence_summary(state: EvidenceState) -> str:
     """Get a human-readable summary of the current evidence state."""
-    from pkevolve.verification.config import get_label_config as _glc2
+    from proclaim.verification.config import get_label_config as _glc2
     _lc2 = _glc2()
     stance_counts = ", ".join(
         f"{name.lower()}: {sum(1 for f in state.facts if f.stance == name)}"
@@ -1844,8 +1844,8 @@ def _check_sufficiency_llm(
     min_total_papers: int,
 ) -> SufficiencyResult:
     """LLM-based sufficiency check (Qwen subagent backend)."""
-    from pkevolve.verification.llm_sufficiency import check_sufficiency_llm
-    from pkevolve.verification.subagents import identify_gaps
+    from proclaim.verification.llm_sufficiency import check_sufficiency_llm
+    from proclaim.verification.subagents import identify_gaps
 
     if state.iteration >= state.MAX_ITERATIONS:
         raise MaxIterationsExceeded(
@@ -1879,7 +1879,7 @@ def _check_sufficiency_llm(
     gaps: list = []
     if label == "insufficient":
         if override_reason:
-            from pkevolve.verification.data_models import Gap, GapType, GapPriority
+            from proclaim.verification.data_models import Gap, GapType, GapPriority
             gaps = [Gap(
                 subclaim=state.claim,
                 gap_type=GapType.LOW_DIVERSITY,
@@ -1918,9 +1918,9 @@ def _check_sufficiency_haiku(
 
     Gap identification still uses the general-purpose ``llm`` (Qwen).
     """
-    from pkevolve.verification.llm_sufficiency import check_sufficiency_llm
-    from pkevolve.verification.subagents import identify_gaps
-    from pkevolve.verification.model_registry import get_haiku_llm
+    from proclaim.verification.llm_sufficiency import check_sufficiency_llm
+    from proclaim.verification.subagents import identify_gaps
+    from proclaim.verification.model_registry import get_haiku_llm
 
     if state.iteration >= state.MAX_ITERATIONS:
         raise MaxIterationsExceeded(
@@ -1955,7 +1955,7 @@ def _check_sufficiency_haiku(
     gaps: list = []
     if label == "insufficient":
         if override_reason:
-            from pkevolve.verification.data_models import Gap, GapType, GapPriority
+            from proclaim.verification.data_models import Gap, GapType, GapPriority
             gaps = [Gap(
                 subclaim=state.claim,
                 gap_type=GapType.LOW_DIVERSITY,
@@ -2012,7 +2012,7 @@ def _check_sufficiency_mlp(
     state.papers_per_iteration.append(current_paper_count)
 
     # Get MLP classifier and feature aggregator from model registry
-    from pkevolve.verification.model_registry import get_mlp_classifier, get_feature_aggregator
+    from proclaim.verification.model_registry import get_mlp_classifier, get_feature_aggregator
 
     mlp = get_mlp_classifier()
     aggregator = get_feature_aggregator()
@@ -2080,11 +2080,11 @@ def _check_sufficiency_mlp(
     # LLM-driven gap identification for insufficient results
     gaps: list = []
     if label == "insufficient":
-        from pkevolve.verification.subagents import identify_gaps
+        from proclaim.verification.subagents import identify_gaps
 
         # If we overrode due to min papers, add a synthetic gap
         if override_reason:
-            from pkevolve.verification.data_models import Gap, GapType, GapPriority
+            from proclaim.verification.data_models import Gap, GapType, GapPriority
             gaps = [Gap(
                 subclaim=state.claim,
                 gap_type=GapType.LOW_DIVERSITY,
@@ -2240,7 +2240,7 @@ def filter_papers_by_stance(
         filter_papers_by_stance(state, keep_stances=["SUPPORT", "REFUTE", "NEUTRAL"])
     """
     if keep_stances is None:
-        from pkevolve.verification.config import get_label_config as _glc3
+        from proclaim.verification.config import get_label_config as _glc3
         _lc3 = _glc3()
         # Default: keep all stances except the default_stance (typically NEUTRAL)
         keep_stances = [s for s in _lc3.stance_names() if s != _lc3.default_stance]
@@ -2411,7 +2411,7 @@ def setup_kernel(
 
     Example (inside nb_execute)::
 
-        from pkevolve.verification.evidence_api import setup_kernel
+        from proclaim.verification.evidence_api import setup_kernel
         state, llm, workspace = setup_kernel(
             claim="MAPK1 directly activates H3-3A.",
             workspace_path="/path/to/workspace",
@@ -2507,7 +2507,7 @@ def setup_kernel(
     )
     model = os.environ.get("LLM_MODEL", "glm-5")
 
-    from pkevolve.verification.llm_factory import make_llm
+    from proclaim.verification.llm_factory import make_llm
 
     # Read disable_thinking config from environment (set by build_sdk_env)
     disable_thinking = os.environ.get("LLM_DISABLE_THINKING", "0") == "1"
@@ -2534,14 +2534,14 @@ def setup_kernel(
     if label_json:
         import json as _json
         try:
-            from pkevolve.verification.config import LabelConfig, set_label_config
+            from proclaim.verification.config import LabelConfig, set_label_config
             label_data = _json.loads(label_json)
             set_label_config(LabelConfig(**label_data))
         except Exception as exc:
             logger.warning("Failed to parse LABEL_CONFIG_JSON: %s", exc)
     else:
         # Ensure default label config is available
-        from pkevolve.verification.config import set_label_config, LabelConfig
+        from proclaim.verification.config import set_label_config, LabelConfig
         set_label_config(LabelConfig())
 
     print(f"Kernel ready. state=<{len(state.papers)} papers>, llm={model!r}, max_iterations={state.MAX_ITERATIONS}")
@@ -2574,7 +2574,7 @@ def setup_workspace(
 
     Example::
 
-        from pkevolve.verification.evidence_api import setup_workspace
+        from proclaim.verification.evidence_api import setup_workspace
         state, llm, workspace = setup_workspace(
             claim="MAPK1 directly activates H3-3A.",
             workspace_path="/path/to/workspace",
@@ -2623,7 +2623,7 @@ def setup_workspace(
     timeout = int(os.environ.get("LLM_TIMEOUT", "300"))
     stream = os.environ.get("LLM_STREAM", "1") == "1"
 
-    from pkevolve.verification.llm_factory import make_llm
+    from proclaim.verification.llm_factory import make_llm
     llm = make_llm(
         model=model,
         api_key=api_key,
@@ -2639,13 +2639,13 @@ def setup_workspace(
     if label_json:
         import json as _json
         try:
-            from pkevolve.verification.config import LabelConfig, set_label_config
+            from proclaim.verification.config import LabelConfig, set_label_config
             label_data = _json.loads(label_json)
             set_label_config(LabelConfig(**label_data))
         except Exception as exc:
             logger.warning("Failed to parse LABEL_CONFIG_JSON: %s", exc)
     else:
-        from pkevolve.verification.config import set_label_config, LabelConfig
+        from proclaim.verification.config import set_label_config, LabelConfig
         set_label_config(LabelConfig())
 
     print(f"Workspace ready. state=<{len(state.papers)} papers, {len(state.facts)} facts>, llm={model!r}")

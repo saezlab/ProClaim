@@ -24,9 +24,9 @@ Merged the `feature/ctx-manage` and `origin/motivation` branches into `exp`, int
 | `experiments/baselines/single_paper.py` | Updated to be importable by `s2_plus_ref.py`: `_fetch_abstract` and `_format_single_passage` helpers are re-exported as module-level symbols. |
 | `experiments/run_baselines_datasets.py` | Wired `s2_plus_ref` into the `build_baseline()` factory, extended CLI `--baseline` choices, and added output directory routing for the new variant. |
 | `scripts/analysis/print_baseline_metrics_table.py` | Extended `BASELINE_ORDER` to include `safe` and `s2_plus_ref`; added `s2_plus_ref` to `VARIANT_ORDER` for correct sort position in the ASCII metrics table. |
-| `src/pkevolve/verification/config.py` | Added `SUFFICIENCY_BACKEND` to the `as_env()` mapping so that the sufficiency-classifier backend selection propagates into the Jupyter kernel environment. |
-| `src/pkevolve/verification/evidence_programming_direct.py` | Minor fix to expose the updated config env mapping to the direct-mode orchestrator. |
-| `src/pkevolve/verification/README.md` | Updated to document the verification subsystem architecture, including the direct-mode path and `SUFFICIENCY_BACKEND` config key. |
+| `src/proclaim/verification/config.py` | Added `SUFFICIENCY_BACKEND` to the `as_env()` mapping so that the sufficiency-classifier backend selection propagates into the Jupyter kernel environment. |
+| `src/proclaim/verification/evidence_programming_direct.py` | Minor fix to expose the updated config env mapping to the direct-mode orchestrator. |
+| `src/proclaim/verification/README.md` | Updated to document the verification subsystem architecture, including the direct-mode path and `SUFFICIENCY_BACKEND` config key. |
 
 ## Architecture
 

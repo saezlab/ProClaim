@@ -11,7 +11,7 @@ The ``llm`` callable is injected by the orchestrator:
 
 Usage::
 
-    from pkevolve.verification.subagents import extract_facts
+    from proclaim.verification.subagents import extract_facts
 
     # Define your LLM callable
     def llm(prompt: str) -> str:
@@ -30,13 +30,13 @@ import os
 import re
 from typing import Callable, Optional
 
-from pkevolve.verification.data_models import (
+from proclaim.verification.data_models import (
     Conflict,
     Fact,
     Gap,
     Stance,
 )
-from pkevolve.verification.prompts import (
+from proclaim.verification.prompts import (
     EXTRACT_FACTS,
     SYNTHESIZE_SUBCLAIM,
     DETECT_CONFLICTS,
@@ -144,7 +144,7 @@ def extract_facts(
     Returns:
         List of Fact objects with stance labels and subclaim mappings.
     """
-    from pkevolve.verification.config import get_label_config
+    from proclaim.verification.config import get_label_config
     label_cfg = get_label_config()
 
     subclaims_str = "\n".join(f"  - {sc}" for sc in subclaims)
@@ -183,7 +183,7 @@ def _parse_facts_response(response: str, source_pmid: str) -> list[Fact]:
         )
         return []
 
-    from pkevolve.verification.config import get_label_config
+    from proclaim.verification.config import get_label_config
     label_cfg = get_label_config()
 
     facts: list[Fact] = []
@@ -315,7 +315,7 @@ def identify_gaps(
     Returns:
         List of Gap objects with gap_type, description, and priority.
     """
-    from pkevolve.verification.config import get_label_config
+    from proclaim.verification.config import get_label_config
     label_cfg = get_label_config()
 
     facts_str = "\n".join(
@@ -367,7 +367,7 @@ def _parse_gaps_response(
             )
         return _fallback_gaps(claim, subclaims, facts)
 
-    from pkevolve.verification.data_models import GapType, GapPriority
+    from proclaim.verification.data_models import GapType, GapPriority
     valid_types = {gt.value for gt in GapType}
     valid_priorities = {gp.value for gp in GapPriority}
 
@@ -401,7 +401,7 @@ def _fallback_gaps(
     facts: list[Fact],
 ) -> list[Gap]:
     """Minimal fallback when LLM gap identification fails."""
-    from pkevolve.verification.data_models import GapType, GapPriority
+    from proclaim.verification.data_models import GapType, GapPriority
     return [Gap(
         subclaim=claim,
         gap_type=GapType.MISSING_SUBCLAIM,

@@ -8,7 +8,7 @@ Scripts and shared infrastructure for running and evaluating baselines against S
 |--------|---------|
 | `run_baselines_datasets.py` | Run a baseline on pre-processed CSV datasets (SIGNOR, ConnectomeDB, SciFact-Open, CIViC-Fact); prints a summary table of Macro F1 / FPR / FNR / Cost (mean ± std over repeats). Accepts `--config` to load baseline parameters from a YAML file. |
 | `run_connectomedb_all.sh` | Run all baselines sequentially on one or more datasets. Uses `flock` to prevent concurrent instances (avoids S2 rate-limit races). Supports resume — re-running skips already-completed claims. |
-| `run_signor_eval.py` | End-to-end SIGNOR evaluation using the full evidence-programming pipeline (runs `pkevolve.verification.evidence_programming` as a subprocess). Config: `configs/signor_eval_config.yaml`. |
+| `run_signor_eval.py` | End-to-end SIGNOR evaluation using the full evidence-programming pipeline (runs `proclaim.verification.evidence_programming` as a subprocess). Config: `configs/signor_eval_config.yaml`. |
 
 ### Quick start
 
@@ -61,7 +61,7 @@ YAML config files for `run_baselines_datasets.py`. Load with `--config`; any CLI
 | `ace_config.yaml` | `ace` | `anthropic/claude-sonnet-4-6`, max_tokens=4096, 1 repeat |
 | `react_config.yaml` | `react` | `anthropic/claude-sonnet-4-6`, max_steps=10, 1 repeat |
 | `signor_eval_config.yaml` | *(evidence-programming)* | Config for `run_signor_eval.py` (model, mode, iteration budget) |
-| `test_config.yaml` | *(evidence-programming)* | Test config for `pkevolve.verification.evidence_programming` smoke tests |
+| `test_config.yaml` | *(evidence-programming)* | Test config for `proclaim.verification.evidence_programming` smoke tests |
 
 YAML keys mirror `argparse` `dest` names (e.g. `model`, `max_steps`, `top_k`, `retrieval`). All keys are optional — omitted keys fall back to the CLI defaults.
 

@@ -56,7 +56,7 @@ from baselines.shared.search_utils import (
     format_s2_detailed_results,
 )
 from baselines.shared.verdict import BaselineResult
-from pkevolve.search.semantic_scholar import S2Client, S2RateLimitError
+from proclaim.search.semantic_scholar import S2Client, S2RateLimitError
 
 logger = logging.getLogger(__name__)
 

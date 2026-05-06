@@ -324,7 +324,7 @@ Call nb_init to create the notebook.  Then call nb_execute with this
 one-liner to bootstrap the kernel:
 
 ```python
-from pkevolve.verification.evidence_api import setup_kernel
+from proclaim.verification.evidence_api import setup_kernel
 state, llm, workspace = setup_kernel(
     claim="{claim}",
     workspace_path="{workspace}",
@@ -338,7 +338,7 @@ After this cell, the kernel has three ready-to-use variables:
     workspace – Path to the output directory
 
 All evidence API functions are importable from
-``pkevolve.verification.evidence_api``.  Import what you need and call
+``proclaim.verification.evidence_api``.  Import what you need and call
 them directly via nb_execute.
 
 {function_docs}
@@ -463,7 +463,7 @@ functions are available as Python imports.
 Call `bash` with the setup code to bootstrap the workspace:
 
 ```python
-from pkevolve.verification.evidence_api import setup_workspace
+from proclaim.verification.evidence_api import setup_workspace
 state, llm, workspace = setup_workspace(
     claim="{claim}",
     workspace_path="{workspace}",
@@ -476,7 +476,7 @@ After this, every subsequent bash call must re-load state from disk
 (loads existing state if present):
 
 ```python
-from pkevolve.verification.evidence_api import setup_workspace
+from proclaim.verification.evidence_api import setup_workspace
 state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{workspace}")
 # ... your evidence API calls here ...
 ```

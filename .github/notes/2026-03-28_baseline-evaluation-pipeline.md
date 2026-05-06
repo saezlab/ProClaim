@@ -4,7 +4,7 @@
 
 ## Summary
 
-Implemented the initial comparison baseline infrastructure for the evidence programming experiments, prioritising the Random and LLM-only baselines as specified in `doc/baseline_implementation_plan.md`. Shared infrastructure (label normalisation, verdict schemas, LLM backend, cost tracker, prompt templates, evaluation harness) was built first to ensure all future baselines compare fairly on identical foundations. Code was placed in `experiments/baselines/` rather than `src/` to keep the core `pkevolve` library separate from experiment-specific comparison code.
+Implemented the initial comparison baseline infrastructure for the evidence programming experiments, prioritising the Random and LLM-only baselines as specified in `doc/baseline_implementation_plan.md`. Shared infrastructure (label normalisation, verdict schemas, LLM backend, cost tracker, prompt templates, evaluation harness) was built first to ensure all future baselines compare fairly on identical foundations. Code was placed in `experiments/baselines/` rather than `src/` to keep the core `proclaim` library separate from experiment-specific comparison code.
 
 ## New Files
 
@@ -51,6 +51,6 @@ results/baselines/
 - **Shared prompts across baselines** — all baselines that call an LLM use the same `VERIFICATION_SYSTEM_PROMPT` / `VERIFICATION_SYSTEM_PROMPT_NO_RETRIEVAL`. The only variable is what evidence is provided, isolating architectural differences from prompt differences.
 - **Canonical label taxonomy** — `normalize_label()` is applied to both gold and predicted labels before any metric computation, so datasets with different vocabularies (SIGNOR's `SUPPORTED`/`WRONG`, SciFact's `CONTRADICT`, CIViC's `SUPPORTS`/`REFUTES`) are all comparable.
 - **Binary F1 as secondary metric** — macro-F1 is primary; binary F1 (SUPPORT vs REFUTE, excluding NEI gold rows) is reported as secondary, following the plan's recommendation for SIGNOR where only 4 UNCERTAIN edges make the NEI class unreliable.
-- **`experiments/baselines/` not `src/baselines/`** — baselines are experiment-specific comparison code, not reusable library components. Keeping them in `experiments/` makes the `src/pkevolve/` boundary clear.
+- **`experiments/baselines/` not `src/baselines/`** — baselines are experiment-specific comparison code, not reusable library components. Keeping them in `experiments/` makes the `src/proclaim/` boundary clear.
 - **Flip logic mirrors `run_signor_eval.py`** — `construct_signor_claim()` and `get_flipped_label()` in the runner replicate the existing logic exactly to ensure consistent claim strings across the evidence programming system and the baselines.
 - **`sys.path` set to `SCRIPT_DIR`** — the runner adds `experiments/` to `sys.path` so `import baselines` resolves correctly regardless of working directory.

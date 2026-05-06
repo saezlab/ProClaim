@@ -10,7 +10,7 @@ Four issues were identified and resolved during S2 retrieval baseline experiment
 
 | File | Purpose |
 |------|---------|
-| `experiments/baselines/s2_retrieval.py` | Fixed-k S2 RAG baseline. Delegates to `S2Client` from `pkevolve.search.semantic_scholar` instead of raw `requests` calls, inheriting rate-limit and retry logic. Supports `strip_parens` flag (default `True`) to remove parenthetical boilerplate from the S2 search query while preserving the full claim for the LLM prompt. |
+| `experiments/baselines/s2_retrieval.py` | Fixed-k S2 RAG baseline. Delegates to `S2Client` from `proclaim.search.semantic_scholar` instead of raw `requests` calls, inheriting rate-limit and retry logic. Supports `strip_parens` flag (default `True`) to remove parenthetical boilerplate from the S2 search query while preserving the full claim for the LLM prompt. |
 | `experiments/configs/s2_retrieval_config.yaml` | YAML config for S2 retrieval runs: Claude Sonnet 4.6, top_k=5, SIGNOR + ConnectomeDB. |
 
 ## Modified Files
@@ -18,11 +18,11 @@ Four issues were identified and resolved during S2 retrieval baseline experiment
 | File | Change |
 |------|--------|
 | `experiments/baselines/shared/prompts.py` | Removed hardcoded "Rules" block from `build_verification_system_prompt()` (4 rules including "prefer REFUTE over UNCERTAIN") and from `build_verification_system_prompt_no_retrieval()` (2 rules including "prefer UNCERTAIN over SUPPORT"). Removed unused `DECOMPOSITION_PROMPT` and `QUERY_GENERATION_PROMPT` constants. |
-| `src/pkevolve/search/semantic_scholar.py` | Added 429 retry with exponential back-off to both `_get()` and `_post()` methods. Up to 3 retries with 2s/4s/8s delays. Added `citationCount,url` to default S2 fields. Rate limiting is now always-on (1.1s anon / 0.15s authenticated), global across all instances via module-level `_global_lock` + `_global_last_request`, and raises `S2RateLimitError` on retry exhaustion. Added `lookup(paper_id, fields)` method for paper-by-ID queries. |
+| `src/proclaim/search/semantic_scholar.py` | Added 429 retry with exponential back-off to both `_get()` and `_post()` methods. Up to 3 retries with 2s/4s/8s delays. Added `citationCount,url` to default S2 fields. Rate limiting is now always-on (1.1s anon / 0.15s authenticated), global across all instances via module-level `_global_lock` + `_global_last_request`, and raises `S2RateLimitError` on retry exhaustion. Added `lookup(paper_id, fields)` method for paper-by-ID queries. |
 | `experiments/baselines/react_baseline.py` | Rewritten from manual litellm tool-call loop to LangGraph `create_react_agent` + `ChatLiteLLM`. Added S2 search backend (`search_backend="s2"`) alongside existing web search. Added DuckDuckGo thread-safety lock. |
 | `experiments/baselines/fire_baseline.py` | Refactored to accept shared `LLMBackend` instance instead of calling `litellm.completion()` directly. Constructor signature now takes `llm: LLMBackend` (model/temperature taken from backend). |
 | `experiments/run_baselines_datasets.py` | Registered `s2_retrieval` baseline in `build_baseline()` factory. Added `--s2-model`, `--s2-top-k`, `--s2-no-strip-parens`, `--react-search-backend`, `--temperature` CLI flags. FIRE now constructed with `LLMBackend`. ACE and ReAct now receive `temperature` argument. |
-| `src/pkevolve/verification/full_text.py` | `_fetch_semantic_scholar()` rewritten to use `S2Client.lookup()` instead of raw `requests.get()`, inheriting rate limiting and retry logic. |
+| `src/proclaim/verification/full_text.py` | `_fetch_semantic_scholar()` rewritten to use `S2Client.lookup()` instead of raw `requests.get()`, inheriting rate limiting and retry logic. |
 | `experiments/baselines/shared/llm.py` | Minor: added `load_dotenv()` call at import time (already present, confirmed working). |
 
 ## Key Design Decisions
@@ -33,7 +33,7 @@ Four issues were identified and resolved during S2 retrieval baseline experiment
 
 - **Removed biasing rules from shared prompts.** The "Rules" blocks in `prompts.py` contained opinionated instructions (e.g., "If no passage mentions the entities, prefer REFUTE over UNCERTAIN") that silently biased results toward REFUTE. These were removed so verdict definitions from `LabelConfig` are the sole source of label semantics—consistent across all baselines.
 
-- **S2 retrieval delegates to `S2Client` singleton.** The baseline previously used inline `requests.get()` calls with no rate limiting. Switching to `S2Client` from `pkevolve.search.semantic_scholar` centralises S2 access, rate limiting, and retry logic in one place.
+- **S2 retrieval delegates to `S2Client` singleton.** The baseline previously used inline `requests.get()` calls with no rate limiting. Switching to `S2Client` from `proclaim.search.semantic_scholar` centralises S2 access, rate limiting, and retry logic in one place.
 
 - **Query rewrite as a configurable flag, not a hard change.** The `strip_parens` parameter (default `True`, CLI `--s2-no-strip-parens` to disable) controls whether parenthetical text is removed from the S2 search query. The full claim is always passed to the LLM. This makes it easy to compare query strategies experimentally without code changes.
 

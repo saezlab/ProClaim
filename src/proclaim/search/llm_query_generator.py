@@ -9,7 +9,7 @@ LLM-driven strategy that works for diverse claim types (PPI, diagnosis, drug res
 from typing import Callable
 import logging
 
-from pkevolve.verification.prompts import (
+from proclaim.verification.prompts import (
     QUERY_GENERATION as QUERY_GENERATION_PROMPT,
     QUERY_GENERATION_S2 as QUERY_GENERATION_S2_PROMPT,
     GENERATE_GAP_QUERY,

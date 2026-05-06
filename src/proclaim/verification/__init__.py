@@ -14,25 +14,25 @@ def __getattr__(name: str):
     # Data models
     if name in ("PaperRecord", "Fact", "Stance", "GapType", "GapPriority", "Conflict",
                 "Gap", "SufficiencyResult", "VerificationVerdict"):
-        import pkevolve.verification.data_models as dm
+        import proclaim.verification.data_models as dm
         return getattr(dm, name)
     # Configuration
     if name in ("VerificationSettings", "APISettings", "LLMSettings",
                 "get_settings"):
-        import pkevolve.verification.config as cfg_mod
+        import proclaim.verification.config as cfg_mod
         return getattr(cfg_mod, name)
     # Evidence state
     if name == "EvidenceState":
-        from pkevolve.verification.evidence_state import EvidenceState
+        from proclaim.verification.evidence_state import EvidenceState
         return EvidenceState
     if name == "TraceLog":
-        from pkevolve.verification.evidence_state import TraceLog
+        from proclaim.verification.evidence_state import TraceLog
         return TraceLog
     # Compressor
     if name == "SufficiencyPreservingCompressor":
-        from pkevolve.verification.compressor import SufficiencyPreservingCompressor
+        from proclaim.verification.compressor import SufficiencyPreservingCompressor
         return SufficiencyPreservingCompressor
-    raise AttributeError(f"module 'pkevolve.verification' has no attribute {name!r}")
+    raise AttributeError(f"module 'proclaim.verification' has no attribute {name!r}")
 
 
 __all__ = [

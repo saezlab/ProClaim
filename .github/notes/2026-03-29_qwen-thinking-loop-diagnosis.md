@@ -89,12 +89,12 @@ These three together are model-agnostic, don't depend on the unreliable `enable_
 
 ## Planned Code Changes
 
-### `src/pkevolve/verification/config.py` — `make_subagent_llm()`
+### `src/proclaim/verification/config.py` — `make_subagent_llm()`
 
 ```python
 # Current
 def make_subagent_llm(self):
-    from pkevolve.verification.llm_factory import make_llm
+    from proclaim.verification.llm_factory import make_llm
     return make_llm(
         base_url=self.subagent_base_url,
         api_key=self.api_key,
@@ -103,7 +103,7 @@ def make_subagent_llm(self):
 
 # Proposed
 def make_subagent_llm(self):
-    from pkevolve.verification.llm_factory import make_llm
+    from proclaim.verification.llm_factory import make_llm
     return make_llm(
         base_url=self.subagent_base_url,
         api_key=self.api_key,
@@ -115,7 +115,7 @@ def make_subagent_llm(self):
 
 Note: `chat_template_kwargs: {enable_thinking: false}` is unreliable on Qwen3.5 (vLLM #35574), so `/no_think` in the prompt is the primary disable mechanism. `presence_penalty` prevents looping if thinking is still active.
 
-### `src/pkevolve/verification/subagents.py` — `extract_facts()` prompt
+### `src/proclaim/verification/subagents.py` — `extract_facts()` prompt
 
 Add to the Rules section:
 ```
@@ -123,7 +123,7 @@ Add to the Rules section:
   output an empty JSON array [] immediately. Do not deliberate over this decision.
 ```
 
-### `src/pkevolve/verification/evidence_api.py` — `setup_kernel()` (`make_llm()` call)
+### `src/proclaim/verification/evidence_api.py` — `setup_kernel()` (`make_llm()` call)
 
 Mirror the `presence_penalty=1.5` and `extra_body` changes from `config.py`, since `setup_kernel()` constructs its own `make_llm()` independently from environment variables.
 

@@ -1,12 +1,12 @@
-# PKEvolve – Copilot Instructions
+# ProClaim – Copilot Instructions
 
 ## Project Overview
 
-PKEvolve is a bioinformatics research tool that validates Gene Regulatory Network (GRN) edges using LLMs. Given a (source gene, target gene, interaction type) triple from the SIGNOR database, it asks an LLM whether the interaction is supported by scientific evidence and compares the answer to ground truth.
+ProClaim is a bioinformatics research tool that validates Gene Regulatory Network (GRN) edges using LLMs. Given a (source gene, target gene, interaction type) triple from the SIGNOR database, it asks an LLM whether the interaction is supported by scientific evidence and compares the answer to ground truth.
 
 ## Architecture
 
-- **`src/pkevolve/`** – installable library (`hatchling` build, imported as `pkevolve`)
+- **`src/proclaim/`** – installable library (`hatchling` build, imported as `proclaim`)
   - `llm/evaluator.py` – `GeneInteractionEvaluator`: core LLM judge that constructs structured Yes/No/None prompts for edge validation
   - `llm/rater.py` – `PaperRater`: pairwise paper comparison via LLM to rank evidence quality
   - `search/` – paper retrieval: PubMed (`custom_pubmed.py`), web search (`main.py` `WebSearchAssistant`), LangChain-based agent (`paper_search_agent.py`)
@@ -44,7 +44,7 @@ uv run python scripts/analysis/analyze_qa_results.py --mode nosearch --model gpt
 ```
 
 ### LLM client pattern
-Core library (`src/pkevolve/`) uses the OpenAI-compatible client directly. Local models default to `http://localhost:8000/v1` with `api_key="EMPTY"`. Cloud models read keys from `.env` via `python-dotenv`:
+Core library (`src/proclaim/`) uses the OpenAI-compatible client directly. Local models default to `http://localhost:8000/v1` with `api_key="EMPTY"`. Cloud models read keys from `.env` via `python-dotenv`:
 ```python
 from openai import OpenAI
 # Cloud models — OpenAI-compatible endpoint:
@@ -84,7 +84,7 @@ Each edge result is a JSON file named `{SOURCE}_{TARGET}_{INTERACTION}.json`.
 - API keys in `.env` at project root: `OPENAI_API_KEY`, `ANTHROPIC_AUTH_TOKEN` (never commit)
 - Optional: `UNPAYWALL_EMAIL` for full-text PDF retrieval via Unpaywall, `ELSEVIER_API_KEY` for Elsevier full text via INDRA, `PUBMED_EMAIL` / `PUBMED_API_KEY` for NCBI Entrez
 
-### Verification subsystem (`src/pkevolve/verification/`)
+### Verification subsystem (`src/proclaim/verification/`)
 - `evidence_api.py` – Pure Python evidence API (search, extract, check sufficiency, emit verdict)
 - `evidence_programming.py` – Evidence programming orchestration loop
 - `full_text.py` – Layered full-text retrieval: PMC → INDRA → Unpaywall+PDF
@@ -105,7 +105,7 @@ Each edge result is a JSON file named `{SOURCE}_{TARGET}_{INTERACTION}.json`.
 
 ## When Adding New Features
 
-1. Reusable logic goes in `src/pkevolve/`; one-off experiments go in `scripts/` with `argparse` CLI
+1. Reusable logic goes in `src/proclaim/`; one-off experiments go in `scripts/` with `argparse` CLI
 2. New evaluator modes should extend `GeneInteractionEvaluator` or follow its prompt structure
 3. Paper search integrations should implement rate-limiting (see `WebSearchAssistant._rate_limit()`)
 4. Always include `--help` docstrings in argparse scripts; follow the existing multi-mode pattern in `run_qa.py`

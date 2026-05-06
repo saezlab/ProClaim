@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from baselines.shared.label_utils import get_label_config
 
-from pkevolve.verification.config import LabelConfig
+from proclaim.verification.config import LabelConfig
 
 # ── Default label config (re-use shared singleton) ────────────────────
 

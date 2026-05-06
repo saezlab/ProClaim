@@ -52,8 +52,8 @@ The shell also has `ANTHROPIC_AUTH_TOKEN` set to the same `GLM_API_KEY` value (s
 | File | Role | Impact |
 |------|------|--------|
 | `scripts/verification/demo_evidence_programming.py` | Mode A entry point | Kernel prelude wires `llm()` via OpenAI client → `/api/paas/v4/` (depleted) |
-| `src/pkevolve/verification/repl_orchestrator.py` | Mode B REPL loop | `verify_claim_repl()` wires the same OpenAI-based `llm()` via `KernelRunner.inject_prelude()` |
-| `src/pkevolve/verification/kernel_runner.py` | Kernel prelude injection | Injects the OpenAI-based `llm()` function into the Jupyter kernel |
+| `src/proclaim/verification/repl_orchestrator.py` | Mode B REPL loop | `verify_claim_repl()` wires the same OpenAI-based `llm()` via `KernelRunner.inject_prelude()` |
+| `src/proclaim/verification/kernel_runner.py` | Kernel prelude injection | Injects the OpenAI-based `llm()` function into the Jupyter kernel |
 
 ## Key Design Decisions
 

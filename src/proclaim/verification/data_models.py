@@ -60,7 +60,7 @@ def _validate_stance_field(v: Any) -> Any:
     rebuilt with custom labels) and coerces the input value to a member.
     Falls back to the configured default stance for unrecognised values.
     """
-    import pkevolve.verification.data_models as _dm
+    import proclaim.verification.data_models as _dm
     CurrentStance = _dm.Stance
     if isinstance(v, CurrentStance):
         return v
@@ -68,7 +68,7 @@ def _validate_stance_field(v: Any) -> Any:
     try:
         return CurrentStance(s)
     except (ValueError, KeyError):
-        from pkevolve.verification.config import get_label_config
+        from proclaim.verification.config import get_label_config
         default = get_label_config().default_stance
         return CurrentStance(default)
 

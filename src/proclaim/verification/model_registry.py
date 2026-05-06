@@ -12,7 +12,7 @@ Models managed:
 
 Usage:
     # Lazy loading (models loaded on first use)
-    from pkevolve.verification.model_registry import (
+    from proclaim.verification.model_registry import (
         get_semantic_similarity_computer,
         get_nli_entailment_computer,
         get_mlp_classifier,
@@ -24,11 +24,11 @@ Usage:
     similarity = sim_computer.compute(claim, text)
 
     # Pre-warming (load all models upfront)
-    from pkevolve.verification.model_registry import prewarm_all_models
+    from proclaim.verification.model_registry import prewarm_all_models
     load_times = prewarm_all_models()
 
 Cache management:
-    from pkevolve.verification.model_registry import clear_model_cache, get_cache_status
+    from proclaim.verification.model_registry import clear_model_cache, get_cache_status
 
     status = get_cache_status()  # Check which models are loaded
     clear_model_cache()          # Clear all cached models
@@ -70,7 +70,7 @@ def get_semantic_similarity_computer():
     logger.info("Loading SemanticSimilarityComputer (first use)...")
     start = time.time()
 
-    from pkevolve.verification.feature_tools import SemanticSimilarityComputer
+    from proclaim.verification.feature_tools import SemanticSimilarityComputer
     model = SemanticSimilarityComputer()
 
     _MODEL_CACHE[_SEMANTIC_SIM] = model
@@ -93,7 +93,7 @@ def get_nli_entailment_computer():
     logger.info("Loading NLIEntailmentComputer (first use)...")
     start = time.time()
 
-    from pkevolve.verification.feature_tools import NLIEntailmentComputer
+    from proclaim.verification.feature_tools import NLIEntailmentComputer
     model = NLIEntailmentComputer()
 
     _MODEL_CACHE[_NLI_COMPUTER] = model
@@ -201,7 +201,7 @@ def get_metadata_extractor():
     logger.info("Loading PaperFeatureExtractor (first use)...")
     start = time.time()
 
-    from pkevolve.verification.feature_tools import PaperFeatureExtractor
+    from proclaim.verification.feature_tools import PaperFeatureExtractor
     extractor = PaperFeatureExtractor()
 
     _MODEL_CACHE[_METADATA_EXTRACTOR] = extractor
@@ -240,7 +240,7 @@ def get_haiku_llm():
         or "EMPTY"
     )
 
-    from pkevolve.verification.llm_factory import make_anthropic_llm
+    from proclaim.verification.llm_factory import make_anthropic_llm
 
     logger.info("Creating Claude Haiku sufficiency LLM callable (model=claude-haiku-4-5-20251001)...")
     haiku_llm = make_anthropic_llm(api_key=api_key)

@@ -15,7 +15,7 @@ The Recursive Language Model (RLM) architecture:
 Connects directly to GLM's native Anthropic-compatible endpoint at api.z.ai.
 
 Usage:
-  uv run python -m pkevolve.verification.evidence_programming \\
+  uv run python -m proclaim.verification.evidence_programming \\
       --claim "Does MAPK1 directly activate H3-3A?"
 """
 
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # System prompt: imported from prompts.py
 # ---------------------------------------------------------------------------
 
-from pkevolve.verification.prompts import (
+from proclaim.verification.prompts import (
     NOTEBOOK_SYSTEM_PROMPT as SYSTEM_PROMPT,
     NOTEBOOK_USER_PROMPT,
     SUBCLAIM_EXAMPLES,
@@ -54,7 +54,7 @@ from pkevolve.verification.prompts import (
 # Configuration (via pydantic-settings)
 # ---------------------------------------------------------------------------
 
-from pkevolve.verification.config import VerificationSettings
+from proclaim.verification.config import VerificationSettings
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +72,8 @@ async def verify_claim_notebook(
         ToolUseBlock,
         query,
     )
-    from pkevolve.verification.data_models import VerificationVerdict
-    from pkevolve.verification.evidence_state import EvidenceState
+    from proclaim.verification.data_models import VerificationVerdict
+    from proclaim.verification.evidence_state import EvidenceState
 
     workspace = cfg.resolved_workspace
     notebook_path = cfg.resolved_notebook_path
@@ -88,7 +88,7 @@ async def verify_claim_notebook(
     EvidenceState.init_new(claim=claim, subclaims=[claim], workspace=workspace)
 
     # Build system prompt with auto-generated schema docs
-    from pkevolve.verification.evidence_api import schema_docs, function_docs
+    from proclaim.verification.evidence_api import schema_docs, function_docs
     label_cfg = cfg.labels
     system_prompt = SYSTEM_PROMPT.format(
         workspace=str(workspace),
@@ -139,7 +139,7 @@ async def verify_claim_notebook(
         mcp_servers={
             "notebook-tools": {
                 "command": python_exe,
-                "args": ["-m", "pkevolve.verification.notebook_mcp"],
+                "args": ["-m", "proclaim.verification.notebook_mcp"],
                 "cwd": str(PROJECT_ROOT),
             },
         }

@@ -98,7 +98,7 @@ Since `extract_and_add_facts_batch()` runs 8 threads in parallel via `ThreadPool
 
 **Fix:** Pass `timeout=httpx.Timeout(120, connect=10)` to the `OpenAI()` constructor. Add a per-call hard timeout (e.g. `signal.alarm` or `concurrent.futures` wrapper) around each `llm()` invocation in subagents.
 
-**Files:** `src/pkevolve/verification/llm_factory.py` L91, `src/pkevolve/verification/subagents.py` L161/242/286/381/495
+**Files:** `src/proclaim/verification/llm_factory.py` L91, `src/proclaim/verification/subagents.py` L161/242/286/381/495
 
 #### RC-2: Sufficiency classifier falls back to deterministic default output (accuracy)
 
@@ -120,7 +120,7 @@ The sufficiency decision is therefore meaningless whenever `populate_paper_featu
 
 **Fix:** (a) Add a guard in `check_sufficiency()`: if >50% of papers lack NLP features, skip MLP and return `insufficient` with an explicit diagnostic. (b) Add a warning/metric when `mlp_predict` receives an all-zeros input vector. (c) Consider making `populate_paper_features` failures fatal or at least propagating a feature-coverage ratio.
 
-**Files:** `src/pkevolve/verification/evidence_api.py` L1370–1420, `scripts/sufficiency_classifier/test_mlp_classifier.py` L80–87
+**Files:** `src/proclaim/verification/evidence_api.py` L1370–1420, `scripts/sufficiency_classifier/test_mlp_classifier.py` L80–87
 
 #### RC-3: Sequential full-text retrieval is slow with unbounded layers (runtime)
 
@@ -139,7 +139,7 @@ Even though `extract_and_add_facts_batch()` parallelises with 8 workers, each wo
 
 **Fix:** (a) Add `timeout=30` to the INDRA layer. (b) Add an overall per-paper timeout of 120s wrapping the entire `fetch_full_text()` call. (c) Consider parallelising the 4 layers (race them concurrently, take the first success). (d) Reduce `max_chars` in `full_text.py` from 50K to 20K to match the 16K truncation in `extract_facts()` (`subagents.py` L157) — 68% of fetched text is currently discarded.
 
-**Files:** `src/pkevolve/verification/full_text.py` L68–540, `src/pkevolve/verification/subagents.py` L157
+**Files:** `src/proclaim/verification/full_text.py` L68–540, `src/proclaim/verification/subagents.py` L157
 
 ---
 
@@ -195,7 +195,7 @@ The three root causes below were verified by code inspection on 2026-03-25. They
 2. Each subagent call site: wrap in try/except with a hard timeout (e.g. `concurrent.futures.ThreadPoolExecutor` with `future.result(timeout=150)`).
 3. The retry loop (L155–182) should catch `httpx.TimeoutException` explicitly rather than generic `Exception`.
 
-**Files:** `src/pkevolve/verification/llm_factory.py` L91, L155–182; `src/pkevolve/verification/subagents.py` L161, L242, L286, L381, L495
+**Files:** `src/proclaim/verification/llm_factory.py` L91, L155–182; `src/proclaim/verification/subagents.py` L161, L242, L286, L381, L495
 **Projected impact:** Eliminates unbounded hangs. Worst-case subagent call capped at ~2.5 min instead of 30 min.
 
 ### 5.2 RC-2 Fix: Prevent Classifier Zero-Vector Fallback (P0 — accuracy & cost)
@@ -207,7 +207,7 @@ The three root causes below were verified by code inspection on 2026-03-25. They
 2. `test_mlp_classifier.py` `mlp_predict()` L80: Add a check — if all features are 0.0, log a warning and return `(0.5, 0.0)` with a flag indicating default output.
 3. `evidence_api.py` `populate_paper_features()`: Consider making NLP feature failures propagate (or at minimum, return a coverage metric in the status string).
 
-**Files:** `src/pkevolve/verification/evidence_api.py` L1370–1420, L967–1100; `scripts/sufficiency_classifier/test_mlp_classifier.py` L80–87
+**Files:** `src/proclaim/verification/evidence_api.py` L1370–1420, L967–1100; `scripts/sufficiency_classifier/test_mlp_classifier.py` L80–87
 **Projected impact:** Fixes meaningless sufficiency decisions → fewer wasted iterations → directly reduces cost on expensive runs. Also improves accuracy by not prematurely terminating when features happen to produce a high-confidence zero-vector output.
 
 ### 5.3 RC-3 Fix: Add Timeouts and Parallelise Full-Text Retrieval (P0 — runtime)
@@ -220,14 +220,14 @@ The three root causes below were verified by code inspection on 2026-03-25. They
 3. Consider racing layers concurrently (submit all 4 to a `ThreadPoolExecutor`, take first non-None result, cancel the rest).
 4. Reduce `max_chars` default from 50,000 to 20,000 — `extract_facts()` in `subagents.py` L157 truncates to 16K anyway, so 68% of fetched text is discarded.
 
-**Files:** `src/pkevolve/verification/full_text.py` L68–540; `src/pkevolve/verification/subagents.py` L157
+**Files:** `src/proclaim/verification/full_text.py` L68–540; `src/proclaim/verification/subagents.py` L157
 **Projected impact:** Per-paper retrieval capped at 120s instead of unbounded. Parallel racing could reduce to ~30s for OA papers. Reduced `max_chars` saves bandwidth and INDRA/Unpaywall latency.
 
 ### 5.4 Secondary: `min_papers_per_iteration=3` Override (P2 — cost)
 
 **Note:** The `min_papers_per_iteration=3` override in `check_sufficiency()` (evidence_api.py ~L1435) was previously identified as the primary cost driver. In reality it is a **secondary effect**: it only causes retry loops because the MLP classifier is outputting garbage due to RC-2. Once the classifier produces meaningful probabilities, the override will rarely trigger on edges with sufficient literature. It may still warrant relaxation (e.g. `min_papers_per_iteration=1` or removal after iteration 2), but it is not the root cause.
 
-**Files:** `src/pkevolve/verification/evidence_api.py` L1435–1447
+**Files:** `src/proclaim/verification/evidence_api.py` L1435–1447
 
 ---
 
@@ -300,10 +300,10 @@ The three root causes below were verified by code inspection on 2026-03-25. They
 | `results/signor_eval/` | Per-edge evidence notebooks and workspaces |
 | `experiments/run_signor_eval.py` | Evaluation orchestration script |
 | `experiments/signor_eval_config.yaml` | Config (claude-sonnet-4-6 + qwen3.5-9b subagents) |
-| `src/pkevolve/verification/evidence_programming.py` | Main orchestrator (Claude Agent SDK loop, system prompt) |
-| `src/pkevolve/verification/evidence_api.py` | Evidence API (search, extract, sufficiency, verdict) |
-| `src/pkevolve/verification/subagents.py` | LLM subagent functions (fact extraction, gap identification) |
-| `src/pkevolve/verification/full_text.py` | 4-layer full-text retrieval chain |
-| `src/pkevolve/verification/data_models.py` | Pydantic models (Fact, PaperRecord, SufficiencyResult, etc.) |
-| `src/pkevolve/verification/llm_factory.py` | make_llm() callable factory |
-| `src/pkevolve/verification/config.py` | VerificationSettings, build_sdk_env(), dual-endpoint routing |
+| `src/proclaim/verification/evidence_programming.py` | Main orchestrator (Claude Agent SDK loop, system prompt) |
+| `src/proclaim/verification/evidence_api.py` | Evidence API (search, extract, sufficiency, verdict) |
+| `src/proclaim/verification/subagents.py` | LLM subagent functions (fact extraction, gap identification) |
+| `src/proclaim/verification/full_text.py` | 4-layer full-text retrieval chain |
+| `src/proclaim/verification/data_models.py` | Pydantic models (Fact, PaperRecord, SufficiencyResult, etc.) |
+| `src/proclaim/verification/llm_factory.py` | make_llm() callable factory |
+| `src/proclaim/verification/config.py` | VerificationSettings, build_sdk_env(), dual-endpoint routing |
