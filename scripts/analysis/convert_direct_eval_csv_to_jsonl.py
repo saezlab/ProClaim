@@ -3,8 +3,8 @@
 
 This is intended for ProClaim-style CSV outputs such as:
 
-    results/baselines/signor_direct_eval_20260427_221617/results.csv
-    results/baselines/connectomedb_eval_20260424_171117/.../results.csv
+    results/baselines/proclaim/signor_direct_eval_20260427_221617/results.csv
+    results/baselines/proclaim/connectomedb_eval_20260424_171117/.../results.csv
 
 and emits one JSON object per line using the shared ``BaselineResult`` schema,
 matching the structure used by files such as:
@@ -24,12 +24,12 @@ one row per claim variant, like the existing baseline JSONL files.
 Usage
 -----
 uv run python scripts/analysis/convert_direct_eval_csv_to_jsonl.py \
-    results/baselines/signor_direct_eval_20260427_221617/results.csv \
-    --output results/baselines/signor_direct_eval_20260427_221617/signor_seed100.jsonl
+    results/baselines/proclaim/signor_direct_eval_20260427_221617/results.csv \
+    --output results/baselines/proclaim/signor_direct_eval_20260427_221617/signor_seed100.jsonl
 
 uv run python scripts/analysis/convert_direct_eval_csv_to_jsonl.py \
-    results/baselines/connectomedb_eval_20260424_171117/results.csv \
-    --output results/baselines/connectomedb_eval_20260424_171117/connectomedb_seed100.jsonl
+    results/baselines/proclaim/connectomedb_eval_20260424_171117/results.csv \
+    --output results/baselines/proclaim/connectomedb_eval_20260424_171117/connectomedb_seed100.jsonl
 """
 
 from __future__ import annotations

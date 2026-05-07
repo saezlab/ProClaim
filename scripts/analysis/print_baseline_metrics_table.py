@@ -38,8 +38,8 @@ DATASET_HEADER_COLORS = {
     "connectomedb": "headerlavender",
 }
 OURS_JSONL = {
-    "signor": PROJECT_ROOT / "results/baselines/signor_direct_eval_20260427_221617/signor_seed100.jsonl",
-    "connectomedb": PROJECT_ROOT / "results/baselines/connectomedb_eval_20260424_171117/connectomedb_seed100.jsonl",
+    "signor": PROJECT_ROOT / "results/baselines/proclaim/signor_direct_eval_20260427_221617/signor_seed100.jsonl",
+    "connectomedb": PROJECT_ROOT / "results/baselines/proclaim/connectomedb_eval_20260424_171117/connectomedb_seed100.jsonl",
 }
 
 AGGREGATED_KEYS = (

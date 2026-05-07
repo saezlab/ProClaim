@@ -63,12 +63,12 @@ DATASET_DEFAULTS: dict[str, tuple[Path, Path, Path]] = {
     "signor": (
         _BASELINE_ROOT / f"single_paper/{_MODEL}/signor_seed100.jsonl",
         _BASELINE_ROOT / f"retrieval/s2/{_MODEL}/top5/signor_seed100.jsonl",
-        _BASELINE_ROOT / "signor_direct_eval_20260427_221617/signor_seed100.jsonl",
+        _BASELINE_ROOT / "proclaim/signor_direct_eval_20260427_221617/signor_seed100.jsonl",
     ),
     "connectomedb": (
         _BASELINE_ROOT / f"single_paper/{_MODEL}/connectomedb_seed100.jsonl",
         _BASELINE_ROOT / f"retrieval/s2/{_MODEL}/top5/connectomedb_seed100.jsonl",
-        _BASELINE_ROOT / "connectomedb_eval_20260424_171117/connectomedb_seed100.jsonl",
+        _BASELINE_ROOT / "proclaim/connectomedb_eval_20260424_171117/connectomedb_seed100.jsonl",
     ),
 }
 
