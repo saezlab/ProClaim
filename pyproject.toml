@@ -29,6 +29,7 @@ dependencies = [
     "spacy>=3.0",
     "claude-agent-sdk",
     "sentence-transformers",
+    "en-core-sci-sm @ https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz",
     "seaborn>=0.13.2",
     "litellm",
     "jupytext>=1.16",
@@ -56,9 +57,20 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/pkevolve"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.uv]
 # pysb 1.16.0 (only version) fails to build — its ez_setup.py downloads from a
 # dead URL. We only use indra.literature, never pysb, so exclude it.
 override-dependencies = ["pysb; python_version < '0'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
 
 

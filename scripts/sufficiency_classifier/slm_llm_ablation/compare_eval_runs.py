@@ -300,7 +300,7 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
 
     # Use LaTeX-style formatting for MLP and rename LLM
-    mlp_label = r"$f_\phi(\mathcal{C}, \mathcal{E}_t)$"
+    mlp_label = r"$f_\phi(\mathcal{C}, \mathcal{E}_t)$ (ours)"
     llm_label = "qwen3.5-9b"
     
     print(f"Extracting {mlp_label} data...")
@@ -350,7 +350,7 @@ def main():
 
     sns.barplot(data=iter_counts, x="iterations_taken", y="percentage", hue="model",
                 hue_order=model_order, palette=palette, ax=ax1)
-    ax1.set_xlabel("Iterations to Converge")
+    ax1.set_xlabel("Number of Iterations for ProClaim to Terminate")
     ax1.set_ylabel("Claims (%)")
     # ax1.set_title("Iteration Distribution") # Title removed
     for container in ax1.containers:
@@ -466,7 +466,7 @@ def main():
     sns.stripplot(data=final_scores, x="model", y="final_score", order=model_order,
                   hue="model", palette=palette, alpha=0.4, jitter=True, size=4, ax=ax6, legend=False)
     ax6.set_xlabel("")
-    ax6.set_ylabel("Sufficiency Score at Convergence")
+    ax6.set_ylabel("Sufficiency Score at ProClaim Termination")
     ax6.set_ylim(-0.05, 1.05)
     fig6.tight_layout()
     save_fig(fig6, "final_score_distribution")
@@ -484,7 +484,7 @@ def main():
     sns.stripplot(data=final_scores, x="model", y="final_score", order=model_order,
                   hue="model", palette=palette, alpha=0.4, jitter=True, size=4, ax=ax_a, legend=False)
     ax_a.set_xlabel("", fontsize=LABEL_FS)
-    ax_a.set_ylabel("Sufficiency Score at Convergence", fontsize=LABEL_FS)
+    ax_a.set_ylabel("Sufficiency Score\nat ProClaim Termination", fontsize=LABEL_FS)
     ax_a.set_ylim(-0.05, 1.05)
     ax_a.tick_params(labelsize=TICK_FS)
     ax_a.text(-0.07, 0.98, "(a)", transform=ax_a.transAxes,
@@ -492,7 +492,7 @@ def main():
 
     sns.barplot(data=iter_counts, x="iterations_taken", y="percentage", hue="model",
                 hue_order=model_order, palette=palette, ax=ax_b)
-    ax_b.set_xlabel("Iterations to Converge", fontsize=LABEL_FS)
+    ax_b.set_xlabel("Number of Iterations for ProClaim to Terminate", fontsize=LABEL_FS)
     ax_b.set_ylabel("Claims (%)", fontsize=LABEL_FS)
     ax_b.tick_params(labelsize=TICK_FS)
     ax_b.legend(title=None, fontsize=LEGEND_FS)
