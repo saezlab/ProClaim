@@ -1,0 +1,45 @@
+# ──────────────────────────────────────────────────────────────────────
+# Retrieval Baseline Config (web backend)
+#
+# Fixed-k RAG: search the web with the claim, retrieve top-k snippets,
+# pass them to the LLM in a single call.
+#
+# Usage:
+#   uv run python experiments/run_baselines_datasets.py \
+#       --config experiments/configs/retrieval_web_config.yaml
+#
+# Prerequisites:
+#   - ddgs installed for DuckDuckGo-backed web search
+#   - ANTHROPIC_API_KEY (or matching provider key) set
+#
+# Any CLI flag overrides the value set here.
+# ──────────────────────────────────────────────────────────────────────
+
+# ── Data ──────────────────────────────────────────────────────────────
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+datasets:
+  - signor
+  - connectomedb
+
+# ── Baseline ──────────────────────────────────────────────────────────
+baseline: retrieval
+
+# ── Search backend ────────────────────────────────────────────────────
+search_backend: web                    # 'web' or 's2' (Semantic Scholar)
+
+# ── Model & retrieval ─────────────────────────────────────────────────
+model: anthropic/claude-sonnet-4-6    # LiteLLM model string
+top_k: 5                               # number of web snippets to retrieve
+
+# ── Reproducibility ───────────────────────────────────────────────────
+seed: 100      # base seed; repeat i uses seed + i
+repeats: 1     # deterministic retrieval + temperature=0 → 1 repeat usually sufficient
+
+# ── Sampling ──────────────────────────────────────────────────────────
+limit: 0       # 0 = all claims
+
+# ── Temperature ───────────────────────────────────────────────────────
+temperature: 0.0
+
+# ── Output ────────────────────────────────────────────────────────────
+output_dir: results/baselines

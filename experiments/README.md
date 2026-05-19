@@ -29,13 +29,16 @@ uv run python experiments/run_baselines_datasets.py \
     --config experiments/configs/llm_only_config.yaml
 
 uv run python experiments/run_baselines_datasets.py \
-    --config experiments/configs/s2_retrieval_config.yaml
+    --config experiments/configs/retrieval_config.yaml
+
+uv run python experiments/run_baselines_datasets.py \
+    --config experiments/configs/retrieval_web_config.yaml
 
 uv run python experiments/run_baselines_datasets.py \
     --config experiments/configs/open_scholar_config.yaml
 
 uv run python experiments/run_baselines_datasets.py \
-    --config experiments/configs/react_config.yaml
+    --config experiments/configs/react_web_config.yaml
 
 uv run python experiments/run_baselines_datasets.py \
     --config experiments/configs/safe_config.yaml
@@ -54,12 +57,14 @@ YAML config files for `run_baselines_datasets.py`. Load with `--config`; any CLI
 |------|----------|-------------|
 | `random_baseline_config.yaml` | `random` | `signor` + `connectomedb`, 10 repeats, seed=100 |
 | `llm_only_config.yaml` | `llm_only` | `anthropic/claude-sonnet-4-6`, 1 repeat |
-| `s2_retrieval_config.yaml` | `retrieval` | `anthropic/claude-sonnet-4-6`, search_backend=s2, top_k=5, 1 repeat |
+| `retrieval_config.yaml` | `retrieval` | `anthropic/claude-sonnet-4-6`, search_backend=s2, top_k=5, 1 repeat |
+| `retrieval_web_config.yaml` | `retrieval` | `anthropic/claude-sonnet-4-6`, search_backend=web, top_k=5, 1 repeat |
 | `open_scholar_config.yaml` | `open_scholar` | `anthropic/claude-sonnet-4-6`, S2 adaptive retrieval on (`retrieval: true`), top_k=10, 1 repeat |
 | `fire_config.yaml` | `fire` | `anthropic/claude-sonnet-4-6`, max_steps=5, 1 repeat |
 | `safe_config.yaml` | `safe` | `anthropic/claude-sonnet-4-6`, top_k=3, max_steps=5, 1 repeat |
 | `ace_config.yaml` | `ace` | `anthropic/claude-sonnet-4-6`, max_tokens=4096, 1 repeat |
-| `react_config.yaml` | `react` | `anthropic/claude-sonnet-4-6`, max_steps=10, 1 repeat |
+| `react_web_config.yaml` | `react` | `anthropic/claude-sonnet-4-6`, search_backend=web, max_steps=10, 1 repeat |
+| `react_s2_config.yaml` | `react` | `anthropic/claude-sonnet-4-6`, search_backend=s2, max_steps=10, 1 repeat |
 | `signor_eval_config.yaml` | *(evidence-programming)* | Config for `run_signor_eval.py` (model, mode, iteration budget) |
 | `test_config.yaml` | *(evidence-programming)* | Test config for `pkevolve.verification.evidence_programming` smoke tests |
 
@@ -77,12 +82,14 @@ Runs all baselines sequentially on one or more datasets. Accepts dataset names a
 | 2 | LLM-only | `llm_only` | `vertex_ai/gemini-2.5-flash` |
 | 3 | Static retrieval | `retrieval` (S2) | `anthropic/claude-sonnet-4-6` |
 | 4 | Static retrieval | `retrieval` (S2) | `vertex_ai/gemini-2.5-flash` |
-| 5 | Adaptive retrieval | `react` (web) | `anthropic/claude-sonnet-4-6` |
-| 6 | Adaptive retrieval | `react` (S2) | `anthropic/claude-sonnet-4-6` |
-| 7 | Adaptive retrieval | `ace` | `anthropic/claude-sonnet-4-6` |
-| 8 | Adaptive retrieval | `fire` | `anthropic/claude-sonnet-4-6` |
-| 9 | Adaptive retrieval | `safe` | `anthropic/claude-sonnet-4-6` |
-| 10 | Adaptive retrieval | `open_scholar` | `claude-sonnet-4-6` (S2 retrieval, no oracle evidence) |
+| 5 | Static retrieval | `retrieval` (web) | `anthropic/claude-sonnet-4-6` |
+| 6 | Static retrieval | `retrieval` (web) | `vertex_ai/gemini-2.5-flash` |
+| 7 | Adaptive retrieval | `react` (web) | `anthropic/claude-sonnet-4-6` |
+| 8 | Adaptive retrieval | `react` (S2) | `anthropic/claude-sonnet-4-6` |
+| 9 | Adaptive retrieval | `ace` | `anthropic/claude-sonnet-4-6` |
+| 10 | Adaptive retrieval | `fire` | `anthropic/claude-sonnet-4-6` |
+| 11 | Adaptive retrieval | `safe` | `anthropic/claude-sonnet-4-6` |
+| 12 | Adaptive retrieval | `open_scholar` | `claude-sonnet-4-6` (S2 retrieval, no oracle evidence) |
 
 ```
 LLM-only:
@@ -92,6 +99,8 @@ Gemini-2.5-Flash
 Static retrieval:
 Claude-Sonnet-4.6 + S2 (--baseline retrieval --search-backend s2)
 Gemini-2.5-Flash + S2 (--baseline retrieval --search-backend s2)
+Claude-Sonnet-4.6 + web (--baseline retrieval --search-backend web)
+Gemini-2.5-Flash + web (--baseline retrieval --search-backend web)
 
 Adaptive retrieval (Claude-Sonnet-4.6 for all below):
 ReAct + web search

@@ -53,7 +53,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $(basename "$0") [--baselines B1 B2 ...] [--datasets D1 D2 ...] [--limit N] [--repeats N] [--time HH:MM:SS]"
             echo ""
-            echo "Available baselines: llm_only retrieval react_web react_s2 ace fire safe open_scholar"
+            echo "Available baselines: llm_only retrieval retrieval_web react_web react_s2 ace fire safe open_scholar"
             echo "  (default: all)"
             exit 0 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
@@ -68,7 +68,7 @@ DATASETS_STR="${DATASETS[*]}"
 
 # If no baselines specified, run all
 if [[ ${#BASELINES[@]} -eq 0 ]]; then
-    BASELINES=(llm_only retrieval react_web react_s2 ace fire safe open_scholar)
+    BASELINES=(llm_only retrieval retrieval_web react_web react_s2 ace fire safe open_scholar)
 fi
 
 # Helper: check if a baseline is in the selected list
@@ -233,7 +233,32 @@ ALL_JOB_IDS+=("$JID")
 fi
 
 # ---------------------------------------------------------------------------
-# 5. ReAct + web search: Claude Sonnet 4.6
+# 5. Web Retrieval: Claude Sonnet 4.6
+# ---------------------------------------------------------------------------
+if baseline_selected retrieval_web; then
+echo "Submitting: Web Retrieval: Claude-Sonnet-4.6 ..."
+submit_job "web-retrieval-claude" "Web Retrieval: Claude-Sonnet-4.6" \
+    "# ANTHROPIC_API_KEY loaded from .env" "" \
+    "${CONFIGS_DIR}/retrieval_web_config.yaml"
+JID="$SUBMITTED_JOB_ID"
+echo "  -> Job ID: ${JID}"
+ALL_JOB_IDS+=("$JID")
+
+# ---------------------------------------------------------------------------
+# 6. Web Retrieval: Gemini
+# ---------------------------------------------------------------------------
+echo "Submitting: Web Retrieval: gemini-2.5-flash ..."
+submit_job "web-retrieval-gemini" "Web Retrieval: gemini-2.5-flash" \
+    "$GEMINI_ENV" "" \
+    "${CONFIGS_DIR}/retrieval_web_config.yaml" \
+    --model "vertex_ai/gemini-2.5-flash" --thinking-budget 0
+JID="$SUBMITTED_JOB_ID"
+echo "  -> Job ID: ${JID}"
+ALL_JOB_IDS+=("$JID")
+fi
+
+# ---------------------------------------------------------------------------
+# 7. ReAct + web search: Claude Sonnet 4.6
 # ---------------------------------------------------------------------------
 if baseline_selected react_web; then
 echo "Submitting: ReAct + web: Claude-Sonnet-4.6 ..."
@@ -246,7 +271,7 @@ ALL_JOB_IDS+=("$JID")
 fi
 
 # ---------------------------------------------------------------------------
-# 6. ReAct + S2: Claude Sonnet 4.6
+# 8. ReAct + S2: Claude Sonnet 4.6
 # ---------------------------------------------------------------------------
 if baseline_selected react_s2; then
 echo "Submitting: ReAct + S2: Claude-Sonnet-4.6 ..."
@@ -259,7 +284,7 @@ ALL_JOB_IDS+=("$JID")
 fi
 
 # ---------------------------------------------------------------------------
-# 7. ACE: Claude Sonnet 4.6
+# 9. ACE: Claude Sonnet 4.6
 # ---------------------------------------------------------------------------
 if baseline_selected ace; then
 echo "Submitting: ACE: Claude-Sonnet-4.6 ..."
@@ -272,7 +297,7 @@ ALL_JOB_IDS+=("$JID")
 fi
 
 # ---------------------------------------------------------------------------
-# 8. FIRE: Claude Sonnet 4.6
+# 10. FIRE: Claude Sonnet 4.6
 # ---------------------------------------------------------------------------
 if baseline_selected fire; then
 echo "Submitting: FIRE: Claude-Sonnet-4.6 ..."
@@ -286,7 +311,7 @@ ALL_JOB_IDS+=("$JID")
 fi
 
 # ---------------------------------------------------------------------------
-# 9. SAFE: Claude Sonnet 4.6
+# 11. SAFE: Claude Sonnet 4.6
 # ---------------------------------------------------------------------------
 if baseline_selected safe; then
 echo "Submitting: SAFE: Claude-Sonnet-4.6 ..."
@@ -299,7 +324,7 @@ ALL_JOB_IDS+=("$JID")
 fi
 
 # ---------------------------------------------------------------------------
-# 10. OpenScholar: Claude Sonnet 4.6 (S2 retrieval + reranker, no oracle evidence)
+# 12. OpenScholar: Claude Sonnet 4.6 (S2 retrieval + reranker, no oracle evidence)
 #    Requires GPU for the FlagReranker model. Uses YAML config.
 # ---------------------------------------------------------------------------
 if baseline_selected open_scholar; then

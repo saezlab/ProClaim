@@ -31,10 +31,11 @@ dependencies = [
     "sentence-transformers",
     "en-core-sci-sm @ https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz",
     "seaborn>=0.13.2",
-    "litellm",
+    "litellm[google]",
     "jupytext>=1.16",
     "langchain-community>=0.4.1",
     "langchain-litellm>=0.6.1",
+    "ddgs>=9.14.2",
 ]
 
 [project.optional-dependencies]
