@@ -10,6 +10,12 @@ output CSV. Token usage and cost estimates are parsed from the verdict artifacts
 No flip variants are generated — each claim is run as-is.
 
 To test a single claim (e.g., AFDN EPHA7) directly from the terminal, you can use:
+Supported interaction:
+uv run python -m pkevolve.verification.evidence_programming_direct \
+    --config experiments/configs/test_config.yaml \
+    --claim "App as ligand directly interacts extracellularly with Cntn3 as receptor." \
+    --output-dir results/test_App_Cntn3_supported
+
 Intracellular interaction:
 uv run python -m proclaim.verification.evidence_programming_direct \
     --config experiments/configs/test_config.yaml \

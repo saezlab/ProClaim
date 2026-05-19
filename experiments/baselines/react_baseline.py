@@ -37,7 +37,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool as lc_tool
-from langchain_litellm import ChatLiteLLM
+from langchain_community.chat_models.litellm import ChatLiteLLM
 from langgraph.prebuilt import create_react_agent
 
 from baselines.shared.cost_tracker import CostTracker

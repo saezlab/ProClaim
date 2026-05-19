@@ -7,8 +7,6 @@ classify the claim based on that single abstract.
 
 This mirrors the "in sandbox" setting where the system is given the
 gold evidence document and only needs to perform reading comprehension.
-Comparing this baseline against retrieval-augmented systems (S2, ProClaim)
-quantifies the gap between sandbox and in-the-wild verification.
 
 Requirements:
   - The dataset CSV must contain a ``pmid`` column with the source PMID.

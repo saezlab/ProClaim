@@ -57,14 +57,12 @@ def query_process_signor(claim: str) -> str:
     """Strip parenthetical boilerplate from SIGNOR claims.
 
     SIGNOR claims look like:
-        "GNAS directly activates ADCY1 (either through post-translational
-         modification, complex formation, or direct regulation of expression)."
-    The parenthetical drowns out the entity names in keyword search.
+        "GNAS directly activates ADCY1."
     """
     match = _SIGNOR_CLAIM_RE.match(claim.strip())
-    if not match:
-        logger.warning("SIGNOR claim did not match expected format: %r", claim)
-        return claim.strip()
+    # if not match:
+    #     logger.warning("SIGNOR claim did not match expected format: %r", claim)
+    #     return claim.strip()
     return match.group("base").strip()
 
 
