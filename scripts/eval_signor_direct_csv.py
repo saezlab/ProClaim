@@ -61,8 +61,8 @@ def load_token_breakdown(csv_path: Path) -> dict:
     return totals
 
 
-def compute_costs(tokens: dict, in_price: float, out_price: float) -> tuple[float, float]:
-    """Return (cost_with_cache, cost_no_cache) using the same pricing for fair comparison."""
+def compute_costs(tokens: dict, in_price: float, out_price: float) -> float:
+    """Return actual billed cost with cache tier pricing."""
     inp = tokens["input_tokens"]
     write = tokens["cache_creation_tokens"]
     read = tokens["cache_read_tokens"]
@@ -73,11 +73,7 @@ def compute_costs(tokens: dict, in_price: float, out_price: float) -> tuple[floa
         + (read / 1_000_000) * in_price * 0.1
         + (out / 1_000_000) * out_price
     )
-    cost_no = (
-        ((inp + write + read) / 1_000_000) * in_price
-        + (out / 1_000_000) * out_price
-    )
-    return round(cost_with, 4), round(cost_no, 4)
+    return round(cost_with, 4)
 
 
 def print_metrics(
@@ -86,7 +82,6 @@ def print_metrics(
     n_total: int,
     tokens: dict,
     cost_with_cache: float,
-    cost_no_cache: float,
     in_price: float = 3.0,
     out_price: float = 15.0,
     price_label: str = "",
@@ -115,7 +110,6 @@ def print_metrics(
     print(f"  Cost{label_str}")
     print(f"  {'─'*40}")
     print(f"  With cache pricing : ${cost_with_cache:>10.4f}   (avg ${cost_with_cache/n:.6f})")
-    print(f"  No cache (full $/M): ${cost_no_cache:>10.4f}   (avg ${cost_no_cache/n:.6f})")
     print()
     print(f"  {'Class':<12} {'P':>6} {'R':>6} {'F1':>6} {'FPR':>6} {'FNR':>6}  TP  FP  FN  TN")
     print(f"  {'-'*70}")
@@ -168,15 +162,15 @@ def main() -> None:
     results = load_results(csv_path)
     metrics = EvaluationHarness.metrics(results)
     tokens = load_token_breakdown(csv_path)
-    cost_with_cache, cost_no_cache = compute_costs(tokens, in_price, out_price)
+    cost_with_cache = compute_costs(tokens, in_price, out_price)
 
     print_metrics(metrics, n_flipped=n_flipped, n_total=n_total,
-                  tokens=tokens, cost_with_cache=cost_with_cache, cost_no_cache=cost_no_cache,
+                  tokens=tokens, cost_with_cache=cost_with_cache,
                   in_price=in_price, out_price=out_price, price_label=price_label)
 
     if args.save:
         out = {**metrics, "token_breakdown": tokens,
-               "cost_with_cache": cost_with_cache, "cost_no_cache": cost_no_cache,
+               "cost_with_cache": cost_with_cache,
                "pricing": {"model": price_label, "in_price": in_price, "out_price": out_price}}
         out_path = csv_path.parent / "metrics.json"
         with open(out_path, "w") as f:
