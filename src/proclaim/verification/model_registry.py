@@ -122,6 +122,7 @@ def get_mlp_classifier():
     logger.info("Loading MLP sufficiency classifier (first use)...")
     start = time.time()
 
+    import importlib
     import sys as _sys
     import json
     import numpy as np
@@ -129,15 +130,17 @@ def get_mlp_classifier():
     from pathlib import Path
 
     _THIS_DIR = Path(__file__).resolve().parent
-    project_root = _THIS_DIR.parent.parent.parent
+    project_root = _THIS_DIR.parents[2]
 
     # Make scripts/sufficiency_classifier importable
     scripts_dir = str(project_root / "scripts")
     if scripts_dir not in _sys.path:
         _sys.path.insert(0, scripts_dir)
 
-    from sufficiency_classifier.test_mlp_classifier import SufficiencyMLP
-    from sufficiency_classifier.feature_aggregation import FeatureAggregator
+    inference_module = importlib.import_module("sufficiency_classifier.inference")
+    feature_module = importlib.import_module("sufficiency_classifier.feature_aggregation")
+    SufficiencyMLP = inference_module.SufficiencyMLP
+    FeatureAggregator = feature_module.FeatureAggregator
 
     # Load config
     import os

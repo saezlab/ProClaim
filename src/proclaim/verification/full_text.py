@@ -9,10 +9,10 @@ fallback tiers::
     Layer 1.5 — Semantic Scholar OA PDF   (S2 openAccessPdf endpoint)
     Layer 2   — INDRA literature          (PMC + Elsevier + REACH readers)
     Layer 3   — Unpaywall + PDF           (OA PDF → pymupdf text extraction)
-    Layer 4   — PubMed structured abstract (last-resort; always returns text)
+    Layer 4   — PubMed or Semantic Scholar abstract (last-resort)
 
 Each layer is tried in order.  If a layer succeeds (returns ≥200 chars of
-body text), the remaining layers are skipped.  Layer 4 (structured abstract)
+body text), the remaining layers are skipped.  Layer 4 (abstract fallback)
 is always attempted if all full-text layers fail and ensures the function
 returns usable text rather than None for fact extraction.
 
@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from typing import Optional
 from xml.etree import ElementTree as ET
 
@@ -43,14 +44,36 @@ DEFAULT_MAX_CHARS = 50_000
 
 # E-utilities base
 _EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+_EUTILS_MAX_RETRIES = 3
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────
 
+def _is_semantic_scholar_id(pmid: str) -> bool:
+    return pmid.startswith("S2:")
+
+
+def _semantic_scholar_lookup_id(pmid: str) -> str:
+    return pmid[3:] if _is_semantic_scholar_id(pmid) else f"PMID:{pmid}"
+
 def _clean_ws(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _format_abstract_fallback(abstract: str, title: str = "") -> Optional[str]:
+    """Format a last-resort abstract into the text shape used by Layer 4."""
+    abstract = (abstract or "").strip()
+    if not abstract:
+        return None
+
+    parts = ["[Abstract only — full text unavailable]"]
+    title = (title or "").strip()
+    if title:
+        parts.append(f"Title: {title}")
+    parts.append(abstract)
+    return "\n\n".join(parts)
 
 
 def _title_overlap(title: str, text: str, threshold: float = 0.25) -> bool:
@@ -321,7 +344,8 @@ def _resolve_doi(pmid: str) -> Optional[str]:
 def _fetch_semantic_scholar(pmid: str, title: str = "") -> Optional[str]:
     """Fetch full text via Semantic Scholar's ``openAccessPdf`` metadata.
 
-    Looks up the paper by PMID via :class:`~proclaim.search.semantic_scholar.S2Client`
+    Looks up the paper by PMID or internal S2 paper ID via
+    :class:`~proclaim.search.semantic_scholar.S2Client`
     (inheriting process-wide rate-limiting and 429 retry), retrieves the
     OA PDF URL, downloads the PDF, and extracts body text with pymupdf.
     """
@@ -329,7 +353,8 @@ def _fetch_semantic_scholar(pmid: str, title: str = "") -> Optional[str]:
 
     try:
         client = S2Client()
-        data = client.lookup(f"PMID:{pmid}", fields="openAccessPdf,title")
+        lookup_id = _semantic_scholar_lookup_id(pmid)
+        data = client.lookup(lookup_id, fields="openAccessPdf,title")
         if data is None:
             logger.debug("S2 returned no data for PMID %s", pmid)
             return None
@@ -592,7 +617,7 @@ def _fetch_unpaywall_pdf(doi: str, title: str = "") -> Optional[str]:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _fetch_pubmed_structured_abstract(pmid: str) -> Optional[str]:
+def _fetch_pubmed_structured_abstract(pmid: str) -> tuple[Optional[str], bool, str]:
     """Fetch the PubMed structured abstract as a last-resort text source.
 
     Returns the abstract with section labels (BACKGROUND, METHODS,
@@ -604,50 +629,110 @@ def _fetch_pubmed_structured_abstract(pmid: str) -> Optional[str]:
     call.  It is always attempted when all full-text layers fail so that
     ``fetch_full_text`` returns usable text rather than ``None``.
     """
-    try:
-        resp = requests.get(
-            f"{_EUTILS_BASE}/efetch.fcgi",
-            params={"db": "pubmed", "id": pmid, "retmode": "xml"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        root = ET.fromstring(resp.content)
+    for attempt in range(_EUTILS_MAX_RETRIES):
+        try:
+            resp = requests.get(
+                f"{_EUTILS_BASE}/efetch.fcgi",
+                params={"db": "pubmed", "id": pmid, "retmode": "xml"},
+                timeout=15,
+            )
+            if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                raise requests.HTTPError(
+                    f"HTTP {resp.status_code} from PubMed efetch", response=resp
+                )
 
-        parts: list[str] = []
+            resp.raise_for_status()
+            root = ET.fromstring(resp.content)
 
-        # Article title
-        title_el = root.find(".//ArticleTitle")
-        if title_el is not None:
-            title_text = "".join(title_el.itertext()).strip()
-            if title_text:
-                parts.append(f"Title: {title_text}")
+            parts: list[str] = []
 
-        # Abstract — may have multiple <AbstractText> with Label attributes
-        abstract_texts = root.findall(".//AbstractText")
-        for ab in abstract_texts:
-            label = ab.get("Label", "").strip()
-            text = "".join(ab.itertext()).strip()
-            if not text:
+            # Article title
+            title_el = root.find(".//ArticleTitle")
+            if title_el is not None:
+                title_text = "".join(title_el.itertext()).strip()
+                if title_text:
+                    parts.append(f"Title: {title_text}")
+
+            # Abstract — may have multiple <AbstractText> with Label attributes
+            abstract_texts = root.findall(".//AbstractText")
+            for ab in abstract_texts:
+                label = ab.get("Label", "").strip()
+                text = "".join(ab.itertext()).strip()
+                if not text:
+                    continue
+                if label:
+                    parts.append(f"{label}: {text}")
+                else:
+                    parts.append(text)
+
+            if not parts or (len(parts) == 1 and parts[0].startswith("Title:")):
+                # No abstract found
+                return None, False, "PubMed returned no structured abstract"
+
+            structured = "[Abstract only — full text unavailable]\n\n" + "\n\n".join(parts)
+            logger.info(
+                "Layer 4 (PubMed abstract): retrieved %d chars for PMID %s",
+                len(structured), pmid,
+            )
+            return structured, False, ""
+
+        except requests.RequestException as exc:
+            was_rate_limited = getattr(exc, "response", None) is not None and exc.response.status_code == 429
+            if attempt + 1 < _EUTILS_MAX_RETRIES:
+                backoff = 2 ** attempt
+                logger.warning(
+                    "Layer 4 (PubMed abstract) transient failure for PMID %s: %s; retry %d/%d in %ds",
+                    pmid, exc, attempt + 1, _EUTILS_MAX_RETRIES, backoff,
+                )
+                time.sleep(backoff)
                 continue
-            if label:
-                parts.append(f"{label}: {text}")
+            if was_rate_limited:
+                logger.warning(
+                    "PubMed rate-limit exhausted for PMID %s — skipping abstract fallback",
+                    pmid,
+                )
             else:
-                parts.append(text)
+                logger.debug("Layer 4 (PubMed abstract) failed for PMID %s: %s", pmid, exc)
+            reason = (
+                "PubMed abstract lookup rate-limited"
+                if was_rate_limited
+                else f"PubMed abstract request failed: {exc}"
+            )
+            return None, was_rate_limited, reason
+        except Exception as exc:
+            logger.debug("Layer 4 (PubMed abstract) failed for PMID %s: %s", pmid, exc)
+            return None, False, f"PubMed abstract error: {exc}"
 
-        if not parts or (len(parts) == 1 and parts[0].startswith("Title:")):
-            # No abstract found
-            return None
 
-        structured = "[Abstract only — full text unavailable]\n\n" + "\n\n".join(parts)
-        logger.info(
-            "Layer 4 (PubMed abstract): retrieved %d chars for PMID %s",
-            len(structured), pmid,
+def _fetch_semantic_scholar_abstract(pmid: str) -> tuple[Optional[str], bool, str]:
+    """Fetch a Semantic Scholar abstract for internal ``S2:<paperId>`` records."""
+    from proclaim.search.semantic_scholar import S2Client, S2RateLimitError
+
+    try:
+        lookup_id = _semantic_scholar_lookup_id(pmid)
+        data = S2Client().lookup(lookup_id, fields="title,abstract")
+        if data is None:
+            logger.debug("S2 abstract lookup returned no data for paper %s", pmid)
+            return None, False, "Semantic Scholar abstract lookup returned no paper record"
+
+        text = _format_abstract_fallback(
+            data.get("abstract") or "",
+            title=data.get("title") or "",
         )
-        return structured
-
+        if not text:
+            logger.debug("S2 abstract lookup returned no abstract for paper %s", pmid)
+            return None, False, "Semantic Scholar returned no abstract"
+        logger.info(
+            "Layer 4 (Semantic Scholar abstract): retrieved %d chars for paper %s",
+            len(text), pmid,
+        )
+        return text, False, ""
+    except S2RateLimitError:
+        logger.warning("S2 rate-limit exhausted for paper %s — skipping abstract fallback", pmid)
+        return None, True, "Semantic Scholar abstract lookup rate-limited"
     except Exception as exc:
-        logger.debug("Layer 4 (PubMed abstract) failed for PMID %s: %s", pmid, exc)
-        return None
+        logger.debug("Layer 4 (Semantic Scholar abstract) failed for paper %s: %s", pmid, exc)
+        return None, False, f"Semantic Scholar abstract error: {exc}"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -659,6 +744,7 @@ def fetch_full_text(
     *,
     doi: Optional[str] = None,
     title: str = "",
+    existing_abstract: str = "",
     max_chars: int = DEFAULT_MAX_CHARS,
 ) -> tuple[Optional[str], list[str]]:
     """Retrieve full text for a paper through a layered fallback chain.
@@ -669,7 +755,7 @@ def fetch_full_text(
         1.5. Semantic Scholar OA PDF   (S2 openAccessPdf endpoint)
         2.   INDRA literature          (broader publisher coverage incl. Elsevier)
         3.   Unpaywall + PDF           (OA PDF download & text extraction)
-        4.   PubMed structured abstract (last resort — always returns text)
+        4.   PubMed or Semantic Scholar abstract (last resort)
 
     If *doi* is not provided and layers 1–2 fail, attempts DOI resolution
     via NCBI/Europe PMC before trying Unpaywall (which requires a DOI).
@@ -680,9 +766,12 @@ def fetch_full_text(
     Layers 1 and 1b which parse JATS XML).
 
     Args:
-        pmid: PubMed identifier.
+        pmid: Paper identifier (PubMed ID or internal ``S2:`` paper ID).
         doi:  Digital Object Identifier (needed for Unpaywall, Layer 3).
         title: Paper title for cross-validation against retrieved text.
+        existing_abstract: Abstract already stored on the paper record. Used as
+            a last-resort fallback when live abstract lookup is unavailable,
+            e.g. due to API rate limiting.
         max_chars: If the retrieved text exceeds this length a warning is
             logged, but the full untruncated text is still returned.
     """
@@ -697,46 +786,123 @@ def fetch_full_text(
             )
         return text, ref_dois
 
+    def _failure_summary(reasons: list[str]) -> str:
+        cleaned = [reason for reason in reasons if reason]
+        return "; ".join(cleaned) if cleaned else "no usable text returned from any remote layer"
+
+    if _is_semantic_scholar_id(pmid):
+        failure_reasons: list[str] = []
+        text = _fetch_semantic_scholar(pmid, title=title)
+        if text and len(text) >= _MIN_TEXT_LEN:
+            return _maybe_warn_and_return(text, [])
+        failure_reasons.append("Semantic Scholar OA PDF unavailable")
+
+        if doi:
+            text = _fetch_unpaywall_pdf(doi, title=title)
+            if text and len(text) >= _MIN_TEXT_LEN:
+                return _maybe_warn_and_return(text, [])
+            failure_reasons.append(f"Unpaywall PDF unavailable for DOI {doi}")
+        else:
+            failure_reasons.append("Unpaywall skipped: no DOI available")
+
+        logger.info(
+            "Full-text layers for Semantic Scholar paper %s failed (DOI: %s); "
+            "falling back to Semantic Scholar abstract",
+            pmid,
+            doi,
+        )
+        text, rate_limited, abstract_reason = _fetch_semantic_scholar_abstract(pmid)
+        if text:
+            return _maybe_warn_and_return(text, [])
+        failure_reasons.append(abstract_reason)
+
+        text = _format_abstract_fallback(existing_abstract, title=title)
+        if text:
+            logger.info(
+                "Using stored Semantic Scholar abstract for paper %s after remote%s fetch failure: %s",
+                pmid,
+                " rate-limit" if rate_limited else "",
+                _failure_summary(failure_reasons),
+            )
+            return _maybe_warn_and_return(text, [])
+
+        logger.warning(
+            "Remote text retrieval failed for paper %s: %s",
+            pmid,
+            _failure_summary(failure_reasons),
+        )
+        return None, []
+
+    failure_reasons: list[str] = []
+
     # Layer 1: NCBI PMC
     text, ref_dois = _fetch_pmc(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
         return _maybe_warn_and_return(text, ref_dois)
+    failure_reasons.append("PMC full text unavailable")
 
     # Layer 1b: Europe PMC (often has OA full text NCBI doesn't)
     text, ref_dois = _fetch_europepmc(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
         return _maybe_warn_and_return(text, ref_dois)
+    failure_reasons.append("Europe PMC full text unavailable")
 
     # Layer 1.5: Semantic Scholar OA PDF
     text = _fetch_semantic_scholar(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
         return _maybe_warn_and_return(text, [])
+    failure_reasons.append("Semantic Scholar OA PDF unavailable")
 
     # Layer 2: INDRA
     text = _fetch_indra(pmid, title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
         return _maybe_warn_and_return(text, [])
+    failure_reasons.append("INDRA full text unavailable")
 
     # Resolve DOI if missing (needed for Unpaywall)
     if not doi:
         doi = _resolve_doi(pmid)
         if doi:
             logger.info("Resolved DOI %s for PMID %s", doi, pmid)
+        else:
+            failure_reasons.append("Unpaywall skipped: DOI could not be resolved")
 
     # Layer 3: Unpaywall + PDF
     text = _fetch_unpaywall_pdf(doi or "", title=title)
     if text and len(text) >= _MIN_TEXT_LEN:
         return _maybe_warn_and_return(text, [])
+    if doi:
+        failure_reasons.append(f"Unpaywall PDF unavailable for DOI {doi}")
 
-    # Layer 4: PubMed structured abstract (last resort — ensures we never
-    # return None and silently discard a paper from fact extraction)
+    # Layer 4: Abstract fallback (last resort — ensures we never return None
+    # and silently discard a paper from fact extraction)
     logger.info(
         "Full-text layers 1–3 failed for PMID %s (DOI: %s); falling back to abstract",
         pmid, doi,
     )
-    text = _fetch_pubmed_structured_abstract(pmid)
+    text, rate_limited, abstract_reason = (
+        _fetch_semantic_scholar_abstract(pmid)
+        if pmid.startswith("S2:")
+        else _fetch_pubmed_structured_abstract(pmid)
+    )
     if text:
         return _maybe_warn_and_return(text, [])
+    failure_reasons.append(abstract_reason)
 
-    logger.warning("All layers including abstract failed for PMID %s", pmid)
+    text = _format_abstract_fallback(existing_abstract, title=title)
+    if text:
+        logger.info(
+            "Using stored %s abstract for %s after remote%s fetch failure: %s",
+            "Semantic Scholar" if pmid.startswith("S2:") else "PubMed",
+            pmid,
+            " rate-limit" if rate_limited else "",
+            _failure_summary(failure_reasons),
+        )
+        return _maybe_warn_and_return(text, [])
+
+    logger.warning(
+        "Remote text retrieval failed for PMID %s: %s",
+        pmid,
+        _failure_summary(failure_reasons),
+    )
     return None, []

@@ -24,6 +24,12 @@ from IPython.display import HTML, display
 _DEFAULT_COLORS = ["#22c55e", "#ef4444", "#9ca3af", "#60a5fa", "#f59e0b", "#a78bfa"]
 
 
+def _paper_url(pmid: str) -> str:
+    if pmid.startswith("S2:"):
+        return f"https://www.semanticscholar.org/paper/{pmid[3:]}"
+    return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+
+
 def _stance_color(stance: str) -> str:
     """Map an evidence stance to a display color.
 
@@ -79,7 +85,7 @@ def render_papers(workspace: str) -> None:
     """Render retrieved papers as a styled HTML table.
 
     Reads ``evidence_state.json`` from *workspace* and displays an HTML
-    table with PMID (linked), title, abstract preview, and full-text flag.
+    table with paper ID (linked), title, abstract preview, and full-text flag.
     """
     ws = Path(workspace)
     state = json.loads((ws / "evidence_state.json").read_text())
@@ -96,7 +102,7 @@ def render_papers(workspace: str) -> None:
         has_ft = "Yes" if p.get("full_text") else "No"
         rows.append(
             f"<tr>"
-            f"<td><a href='https://pubmed.ncbi.nlm.nih.gov/{pmid}/' "
+            f"<td><a href='{_paper_url(pmid)}' "
             f"target='_blank'>{pmid}</a></td>"
             f"<td>{title}</td>"
             f"<td>{abstract_preview}...</td>"
@@ -108,7 +114,7 @@ def render_papers(workspace: str) -> None:
         "<h3>Retrieved Papers</h3>"
         "<table style='border-collapse:collapse;width:100%'>"
         "<tr style='background:#f1f5f9'>"
-        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>PMID</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Paper ID</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Title</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Abstract</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Full Text</th>"
@@ -171,7 +177,7 @@ def render_facts(workspace: str) -> None:
         "<tr style='background:#f1f5f9'>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Stance</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Fact</th>"
-        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>PMID</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Paper ID</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Conf</th>"
         "</tr>"
         + "".join(rows)
@@ -286,7 +292,7 @@ def render_papers_from_state(state) -> None:
         has_ft = "Yes" if p.get("full_text") else "No"
         rows.append(
             f"<tr>"
-            f"<td><a href='https://pubmed.ncbi.nlm.nih.gov/{pmid}/' "
+            f"<td><a href='{_paper_url(pmid)}' "
             f"target='_blank'>{pmid}</a></td>"
             f"<td>{title}</td>"
             f"<td>{abstract_preview}...</td>"
@@ -298,7 +304,7 @@ def render_papers_from_state(state) -> None:
         "<h3>Retrieved Papers</h3>"
         "<table style='border-collapse:collapse;width:100%'>"
         "<tr style='background:#f1f5f9'>"
-        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>PMID</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Paper ID</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Title</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Abstract</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Full Text</th>"
@@ -363,7 +369,7 @@ def render_facts_from_state(state) -> None:
         "<tr style='background:#f1f5f9'>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Stance</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Fact</th>"
-        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>PMID</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Paper ID</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1;text-align:left'>Conf</th>"
         "</tr>"
         + "".join(rows)
@@ -558,7 +564,7 @@ def render_filtering_summary(workspace: str) -> None:
         fact_counts = facts_by_paper.get(pmid, {"SUPPORT": 0, "REFUTE": 0, "NEUTRAL": 0})
         current_papers.append(
             f"<tr>"
-            f"<td><a href='https://pubmed.ncbi.nlm.nih.gov/{pmid}/' "
+            f"<td><a href='{_paper_url(pmid)}' "
             f"target='_blank'>{pmid}</a></td>"
             f"<td>{title}...</td>"
             f"<td style='color:#22c55e'>{fact_counts['SUPPORT']}</td>"
@@ -571,7 +577,7 @@ def render_filtering_summary(workspace: str) -> None:
         "<h4>Current Paper Pool ({} papers)</h4>"
         "<table style='border-collapse:collapse;width:100%'>"
         "<tr style='background:#f1f5f9'>"
-        "<th style='padding:6px;border:1px solid #cbd5e1'>PMID</th>"
+        "<th style='padding:6px;border:1px solid #cbd5e1'>Paper ID</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1'>Title</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1'>SUPPORT</th>"
         "<th style='padding:6px;border:1px solid #cbd5e1'>REFUTE</th>"

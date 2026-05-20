@@ -136,14 +136,14 @@ class EvidenceState(BaseModel):
             sections.append("=== Evidence from Papers ===")
             for pmid, paper in self.papers.items():
                 text = paper.summary if paper.summary else paper.abstract
-                sections.append(f"[PMID:{pmid}] {paper.title}\n{text}")
+                sections.append(f"[paper ID:{pmid}] {paper.title}\n{text}")
 
         # Extracted facts
         if self.facts:
             sections.append("\n=== Extracted Facts ===")
             for fact in self.facts:
                 sections.append(
-                    f"[{fact.stance}] {fact.text} (PMID:{fact.source_pmid})"
+                    f"[{fact.stance}] {fact.text} (paper ID:{fact.source_pmid})"
                 )
 
         return "\n\n".join(sections)

@@ -137,7 +137,7 @@ def extract_facts(
         paper_text: Full text or abstract of the paper.
         claim: The claim being verified.
         subclaims: List of subclaims the facts should be mapped to.
-        source_pmid: PMID of the source paper.
+        source_pmid: Paper ID of the source paper.
         extraction_context: Optional list of supplementary notes (synonym mappings,
             disambiguation, scope clarifications) injected between subclaims and paper.
 
@@ -168,7 +168,7 @@ def extract_facts(
     response = llm(prompt)
     if not response or response.strip() == "[]":
         if _EVIDENCE_DEBUG:
-            print(f"extract_facts: No facts found for PMID {source_pmid}")
+            print(f"extract_facts: No facts found for paper ID {source_pmid}")
         return []
     return _parse_facts_response(response, source_pmid)
 
@@ -227,7 +227,7 @@ def synthesize_subclaim(
         return f"No facts found for subclaim: {subclaim}"
 
     facts_str = "\n".join(
-        f"  [{f.stance}] {f.text} (PMID:{f.source_pmid}, conf:{f.confidence:.2f})"
+        f"  [{f.stance}] {f.text} (paper ID:{f.source_pmid}, conf:{f.confidence:.2f})"
         for f in facts
     )
     prompt = SYNTHESIZE_SUBCLAIM.format(
@@ -261,7 +261,7 @@ def detect_conflicts(
         return []
 
     facts_str = "\n".join(
-        f"  [{f.id}] [{f.stance}] {f.text} (PMID:{f.source_pmid})"
+        f"  [{f.id}] [{f.stance}] {f.text} (paper ID:{f.source_pmid})"
         for f in facts
     )
     prompt = DETECT_CONFLICTS.format(
@@ -319,7 +319,7 @@ def identify_gaps(
     label_cfg = get_label_config()
 
     facts_str = "\n".join(
-        f"  [{f.stance}] {f.text} (PMID:{f.source_pmid})"
+        f"  [{f.stance}] {f.text} (paper ID:{f.source_pmid})"
         for f in facts
     ) or "  (no facts extracted yet)"
 
@@ -487,7 +487,7 @@ def refine_search_query(
     subclaims_str = "\n".join(f"  - {sc}" for sc in subclaims)
 
     papers_str = "\n".join(
-        f"  PMID:{p.get('pmid', 'unknown')}\n"
+        f"  paper ID:{p.get('pmid', 'unknown')}\n"
         f"  Title: {p.get('title', 'N/A')}\n"
         f"  Abstract: {p.get('abstract', 'N/A')[:200]}...\n"
         for p in failed_papers[:5]  # Limit to first 5 to avoid token overflow

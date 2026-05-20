@@ -6,10 +6,11 @@
 # (LiteLLM outer agent + bash + jupytext; vLLM subagent on the same GPU).
 #
 # Usage:
-#   bash scripts/submit_signor_direct_batch.sh                  # 4-GPU parallel
+#   bash scripts/submit_signor_direct_batch.sh                  # 8-GPU parallel
 #   bash scripts/submit_signor_direct_batch.sh --single         # single GPU
 #   bash scripts/submit_signor_direct_batch.sh --single --limit 1 --reps 1  # test
 #   bash scripts/submit_signor_direct_batch.sh --reps 1         # 1 repetition
+#   bash scripts/submit_signor_direct_batch.sh --workers 2 --worker-shards --max-num-seqs 16
 #   bash scripts/submit_signor_direct_batch.sh --status
 #   bash scripts/submit_signor_direct_batch.sh --cancel
 #   bash scripts/submit_signor_direct_batch.sh --logs
@@ -23,23 +24,31 @@ EBI_USER="${EBI_USER:-wuy}"
 LOGIN_HOST="ihpc.ebi.ac.uk"
 LOGIN_NODE="${EBI_USER}@${LOGIN_HOST}"
 
+# SLURM job settings
 JOB_NAME="signor-direct"
 TIME_LIMIT="24:00:00"
-# TIME_LIMIT="1:00:00"
 CPUS=8
 MEM="64G"
 GPU_TYPE="a100"
-GPU_COUNT=1
+GPU_COUNT=1  # per array task; parallel mode uses 8 GPUs total via --array=0-7
 
-PROJECT_ROOT="/hps/nobackup/saezrodriguez/rain/workspace/grn-llm-correct"
-JOB_SCRIPT="${PROJECT_ROOT}/scripts/slurm_signor_direct_job.sh"
-JOB_INFO_FILE="${PROJECT_ROOT}/.signor_direct_job_info"
-LOG_DIR="${PROJECT_ROOT}/results/slurm_logs"
+# Project paths (on HPC)
+PROJECT_ROOT_OVERRIDE="${GRN_LLM_CORRECT_PROJECT_ROOT:-}"
+PROJECT_ROOT=""
+JOB_SCRIPT=""
+JOB_INFO_FILE=""
+LOG_DIR=""
+SSH_CONTROL_DIR=""
+SSH_CONTROL_PATH=""
+SSH_MASTER_READY=false
 
 ACTION="submit"
 MODE="parallel"
 REPS_ARG=""
 LIMIT_ARG=""
+WORKERS_ARG=""
+WORKER_SHARDS_ARG=""
+MAX_NUM_SEQS=""
 RESUME_TAG=""       # set by --resume or --run-tag; empty = generate fresh tag
 
 # ---- Parse arguments --------------------------------------------------------
@@ -50,8 +59,12 @@ while [[ $# -gt 0 ]]; do
         --cancel)  ACTION="cancel";  shift ;;
         --logs)    ACTION="logs";    shift ;;
         --single)  MODE="single";    shift ;;
+        --time)    TIME_LIMIT="$2"; shift 2 ;;
         --reps)    REPS_ARG="--reps $2"; shift 2 ;;
         --limit)   LIMIT_ARG="--limit $2"; shift 2 ;;
+        --workers) WORKERS_ARG="--workers $2"; shift 2 ;;
+        --worker-shards) WORKER_SHARDS_ARG="--worker-shards"; shift ;;
+        --max-num-seqs) MAX_NUM_SEQS="$2"; shift 2 ;;
         --resume)  RESUME_TAG="__auto__"; shift ;;
         --run-tag)
             RESUME_TAG="$2"
@@ -79,9 +92,15 @@ while [[ $# -gt 0 ]]; do
             echo "  --logs       View job logs"
             echo ""
             echo "Job parameters:"
+            echo "  --time HH:MM:SS  Slurm wall-time limit (default: 24:00:00)"
             echo "  --reps N     Number of repetitions per claim (default: 3)"
             echo "  --limit N    Limit to N rows (single mode only)"
+            echo "  --workers N  Concurrent claim repetitions per GPU task (default: 1)"
+            echo "  --worker-shards  Write one result CSV per worker, then merge into the task CSV"
+            echo "  --max-num-seqs N  vLLM max concurrent sequences per GPU task (default: 8)"
             echo "  --user USER  EBI username (default: wuy)"
+            echo ""
+            echo "  -h, --help   Show this help"
             exit 0
             ;;
         *)
@@ -91,9 +110,56 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -n "$PROJECT_ROOT_OVERRIDE" ]]; then
+    PROJECT_ROOT="$PROJECT_ROOT_OVERRIDE"
+else
+    PROJECT_ROOT="/hps/nobackup/saezrodriguez/${EBI_USER}/workspace/grn-llm-correct"
+fi
+JOB_SCRIPT="${PROJECT_ROOT}/scripts/slurm_signor_direct_job.sh"
+JOB_INFO_FILE="${PROJECT_ROOT}/.signor_direct_job_info"
+LOG_DIR="${PROJECT_ROOT}/results/slurm_logs"
+SSH_CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/grn-llm-correct-ssh-XXXXXX")
+SSH_CONTROL_PATH="${SSH_CONTROL_DIR}/control"
+
+cleanup_ssh_master() {
+    if [[ "$SSH_MASTER_READY" == "true" ]]; then
+        ssh \
+            -o ControlPath="${SSH_CONTROL_PATH}" \
+            -O exit \
+            "$LOGIN_NODE" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$SSH_CONTROL_DIR" && -d "$SSH_CONTROL_DIR" ]]; then
+        rm -rf "$SSH_CONTROL_DIR"
+    fi
+}
+trap cleanup_ssh_master EXIT
+
 # ---- SSH helper -------------------------------------------------------------
+ensure_ssh_master() {
+    if [[ "$SSH_MASTER_READY" == "true" ]]; then
+        return
+    fi
+
+    ssh \
+        -o ConnectTimeout=10 \
+        -o ServerAliveInterval=30 \
+        -o ControlMaster=yes \
+        -o ControlPersist=600 \
+        -o ControlPath="${SSH_CONTROL_PATH}" \
+        -Nf \
+        "$LOGIN_NODE"
+    SSH_MASTER_READY=true
+}
+
 ssh_login() {
-    ssh -o ConnectTimeout=10 -o ServerAliveInterval=30 "$LOGIN_NODE" "$@"
+    ensure_ssh_master
+    ssh \
+        -o ConnectTimeout=10 \
+        -o ServerAliveInterval=30 \
+        -o ControlMaster=auto \
+        -o ControlPersist=600 \
+        -o ControlPath="${SSH_CONTROL_PATH}" \
+        "$LOGIN_NODE" "$@"
 }
 
 read_job_info() {
@@ -105,7 +171,7 @@ if [[ "$ACTION" == "status" ]]; then
     echo "Checking job status..."
     JOB_INFO=$(read_job_info)
     if [[ -z "$JOB_INFO" ]]; then
-        echo "No active job found."
+        echo "No active job found. Submit with: bash $0"
         exit 0
     fi
     ARRAY_JOB_ID=$(echo "$JOB_INFO" | awk '{print $1}')
@@ -181,7 +247,15 @@ EXTRA_ARGS="${REPS_ARG}"
 if [[ "$MODE" == "single" ]]; then
     EXTRA_ARGS="${EXTRA_ARGS} ${LIMIT_ARG}"
 fi
+EXTRA_ARGS="${EXTRA_ARGS} ${WORKERS_ARG}"
+EXTRA_ARGS="${EXTRA_ARGS} ${WORKER_SHARDS_ARG}"
 EXTRA_ARGS="${EXTRA_ARGS# }"
+
+if [[ -z "$MAX_NUM_SEQS" ]]; then
+    VLLM_MAX_NUM_SEQS=8
+else
+    VLLM_MAX_NUM_SEQS="$MAX_NUM_SEQS"
+fi
 
 echo "============================================================"
 echo "  SIGNOR Direct-Mode Evaluation Submission"
@@ -194,6 +268,7 @@ echo "  Time limit: ${TIME_LIMIT}"
 echo "  GPUs:       ${GPU_COUNT}x ${GPU_TYPE} per task"
 echo "  CPUs:       ${CPUS}"
 echo "  Memory:     ${MEM}"
+echo "  vLLM seqs:  ${VLLM_MAX_NUM_SEQS}"
 [[ -n "$EXTRA_ARGS" ]] && echo "  Extra args: ${EXTRA_ARGS}"
 echo "============================================================"
 echo ""
@@ -217,6 +292,8 @@ ARRAY_JOB_ID=$(ssh_login "
     export RUN_TAG='${RUN_TAG}'
     export EXTRA_ARGS='${EXTRA_ARGS}'
     export SINGLE_MODE='${SINGLE_MODE_VAL}'
+    export VLLM_MAX_NUM_SEQS='${VLLM_MAX_NUM_SEQS}'
+    export GRN_LLM_CORRECT_PROJECT_ROOT='${PROJECT_ROOT}'
     sbatch \
         --job-name=${JOB_NAME} \
         --time=${TIME_LIMIT} \
@@ -281,11 +358,12 @@ echo "  Array job ID: ${ARRAY_JOB_ID}"
 [[ "$MODE" == "parallel" ]] && echo "  Merge job ID: ${MERGE_JOB_ID}"
 echo "  Run tag:      ${RUN_TAG}"
 echo "  Results dir:  ${PROJECT_ROOT}/results/signor_direct_eval_${RUN_TAG}/"
+echo "  Log dir:      ${LOG_DIR}/"
 echo "============================================================"
 echo ""
 echo "Monitor progress:"
-echo "  bash $0 --status"
-echo "  bash $0 --logs"
+echo "  bash $0 --status    # Check job status"
+echo "  bash $0 --logs      # Follow logs in real-time"
 echo ""
 echo "Cancel:"
 echo "  bash $0 --cancel"

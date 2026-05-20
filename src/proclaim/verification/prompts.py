@@ -73,7 +73,7 @@ Claim: {claim}
 Subclaims:
 {subclaims_str}
 {context_block}
-Paper (PMID: {source_pmid}):
+Paper (paper ID: {source_pmid}):
 {paper_text}
 
 Output ONLY a JSON array of fact objects. No other text."""
@@ -359,7 +359,7 @@ them directly via nb_execute.
 4. After searching: call nb_render_papers to show the papers table.
 5. Extract facts from papers. Use extract_and_add_facts(llm, pmids, state, max_workers=8) to process
    all newly retrieved papers in parallel. Do NOT write fact dicts manually.
-   Do NOT loop over PMIDs and call a single-paper function — always pass the full list at once.
+  Do NOT loop over paper IDs and call a single-paper function — always pass the full list at once.
 6. Call populate_paper_features(state) after extracting facts.
    This MUST be done before check_sufficiency() to compute NLP and metadata features.
 7. After extracting: call nb_render_facts to show the facts table.
@@ -399,15 +399,15 @@ them directly via nb_execute.
 - NEVER fabricate facts from your own knowledge.  Every fact must come from
   a paper retrieved via search_pubmed_llm or search_pubmed.
 - Use extract_and_add_facts(llm, pmids, state) to extract facts in parallel. Always pass the
-  full list of PMIDs — this is the ONLY extraction function you should call.
-  It returns a dict mapping pmid -> count.
-- If extract_and_add_facts returns 0 for multiple PMIDs, use refine_search_for_failed_papers:
-      failed_pmids = [pmid for pmid, count in results.items() if count == 0]
-      new_pmids = refine_search_for_failed_papers(failed_pmids, state, llm, max_new_papers=5)
-      results2 = extract_and_add_facts(llm, new_pmids, state)
+  full list of paper IDs — this is the ONLY extraction function you should call.
+  It returns a dict mapping paper_id -> count.
+- If extract_and_add_facts returns 0 for multiple paper IDs, use refine_search_for_failed_papers:
+      failed_ids = [paper_id for paper_id, count in results.items() if count == 0]
+      new_ids = refine_search_for_failed_papers(failed_ids, state, llm, max_new_papers=5)
+      results2 = extract_and_add_facts(llm, new_ids, state)
   This analyzes why papers were irrelevant and generates more precise queries to find better papers.
 - NEVER call add_facts_from_dicts with manually written text strings.
-- source_pmid must always be a PMID already present in state.papers.
+- source_pmid must always be a paper ID already present in state.papers.
 - If no papers contain relevant evidence, say so in the verdict — do NOT
   invent supporting or refuting statements.
 
@@ -497,7 +497,7 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
    a. call search_pubmed_llm(state.claim, state, llm) — runs two LLM-generated PubMed queries (claim-only and subclaim-enriched), deduplicated
    b. call search_semantic_scholar_dual(state.claim, state, llm) — runs two S2 queries (claim-only and subclaim-enriched), covers bioRxiv preprints and non-MEDLINE journals
 4. Extract facts: call extract_and_add_facts(llm, pmids, state, max_workers=8)
-   to process all newly retrieved papers in parallel.  Do NOT loop over PMIDs.
+  to process all newly retrieved papers in parallel.  Do NOT loop over paper IDs.
 5. Call populate_paper_features(state) — REQUIRED before check_sufficiency().
 6. Call filter_papers_by_stance(state) — removes papers with only neutral facts.
 7. Check sufficiency: result = check_sufficiency(state, llm); print(result)
@@ -523,11 +523,11 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
 ## CRITICAL: Grounded Evidence Only
 
 - NEVER fabricate facts.  Every fact must come from a retrieved paper.
-- Use extract_and_add_facts(llm, pmids, state) — pass the full PMID list.
-- If extraction returns 0 for multiple PMIDs, use refine_search_for_failed_papers:
-      failed_pmids = [pmid for pmid, count in results.items() if count == 0]
-      new_pmids = refine_search_for_failed_papers(failed_pmids, state, llm, max_new_papers=5)
-      results2 = extract_and_add_facts(llm, new_pmids, state)
+- Use extract_and_add_facts(llm, pmids, state) — pass the full paper ID list.
+- If extraction returns 0 for multiple paper IDs, use refine_search_for_failed_papers:
+  failed_ids = [paper_id for paper_id, count in results.items() if count == 0]
+  new_ids = refine_search_for_failed_papers(failed_ids, state, llm, max_new_papers=5)
+  results2 = extract_and_add_facts(llm, new_ids, state)
 - NEVER call add_facts_from_dicts with manually written text.
 - If no papers contain relevant evidence, say so in the verdict.
 - add_extraction_context_note is for SYNONYM/ALIAS MAPPINGS ONLY.  Never write 

@@ -134,6 +134,7 @@ echo ""
 # ---------------------------------------------------------------------------
 export saez_home=/hps/nobackup/saezrodriguez
 export HF_HOME="$saez_home/shared_hf_home"
+MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-8}"
 
 SINGULARITY_IMAGE="$saez_home/singularity_images/vllm-openai_latest.sif"
 if [[ ! -f "$SINGULARITY_IMAGE" ]]; then
@@ -149,7 +150,7 @@ SERVE_ARGS=(
     --port "$available_port"
     --gpu-memory-utilization 0.9
     --trust-remote-code
-    --max-num-seqs 8
+    --max-num-seqs "$MAX_NUM_SEQS"
 )
 if [[ -n "$TOOL_CALL_PARSER" ]]; then
     SERVE_ARGS+=(--enable-auto-tool-choice --tool-call-parser "$TOOL_CALL_PARSER")

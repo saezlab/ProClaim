@@ -23,6 +23,34 @@ Some experiment folders contain third-party baselines preserved in-tree for comp
 	uv sync
 	```
 
+    The main `.venv` is fully provisioned from `pyproject.toml`. On Linux
+    `x86_64`, `uv sync` installs the cu124 PyTorch wheel plus the NCCL/cuDNN
+    runtime packages required by the MLP sufficiency checker.
+
+    Set up the dedicated biomedical NER environment expected by the
+    sufficiency feature pipeline. This creates `.venv310/bin/python`, which is
+    the hard-coded interpreter used by the scispaCy entity-coverage worker.
+
+    ```bash
+    bash scripts/setup_ner_venv310.sh
+    ```
+
+    This helper installs a Python 3.10 NLP stack centered on the hard-coded
+    `.venv310/bin/python` interpreter used by the scispaCy NER worker.
+    Semantic-similarity, NLI, and the sufficiency MLP now run from the main
+    project `.venv`.
+
+    If `check_sufficiency()` fails in the main environment with a missing
+        `libnccl.so.2` or `libcudnn.so.9`, rerun:
+
+        ```bash
+        uv sync --reinstall-package torch \
+            --reinstall-package nvidia-cudnn-cu12 \
+            --reinstall-package nvidia-nccl-cu12
+        ```
+
+        to repair the main `.venv` CUDA runtime payload.
+
 2. Create an environment file:
 
 	```bash

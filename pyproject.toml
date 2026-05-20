@@ -5,7 +5,9 @@ description = "ProClaim: Sufficiency-Aware Evidence Programming for In-the-Wild 
 requires-python = ">=3.10"
 dependencies = [
     "pandas",
-    "torch",
+    "torch==2.6.0",
+    "nvidia-cudnn-cu12; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "nvidia-nccl-cu12; platform_system == 'Linux' and platform_machine == 'x86_64'",
     "torch_geometric",
     "scikit-learn",
     "matplotlib",
@@ -68,6 +70,8 @@ override-dependencies = ["pysb; python_version < '0'"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }
+nvidia-cudnn-cu12 = { index = "pytorch-cu124" }
+nvidia-nccl-cu12 = { index = "pytorch-cu124" }
 
 [[tool.uv.index]]
 name = "pytorch-cu124"

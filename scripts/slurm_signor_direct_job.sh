@@ -15,7 +15,7 @@
 # =============================================================================
 set -euo pipefail
 
-PROJECT_ROOT="/hps/nobackup/saezrodriguez/rain/workspace/grn-llm-correct"
+PROJECT_ROOT="${GRN_LLM_CORRECT_PROJECT_ROOT:-/hps/nobackup/saezrodriguez/${USER}/workspace/grn-llm-correct}"
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 LOCAL_INFO_FILE="${PROJECT_ROOT}/.vllm_server_info_${SLURM_JOB_ID}_${TASK_ID}"
 
@@ -25,6 +25,7 @@ echo "  Job ID:      ${SLURM_JOB_ID}"
 echo "  Task ID:     ${TASK_ID}"
 echo "  Run Tag:     ${RUN_TAG}"
 echo "  Single mode: ${SINGLE_MODE:-false}"
+echo "  vLLM seqs:   ${VLLM_MAX_NUM_SEQS:-8}"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
@@ -117,6 +118,7 @@ fi
 # Run evaluation
 # ---------------------------------------------------------------------------
 echo "[4/4] Running direct-mode evaluation..."
+echo "      Eval args: ${EXTRA_ARGS:-<none>}"
 
 if [[ "${SINGLE_MODE:-false}" == "true" ]]; then
     OUTPUT_CSV="${PROJECT_ROOT}/results/signor_direct_eval_${RUN_TAG}/results.csv"

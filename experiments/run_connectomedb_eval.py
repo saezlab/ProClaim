@@ -83,7 +83,9 @@ import csv
 import json
 import logging
 import os
+import queue
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Dict, Any
@@ -233,6 +235,82 @@ def parse_verdict_file(verdict_path: Path) -> Dict[str, Any]:
         }
 
 
+def init_output_csv(csv_path: Path, fieldnames: list[str]) -> None:
+    """Create a CSV with a header if it does not already exist."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    if csv_path.exists():
+        return
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+
+def append_output_row(csv_path: Path, fieldnames: list[str], row_dict: Dict[str, Any]) -> None:
+    """Append a single row to a CSV, creating the file if needed."""
+    init_output_csv(csv_path, fieldnames)
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writerow(row_dict)
+
+
+def collect_existing_runs(csv_paths: list[Path]) -> set[tuple[str | None, int]]:
+    """Build the resume set from one or more result CSVs."""
+    existing_runs: set[tuple[str | None, int]] = set()
+    for csv_path in csv_paths:
+        if not csv_path.exists():
+            continue
+        logger.info("Resuming with existing output CSV: %s", csv_path)
+        with open(csv_path, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    existing_runs.add((row.get("CDB_ID"), int(row.get("Repetition", 1))))
+                except Exception:
+                    pass
+    return existing_runs
+
+
+def get_worker_shard_paths(output_path: Path, workers: int) -> list[Path]:
+    """Return deterministic per-worker shard paths for one batch output."""
+    return [
+        output_path.with_name(f"{output_path.stem}.worker{worker_id + 1:02d}{output_path.suffix}")
+        for worker_id in range(workers)
+    ]
+
+
+def merge_result_csvs(output_path: Path, source_paths: list[Path], fieldnames: list[str]) -> int:
+    """Merge one or more result CSVs into the canonical output file, de-duplicating rows."""
+    temp_path = output_path.with_name(f"{output_path.stem}.tmp{output_path.suffix}")
+    seen_keys: set[tuple[str | None, str | None]] = set()
+    merged_rows = 0
+
+    with open(temp_path, "w", newline="") as f_out:
+        writer = csv.DictWriter(f_out, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for source_path in source_paths:
+            if not source_path.exists():
+                continue
+            with open(source_path, "r", newline="") as f_in:
+                reader = csv.DictReader(f_in)
+                for row in reader:
+                    row_key = (row.get("CDB_ID"), row.get("Repetition"))
+                    if row_key in seen_keys:
+                        continue
+                    seen_keys.add(row_key)
+                    writer.writerow({field: row.get(field, "") for field in fieldnames})
+                    merged_rows += 1
+
+    os.replace(temp_path, output_path)
+    return merged_rows
+
+
+def write_timing_report(timing_path: Path, report: Dict[str, Any]) -> None:
+    """Persist a lightweight timing report for benchmark comparisons."""
+    timing_path.parent.mkdir(parents=True, exist_ok=True)
+    timing_path.write_text(json.dumps(report, indent=2))
+
+
 def run_evaluation(
     claim: str,
     output_dir: Path,
@@ -308,6 +386,74 @@ def run_evaluation(
     return stats
 
 
+def build_row_result(
+    idx: int,
+    total_rows: int,
+    row: pd.Series,
+    rep: int,
+    reps: int,
+    results_dir: Path,
+    config_path: Path,
+    in_price: float,
+    out_price: float,
+    env_vars: Dict[str, str],
+    mode: str,
+) -> Dict[str, Any]:
+    """Run one claim repetition and return timing plus a CSV-ready row payload."""
+    started_at = time.time()
+    cdb_id = str(row.get("id", f"ROW_{idx}"))
+    ligand = row.get("ligand", "")
+    receptor = row.get("receptor", "")
+    label = row.get("label", "UNCERTAIN")
+    claim_str = str(row["claim"])
+    safe_id = sanitize_id(cdb_id)
+    run_dir = results_dir / safe_id / f"rep_{rep}"
+
+    logger.info(
+        "--- Processing [%d/%d] %s : %s -> %s (rep %d/%d) ---",
+        idx + 1,
+        total_rows,
+        cdb_id,
+        ligand,
+        receptor,
+        rep,
+        reps,
+    )
+    stats = run_evaluation(
+        claim_str,
+        run_dir,
+        config_path,
+        in_price,
+        out_price,
+        env_vars=env_vars,
+        mode=mode,
+    )
+
+    return {
+        "cdb_id": cdb_id,
+        "rep": rep,
+        "job_seconds": round(time.time() - started_at, 2),
+        "row": {
+            "CDB_ID": cdb_id,
+            "Ligand": ligand,
+            "Receptor": receptor,
+            "Label": label,
+            "Claim_String": claim_str,
+            "Repetition": rep,
+            "Agent_Verdict": stats.get("verdict"),
+            "Agent_Confidence": stats.get("confidence"),
+            "Reasoning_Snippet": str(stats.get("reasoning", ""))[:500],
+            "Output_Directory": str(run_dir.relative_to(PROJECT_ROOT)),
+            "Input_Tokens": stats.get("input_tokens", 0),
+            "Output_Tokens": stats.get("output_tokens", 0),
+            "Cache_Creation_Tokens": stats.get("cache_creation_tokens", 0),
+            "Cache_Read_Tokens": stats.get("cache_read_tokens", 0),
+            "Total_Input_Tokens": stats.get("total_input_tokens", 0),
+            "Cost_Estimate": stats.get("cost_estimate", 0.0),
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main Routine
 # ---------------------------------------------------------------------------
@@ -321,6 +467,17 @@ def main():
     parser.add_argument("--reps", type=int, default=3, help="Number of repetitions per claim.")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of input CSV rows to process (0=all).")
     parser.add_argument("--row-start", type=int, default=0, help="Start row index for parallel chunking (default: 0).")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of concurrent claim repetitions to run against the same LLM endpoint.",
+    )
+    parser.add_argument(
+        "--worker-shards",
+        action="store_true",
+        help="Write one intermediate result CSV per worker and merge them into the final output.",
+    )
 
     args = parser.parse_args()
 
@@ -357,6 +514,9 @@ def main():
     elif args.row_start > 0:
         df = df.iloc[args.row_start:]
 
+    if args.workers < 1:
+        raise ValueError("--workers must be at least 1")
+
     # Define columns for the output CSV
     out_cols = [
         "CDB_ID", "Ligand", "Receptor", "Label",
@@ -366,67 +526,170 @@ def main():
         "Total_Input_Tokens", "Cost_Estimate"
     ]
 
-    # Initialize output CSV; build resume set from existing rows
-    existing_runs: set = set()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if not output_path.exists():
-        with open(output_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(out_cols)
-    else:
-        logger.info(f"Resuming with existing output CSV: {output_path}")
-        with open(output_path, "r", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    existing_runs.add((row.get("CDB_ID"), int(row.get("Repetition", 1))))
-                except Exception:
-                    pass
+    init_output_csv(output_path, out_cols)
+    shard_paths = get_worker_shard_paths(output_path, args.workers) if args.worker_shards else []
+    if args.worker_shards:
+        for shard_path in shard_paths:
+            init_output_csv(shard_path, out_cols)
+    existing_runs = collect_existing_runs([output_path, *shard_paths])
 
-    # Process each row
     total_rows = len(df)
+    pending_jobs = []
     for idx, row in df.iterrows():
         cdb_id = str(row.get("id", f"ROW_{idx}"))
-        ligand = row.get("ligand", "")
-        receptor = row.get("receptor", "")
-        label = row.get("label", "UNCERTAIN")
-        claim_str = str(row["claim"])
-
-        logger.info(f"--- Processing [{idx+1}/{total_rows}] {cdb_id} : {ligand} -> {receptor} ---")
-
         for rep in range(1, args.reps + 1):
             if (cdb_id, rep) in existing_runs:
-                logger.info(f"  Skipping rep {rep} (already done)")
+                logger.info("Skipping %s rep %d (already done)", cdb_id, rep)
                 continue
+            pending_jobs.append((idx, row.copy(), rep))
 
-            safe_id = sanitize_id(cdb_id)
-            run_dir = results_dir / safe_id / f"rep_{rep}"
+    logger.info(
+        "Prepared %d pending claim repetitions across %d rows with workers=%d%s",
+        len(pending_jobs),
+        total_rows,
+        args.workers,
+        " (worker shards enabled)" if args.worker_shards else "",
+    )
 
-            logger.info(f"Running Repetition {rep}/{args.reps}")
-            stats = run_evaluation(claim_str, run_dir, config_path, in_price, out_price, env_vars=env_vars, mode=mode)
+    if not pending_jobs:
+        if args.worker_shards:
+            merged_rows = merge_result_csvs(output_path, [output_path, *shard_paths], out_cols)
+            logger.info("Merged %d rows into %s", merged_rows, output_path)
+        logger.info("No pending claim repetitions to run.")
+        return
 
-            row_dict = {
-                "CDB_ID": cdb_id,
-                "Ligand": ligand,
-                "Receptor": receptor,
-                "Label": label,
-                "Claim_String": claim_str,
-                "Repetition": rep,
-                "Agent_Verdict": stats.get("verdict"),
-                "Agent_Confidence": stats.get("confidence"),
-                "Reasoning_Snippet": str(stats.get("reasoning", ""))[:500],
-                "Output_Directory": str(run_dir.relative_to(PROJECT_ROOT)),
-                "Input_Tokens": stats.get("input_tokens", 0),
-                "Output_Tokens": stats.get("output_tokens", 0),
-                "Cache_Creation_Tokens": stats.get("cache_creation_tokens", 0),
-                "Cache_Read_Tokens": stats.get("cache_read_tokens", 0),
-                "Total_Input_Tokens": stats.get("total_input_tokens", 0),
-                "Cost_Estimate": stats.get("cost_estimate", 0.0)
-            }
+    overall_started_at = time.time()
+    timing_path = output_path.with_name(f"{output_path.stem}_timing.json")
+    jobs_queue: queue.Queue[tuple[int, pd.Series, int] | None] = queue.Queue()
+    progress_lock = threading.Lock()
+    write_lock = threading.Lock()
+    worker_stats: dict[int, Dict[str, Any]] = {}
+    worker_errors: list[str] = []
+    progress_state = {"completed": 0}
 
-            with open(output_path, "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=out_cols)
-                writer.writerow(row_dict)
+    for job in pending_jobs:
+        jobs_queue.put(job)
+    for _ in range(args.workers):
+        jobs_queue.put(None)
+
+    def worker_loop(worker_id: int, shard_path: Path | None) -> None:
+        worker_started_at = time.time()
+        jobs_completed = 0
+        total_job_seconds = 0.0
+        destination_path = shard_path or output_path
+
+        logger.info(
+            "Worker %d started (%s)",
+            worker_id,
+            f"shard={destination_path.name}" if shard_path else f"output={destination_path.name}",
+        )
+
+        while True:
+            job = jobs_queue.get()
+            try:
+                if job is None:
+                    break
+
+                idx, row, rep = job
+                result = build_row_result(
+                    idx,
+                    total_rows,
+                    row,
+                    rep,
+                    args.reps,
+                    results_dir,
+                    config_path,
+                    in_price,
+                    out_price,
+                    env_vars,
+                    mode,
+                )
+
+                if shard_path is None:
+                    with write_lock:
+                        append_output_row(destination_path, out_cols, result["row"])
+                else:
+                    append_output_row(destination_path, out_cols, result["row"])
+
+                jobs_completed += 1
+                total_job_seconds += result["job_seconds"]
+
+                with progress_lock:
+                    progress_state["completed"] += 1
+                    completed = progress_state["completed"]
+
+                logger.info(
+                    "Worker %d finished %s rep %d in %.1fs [%d/%d done]",
+                    worker_id,
+                    result["cdb_id"],
+                    result["rep"],
+                    result["job_seconds"],
+                    completed,
+                    len(pending_jobs),
+                )
+            except Exception as exc:
+                logger.exception("Worker %d failed on a claim repetition", worker_id)
+                with progress_lock:
+                    worker_errors.append(f"worker {worker_id}: {exc}")
+            finally:
+                jobs_queue.task_done()
+
+        worker_stats[worker_id] = {
+            "worker_id": worker_id,
+            "output_path": str(destination_path),
+            "jobs_completed": jobs_completed,
+            "job_seconds_total": round(total_job_seconds, 2),
+            "job_seconds_avg": round(total_job_seconds / jobs_completed, 2) if jobs_completed else 0.0,
+            "worker_wall_seconds": round(time.time() - worker_started_at, 2),
+        }
+        logger.info(
+            "Worker %d done: jobs=%d total_job_seconds=%.1f wall=%.1fs",
+            worker_id,
+            jobs_completed,
+            total_job_seconds,
+            time.time() - worker_started_at,
+        )
+
+    threads = []
+    for worker_index in range(args.workers):
+        shard_path = shard_paths[worker_index] if args.worker_shards else None
+        thread = threading.Thread(
+            target=worker_loop,
+            args=(worker_index + 1, shard_path),
+            name=f"connectomedb-worker-{worker_index + 1}",
+        )
+        thread.start()
+        threads.append(thread)
+
+    for thread in threads:
+        thread.join()
+
+    if args.worker_shards:
+        merged_rows = merge_result_csvs(output_path, [output_path, *shard_paths], out_cols)
+        logger.info("Merged %d rows into %s", merged_rows, output_path)
+    else:
+        merged_rows = len(existing_runs) + progress_state["completed"]
+
+    timing_report = {
+        "output_csv": str(output_path),
+        "timing_generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "workers": args.workers,
+        "worker_shards": args.worker_shards,
+        "scheduled_jobs": len(pending_jobs),
+        "completed_jobs": progress_state["completed"],
+        "pending_jobs": max(0, len(pending_jobs) - progress_state["completed"]),
+        "total_wall_seconds": round(time.time() - overall_started_at, 2),
+        "merged_rows": merged_rows,
+        "worker_stats": [worker_stats[key] for key in sorted(worker_stats)],
+    }
+    if args.worker_shards:
+        timing_report["worker_shard_paths"] = [str(path) for path in shard_paths]
+    write_timing_report(timing_path, timing_report)
+    logger.info("Wrote timing report to %s", timing_path)
+
+    if worker_errors:
+        raise RuntimeError(f"Encountered {len(worker_errors)} worker errors. First error: {worker_errors[0]}")
 
 
 if __name__ == "__main__":

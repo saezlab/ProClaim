@@ -147,7 +147,7 @@ def schema_docs() -> str:
         "### EvidenceState (the `state` object)\n"
         "  state.claim: str\n"
         "  state.subclaims: list[str]  — set this early\n"
-        "  state.papers: dict[str, PaperRecord]  — keys are PMIDs\n"
+        "  state.papers: dict[str, PaperRecord]  — keys are paper IDs (PMIDs or S2 IDs)\n"
         "  state.facts: list[Fact]  — iterate with `for f in state.facts`\n"
         "  state.conflicts: list[Conflict]\n"
         "  state.coverage: dict[str, float]  — keys are subclaim strings\n"
@@ -166,21 +166,21 @@ def schema_docs() -> str:
         "### add_facts_from_dicts — expected dict keys\n"
         "  text (or aliases: statement, fact_text, evidence, description)\n"
         f"  stance: {_label_cfg.stance_options_str()}\n"
-        "  source_pmid (or alias: pmid)  — MUST be a PMID in state.papers\n"
+        "  source_pmid (or alias: pmid)  — MUST be a paper ID already present in state.papers\n"
         "  relevant_subclaims: list of subclaim strings  (defaults to all subclaims)\n"
         "  subclaim_index: int  (resolved to the subclaim string at that index)\n"
         "  confidence: float 0.0-1.0\n\n"
         "### Common pitfalls — AVOID THESE\n"
         "  - state.facts is a list, NOT a dict. Use `for f in state.facts:` (not .values())\n"
         "  - state.iteration is a top-level int, NOT `state.metadata.iteration`\n"
-        "  - source_pmid must reference a paper in state.papers. Facts with unknown PMIDs are REJECTED.\n"
+        "  - source_pmid must reference a paper in state.papers. Facts with unknown paper IDs are rejected.\n"
         "  - Do NOT write fact dicts by hand. Use extract_and_add_facts(llm, pmids, state) instead.\n"
         "  - When creating a PaperRecord manually, `authors` must be a list[str], e.g. [\"Author Name\"].\n"
-        "  - extract_and_add_facts(llm, pmids, state) accepts a list of PMIDs and returns dict[pmid, count].\n"
-        "  - If extract_and_add_facts returns 0 for multiple PMIDs, use refine_search_for_failed_papers:\n"
-        "      failed_pmids = [pmid for pmid, count in results.items() if count == 0]\n"
-        "      new_pmids = refine_search_for_failed_papers(failed_pmids, state, llm, max_new_papers=5)\n"
-        "      results2 = extract_and_add_facts(llm, new_pmids, state)\n"
+        "  - extract_and_add_facts(llm, pmids, state) accepts a list of paper IDs and returns dict[paper_id, count].\n"
+        "  - If extract_and_add_facts returns 0 for multiple paper IDs, use refine_search_for_failed_papers:\n"
+        "      failed_ids = [paper_id for paper_id, count in results.items() if count == 0]\n"
+        "      new_ids = refine_search_for_failed_papers(failed_ids, state, llm, max_new_papers=5)\n"
+        "      results2 = extract_and_add_facts(llm, new_ids, state)\n"
         "    This generates more precise queries instead of retrying the same irrelevant papers.\n"
     )
 
@@ -545,6 +545,12 @@ def find_related_articles(
 
     Returns list of added PMIDs.
     """
+    if pmid.startswith("S2:"):
+        _debug_print(
+            f"find_related_articles only supports PubMed papers; skipping Semantic Scholar paper {pmid}."
+        )
+        return []
+
     import requests
     from xml.etree import ElementTree as ET
 
@@ -982,6 +988,7 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
         pmid,
         doi=getattr(paper, "doi", None),
         title=paper.title,
+        existing_abstract=paper.abstract,
     )
 
     if full_text:
@@ -989,22 +996,22 @@ def get_full_text_article(pmid: str, state: EvidenceState) -> str:
         if ref_dois:
             paper.reference_dois = ref_dois
         state.token_estimate = state.token_count()
-        _debug_print(f"Full text retrieved for PMID {pmid}: {len(full_text)} chars")
+        _debug_print(f"Full text retrieved for paper ID {pmid}: {len(full_text)} chars")
         return full_text
 
     # Final fallback: plain abstract already stored on the paper record
-    _debug_print(f"No text available for PMID {pmid} (all layers failed). Using stored abstract.")
+    _debug_print(f"No text available for paper ID {pmid} (all layers failed). Using stored abstract.")
     return paper.abstract
 
 
 def get_paper_text(pmid: str, state: EvidenceState) -> str:
-    """Get the abstract/text for a paper by PMID."""
+    """Get the abstract/text for a paper by paper ID."""
     paper = state.papers.get(pmid)
     if not paper:
         _debug_print(f"Paper {pmid} not found in evidence state.")
         return ""
     return (
-        f"PMID: {paper.pmid}\nTitle: {paper.title}\n"
+        f"Paper ID: {paper.pmid}\nTitle: {paper.title}\n"
         f"Authors: {', '.join(paper.authors[:5])}\n\n{paper.abstract}"
     )
 
@@ -1209,7 +1216,7 @@ def _extract_and_add_facts_single(
     """Read a single paper, extract facts via the LLM subagent, and add to state.
 
     Private helper — call extract_and_add_facts(llm, pmids, state) instead,
-    which processes a list of PMIDs in parallel for better GPU utilization.
+    which processes a list of paper IDs in parallel for better GPU utilization.
 
     Tries full text via PMC first (``get_full_text_article``).  Falls
     back to abstract-level metadata (``get_paper_text``) only when full
@@ -1218,7 +1225,7 @@ def _extract_and_add_facts_single(
     Args:
         llm: ``Callable[[str], str]`` — takes a prompt, returns text.
              Wire this up in the kernel prelude (see ``inject_prelude``).
-        pmid: PubMed identifier of the paper already in ``state.papers``.
+        pmid: Paper identifier of the paper already in ``state.papers``.
         state: The live EvidenceState object.
 
     Returns:
@@ -1234,11 +1241,11 @@ def _extract_and_add_facts_single(
         paper_text = get_paper_text(pmid, state)
 
     if not paper_text:
-        _debug_print(f"_extract_and_add_facts_single: no text available for PMID {pmid}.")
+        _debug_print(f"_extract_and_add_facts_single: no text available for paper ID {pmid}.")
         return 0
 
     text_kind = "full text" if len(paper_text) > 2000 else "abstract"
-    _debug_print(f"_extract_and_add_facts_single: using {text_kind} ({len(paper_text)} chars) for PMID {pmid}.")
+    _debug_print(f"_extract_and_add_facts_single: using {text_kind} ({len(paper_text)} chars) for paper ID {pmid}.")
 
     facts = extract_facts(
         llm=llm,
@@ -1257,7 +1264,7 @@ def _extract_and_add_facts_single(
         state._auto_save()
 
     if not facts:
-        _debug_print(f"_extract_and_add_facts_single: subagent returned 0 facts for PMID {pmid}.")
+        _debug_print(f"_extract_and_add_facts_single: subagent returned 0 facts for paper ID {pmid}.")
         return 0
 
     # Convert Fact objects to dicts and add through the validated path
@@ -1283,7 +1290,7 @@ def extract_and_add_facts(
 ) -> dict[str, int]:
     """Extract facts from multiple papers in parallel using ThreadPoolExecutor.
 
-    This is the primary fact extraction function. It processes a list of PMIDs
+    This is the primary fact extraction function. It processes a list of paper IDs
     concurrently to maximize vLLM throughput via continuous batching. Instead
     of processing papers sequentially (which leaves the GPU idle between
     requests), this sends multiple extraction requests concurrently.
@@ -1294,7 +1301,7 @@ def extract_and_add_facts(
 
     Args:
         llm: ``Callable[[str], str]`` — LLM callable (must be thread-safe).
-        pmids: List of PMIDs to process in parallel.
+        pmids: List of paper IDs to process in parallel.
         state: The live EvidenceState object (thread-safe for additions).
         max_workers: Maximum number of parallel workers (default: 8).
                      Should match vLLM's --max-num-seqs parameter.
@@ -1494,10 +1501,15 @@ def populate_paper_features(
             skipped_count += 1
             continue
 
-        # Use full text if available, fall back to abstract for NLP features
+        # Use full text if available, otherwise attempt to fetch fallback text
         text = paper.full_text or paper.abstract
         if not text:
-            logger.warning("Skipping PMID %s: no full text or abstract available", paper.pmid)
+            text = get_full_text_article(paper.pmid, state) or paper.abstract
+        if not text:
+            logger.warning(
+                "Skipping PMID %s: no full text or abstract available after remote retrieval failure; see preceding warning for layer summary",
+                paper.pmid,
+            )
             # Still attempt metadata extraction even without text
             if force_recompute or paper.metadata is None:
                 try:
@@ -1631,10 +1643,15 @@ def populate_paper_features_parallel(
             logger.debug("Skipping PMID %s: features already populated", pmid)
             return pmid, False
 
-        # Get paper text
+        # Get paper text, attempting fallback retrieval when the record is empty
         text = paper.full_text or paper.abstract
         if not text:
-            logger.warning("Skipping PMID %s: no full text or abstract available", pmid)
+            text = get_full_text_article(pmid, state) or paper.abstract
+        if not text:
+            logger.warning(
+                "Skipping PMID %s: no full text or abstract available after remote retrieval failure; see preceding warning for layer summary",
+                pmid,
+            )
             # Still attempt metadata extraction
             if force_recompute or paper.metadata is None:
                 try:
@@ -2035,7 +2052,11 @@ def _check_sufficiency_mlp(
 
     # num_full_text is not computed by FeatureAggregator — inject from state
 
-    from sufficiency_classifier.test_mlp_classifier import flatten_features, mlp_predict
+    import importlib
+
+    inference_module = importlib.import_module("sufficiency_classifier.inference")
+    flatten_features = inference_module.flatten_features
+    mlp_predict = inference_module.mlp_predict
 
     flat_feats = flatten_features(nested)
     flat_feats["num_full_text"] = float(num_full_text)

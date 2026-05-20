@@ -50,6 +50,10 @@ from proclaim.verification.data_models import NLPFeatureVector, PaperFeatureVect
 logger = logging.getLogger(__name__)
 
 
+def _is_semantic_scholar_id(pmid: str) -> bool:
+    return pmid.startswith("S2:")
+
+
 # ---------------------------------------------------------------------------
 # Entity Coverage — scispaCy NER via .venv310 subprocess
 # ---------------------------------------------------------------------------
@@ -318,6 +322,9 @@ def _get_author_ids_from_openalex(pmid: str) -> list[str]:
     Queries the OpenAlex works endpoint to get authorships, then extracts
     each author's OpenAlex ID (e.g. 'https://openalex.org/A5048677171').
     """
+    if _is_semantic_scholar_id(pmid):
+        return []
+
     url = f"https://api.openalex.org/works/pmid:{pmid}"
     try:
         resp = get_session().get(url)
@@ -363,6 +370,9 @@ def get_max_author_h_index(pmid: str, delay: float = 0.15) -> int | None:
     Returns:
         Maximum h-index across all authors, or None if unavailable.
     """
+    if _is_semantic_scholar_id(pmid):
+        return None
+
     author_ids = _get_author_ids_from_openalex(pmid)
     if not author_ids:
         return None
@@ -445,6 +455,16 @@ class PaperFeatureExtractor:
             cached_data = self._cache[pmid]
             logger.debug("Loaded metadata for PMID %s from cache", pmid)
             return PaperFeatureVector(**cached_data)
+
+        if _is_semantic_scholar_id(pmid):
+            logger.info(
+                "Skipping PubMed/OpenAlex-by-PMID metadata extraction for Semantic Scholar paper %s",
+                pmid,
+            )
+            result_vector = PaperFeatureVector(pmid=pmid)
+            self._cache[pmid] = result_vector.model_dump()
+            self._save_cache()
+            return result_vector
 
         logger.info("Extracting metadata features for PMID %s", pmid)
 

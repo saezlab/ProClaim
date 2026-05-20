@@ -16,7 +16,9 @@
 #   bash scripts/submit_connectomedb_batch.sh                  # 8-GPU parallel (default)
 #   bash scripts/submit_connectomedb_batch.sh --single         # Single-GPU mode
 #   bash scripts/submit_connectomedb_batch.sh --single --limit 1   # Test with 1 claim
+#   bash scripts/submit_connectomedb_batch.sh --single --limit 2 --time 02:00:00
 #   bash scripts/submit_connectomedb_batch.sh --reps 1         # 1 repetition only
+#   bash scripts/submit_connectomedb_batch.sh --workers 2 --worker-shards --max-num-seqs 16
 #   bash scripts/submit_connectomedb_batch.sh --status         # Check job status
 #   bash scripts/submit_connectomedb_batch.sh --cancel         # Cancel running jobs
 #   bash scripts/submit_connectomedb_batch.sh --logs           # View job logs
@@ -40,16 +42,23 @@ GPU_TYPE="a100"
 GPU_COUNT=1  # per array task; parallel mode uses 8 GPUs total via --array=0-7 (do NOT set to 8)
 
 # Project paths (on HPC)
-PROJECT_ROOT="/hps/nobackup/saezrodriguez/rain/workspace/grn-llm-correct"
-JOB_SCRIPT="${PROJECT_ROOT}/scripts/slurm_connectomedb_job.sh"
-JOB_INFO_FILE="${PROJECT_ROOT}/.connectomedb_job_info"
-LOG_DIR="${PROJECT_ROOT}/results/slurm_logs"
+PROJECT_ROOT_OVERRIDE="${GRN_LLM_CORRECT_PROJECT_ROOT:-}"
+PROJECT_ROOT=""
+JOB_SCRIPT=""
+JOB_INFO_FILE=""
+LOG_DIR=""
+SSH_CONTROL_DIR=""
+SSH_CONTROL_PATH=""
+SSH_MASTER_READY=false
 
 # Action / mode
 ACTION="submit"
 MODE="parallel"     # "parallel" (8-chunk array) or "single"
 REPS_ARG=""
 LIMIT_ARG=""
+WORKERS_ARG=""
+WORKER_SHARDS_ARG=""
+MAX_NUM_SEQS=""
 RESUME_TAG=""       # set by --resume or --run-tag; empty = generate fresh tag
 
 # ---- Parse arguments --------------------------------------------------------
@@ -60,8 +69,12 @@ while [[ $# -gt 0 ]]; do
         --cancel)    ACTION="cancel";  shift ;;
         --logs)      ACTION="logs";    shift ;;
         --single)    MODE="single";    shift ;;
+        --time)      TIME_LIMIT="$2"; shift 2 ;;
         --reps)      REPS_ARG="--reps $2";  shift 2 ;;
         --limit)     LIMIT_ARG="--limit $2"; shift 2 ;;
+        --workers)   WORKERS_ARG="--workers $2"; shift 2 ;;
+        --worker-shards) WORKER_SHARDS_ARG="--worker-shards"; shift ;;
+        --max-num-seqs) MAX_NUM_SEQS="$2"; shift 2 ;;
         --resume)    RESUME_TAG="__auto__"; shift ;;  # resolved to last RUN_TAG after ssh_login is defined
         --run-tag)
             RESUME_TAG="$2"
@@ -89,8 +102,12 @@ while [[ $# -gt 0 ]]; do
             echo "  --logs       View job logs"
             echo ""
             echo "Job parameters:"
+            echo "  --time HH:MM:SS  Slurm wall-time limit (default: 40:00:00)"
             echo "  --reps N     Number of repetitions per claim (default: 3)"
             echo "  --limit N    Limit to N rows (single mode only; default: all 547)"
+            echo "  --workers N  Concurrent claim repetitions per GPU task (default: 1)"
+            echo "  --worker-shards  Write one result CSV per worker, then merge into the task CSV"
+            echo "  --max-num-seqs N  vLLM max concurrent sequences per GPU task (default: 8)"
             echo "  --user USER  EBI username (default: wuy)"
             echo ""
             echo "  -h, --help   Show this help"
@@ -103,9 +120,56 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -n "$PROJECT_ROOT_OVERRIDE" ]]; then
+    PROJECT_ROOT="$PROJECT_ROOT_OVERRIDE"
+else
+    PROJECT_ROOT="/hps/nobackup/saezrodriguez/${EBI_USER}/workspace/grn-llm-correct"
+fi
+JOB_SCRIPT="${PROJECT_ROOT}/scripts/slurm_connectomedb_job.sh"
+JOB_INFO_FILE="${PROJECT_ROOT}/.connectomedb_job_info"
+LOG_DIR="${PROJECT_ROOT}/results/slurm_logs"
+SSH_CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/grn-llm-correct-ssh-XXXXXX")
+SSH_CONTROL_PATH="${SSH_CONTROL_DIR}/control"
+
+cleanup_ssh_master() {
+    if [[ "$SSH_MASTER_READY" == "true" ]]; then
+        ssh \
+            -o ControlPath="${SSH_CONTROL_PATH}" \
+            -O exit \
+            "$LOGIN_NODE" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$SSH_CONTROL_DIR" && -d "$SSH_CONTROL_DIR" ]]; then
+        rm -rf "$SSH_CONTROL_DIR"
+    fi
+}
+trap cleanup_ssh_master EXIT
+
 # ---- SSH helper -------------------------------------------------------------
+ensure_ssh_master() {
+    if [[ "$SSH_MASTER_READY" == "true" ]]; then
+        return
+    fi
+
+    ssh \
+        -o ConnectTimeout=10 \
+        -o ServerAliveInterval=30 \
+        -o ControlMaster=yes \
+        -o ControlPersist=600 \
+        -o ControlPath="${SSH_CONTROL_PATH}" \
+        -Nf \
+        "$LOGIN_NODE"
+    SSH_MASTER_READY=true
+}
+
 ssh_login() {
-    ssh -o ConnectTimeout=10 -o ServerAliveInterval=30 "$LOGIN_NODE" "$@"
+    ensure_ssh_master
+    ssh \
+        -o ConnectTimeout=10 \
+        -o ServerAliveInterval=30 \
+        -o ControlMaster=auto \
+        -o ControlPersist=600 \
+        -o ControlPath="${SSH_CONTROL_PATH}" \
+        "$LOGIN_NODE" "$@"
 }
 
 # ---- Read job info file (format: "ARRAY_JOB_ID MERGE_JOB_ID RUN_TAG") ------
@@ -141,6 +205,11 @@ if [[ "$ACTION" == "status" ]]; then
             [[ -f \"\$f\" ]] && echo \"\$(wc -l < \$f) rows: \$f\" || true
         done
         [[ -f ${RESULTS_DIR}/results.csv ]] || echo 'Final results.csv not yet available'
+        if compgen -G '${RESULTS_DIR}/results_chunk*_timing.json' > /dev/null; then
+            echo ''
+            echo 'Timing summary:'
+            cd ${PROJECT_ROOT} && uv run python scripts/merge_connectomedb_outputs.py --results-dir ${RESULTS_DIR} --skip-merge
+        fi
     "
     exit 0
 fi
@@ -200,7 +269,15 @@ EXTRA_ARGS="${REPS_ARG}"
 if [[ "$MODE" == "single" ]]; then
     EXTRA_ARGS="${EXTRA_ARGS} ${LIMIT_ARG}"
 fi
+EXTRA_ARGS="${EXTRA_ARGS} ${WORKERS_ARG}"
+EXTRA_ARGS="${EXTRA_ARGS} ${WORKER_SHARDS_ARG}"
 EXTRA_ARGS="${EXTRA_ARGS# }"  # trim leading space
+
+if [[ -z "$MAX_NUM_SEQS" ]]; then
+    VLLM_MAX_NUM_SEQS=8
+else
+    VLLM_MAX_NUM_SEQS="$MAX_NUM_SEQS"
+fi
 
 echo "============================================================"
 echo "  ConnectomeDB Evaluation Submission"
@@ -213,6 +290,7 @@ echo "  Time limit: ${TIME_LIMIT}"
 echo "  GPUs:       ${GPU_COUNT}x ${GPU_TYPE} per task"
 echo "  CPUs:       ${CPUS}"
 echo "  Memory:     ${MEM}"
+echo "  vLLM seqs:  ${VLLM_MAX_NUM_SEQS}"
 [[ -n "$EXTRA_ARGS" ]] && echo "  Extra args: ${EXTRA_ARGS}"
 echo "============================================================"
 echo ""
@@ -237,6 +315,8 @@ ARRAY_JOB_ID=$(ssh_login "
     export RUN_TAG='${RUN_TAG}'
     export EXTRA_ARGS='${EXTRA_ARGS}'
     export SINGLE_MODE='${SINGLE_MODE_VAL}'
+    export VLLM_MAX_NUM_SEQS='${VLLM_MAX_NUM_SEQS}'
+    export GRN_LLM_CORRECT_PROJECT_ROOT='${PROJECT_ROOT}'
     sbatch \
         --job-name=${JOB_NAME} \
         --time=${TIME_LIMIT} \
@@ -271,16 +351,7 @@ if [[ "$MODE" == "parallel" ]]; then
             --dependency=afterok:${ARRAY_JOB_ID} \
             --output=${LOG_DIR}/connectomedb-eval-merge-%j.out \
             --error=${LOG_DIR}/connectomedb-eval-merge-%j.err \
-            --wrap=\"cd ${PROJECT_ROOT} && uv run python -c \\\"
-import glob, pandas as pd, sys
-files = sorted(glob.glob('${RESULTS_DIR}/results_chunk*.csv'))
-if not files:
-    print('ERROR: no chunk CSVs found in ${RESULTS_DIR}', file=sys.stderr)
-    sys.exit(1)
-df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-df.to_csv('${RESULTS_DIR}/results.csv', index=False)
-print(f'Merged {len(files)} chunks ({len(df)} rows) -> ${RESULTS_DIR}/results.csv')
-\\\"\" \
+            --wrap=\"cd ${PROJECT_ROOT} && uv run python scripts/merge_connectomedb_outputs.py --results-dir ${RESULTS_DIR}\" \
         | grep -oP 'Submitted batch job \K[0-9]+'
     ")
 

@@ -52,6 +52,7 @@ _S2_FIELDS = (
 
 _DEFAULT_TIMEOUT = 30  # seconds
 _MAX_RETRIES = 3
+_TRANSIENT_HTTP_STATUSES = {408, 425, 429, 500, 502, 503, 504}
 
 # Minimum inter-request intervals (seconds).
 # We update the rate file BEFORE making the HTTP request, so S2 sees requests
@@ -143,12 +144,14 @@ class S2Client:
                     url, params=params, headers=self._headers(),
                     timeout=_DEFAULT_TIMEOUT,
                 )
-                if resp.status_code == 429:
+                if resp.status_code in _TRANSIENT_HTTP_STATUSES:
                     backoff = 2 ** attempt * 2
                     logger.warning(
-                        "S2 rate-limited (429) GET %s — retry %d/%d in %ds",
-                        url, attempt + 1, _MAX_RETRIES, backoff,
+                        "S2 transient HTTP %d GET %s — retry %d/%d in %ds",
+                        resp.status_code, url, attempt + 1, _MAX_RETRIES, backoff,
                     )
+                    if attempt + 1 == _MAX_RETRIES:
+                        break
                     time.sleep(backoff)
                     continue
                 resp.raise_for_status()
@@ -157,10 +160,18 @@ class S2Client:
                 logger.warning("S2 GET %s → HTTP %s: %s", url, exc.response.status_code, exc)
                 return None
             except requests.RequestException as exc:
+                if attempt + 1 < _MAX_RETRIES:
+                    backoff = 2 ** attempt * 2
+                    logger.warning(
+                        "S2 GET %s → request error: %s; retry %d/%d in %ds",
+                        url, exc, attempt + 1, _MAX_RETRIES, backoff,
+                    )
+                    time.sleep(backoff)
+                    continue
                 logger.warning("S2 GET %s → request error: %s", url, exc)
                 return None
         raise S2RateLimitError(
-            f"S2 GET {url} returned 429 after {_MAX_RETRIES} retries"
+            f"S2 GET {url} returned a transient error after {_MAX_RETRIES} retries"
         )
 
     def _post(self, url: str, params: dict, body: dict) -> dict | None:
