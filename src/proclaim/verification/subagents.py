@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from typing import Callable, Optional
 
 from proclaim.verification.data_models import (
@@ -55,6 +56,24 @@ LLMCallable = Callable[[str], str]
 # Regex to strip <think> reasoning tags from LLM responses
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
+_JSON_UNICODE_TRANSLATION = str.maketrans({
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201a": "'",
+    "\u201b": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u201e": '"',
+    "\u201f": '"',
+    "\u00ab": '"',
+    "\u00bb": '"',
+    "\u00a0": " ",
+    "\u200b": "",
+    "\u200c": "",
+    "\u200d": "",
+    "\ufeff": "",
+})
+
 
 def _clean_llm_json(text: str) -> str:
     """Strip thinking tags and markdown code fences from an LLM response."""
@@ -64,6 +83,29 @@ def _clean_llm_json(text: str) -> str:
     elif "```" in text:
         text = text.split("```")[1].split("```")[0].strip()
     return text
+
+
+def _normalize_llm_json(text: str) -> str:
+    """Normalize unicode punctuation that commonly breaks JSON syntax."""
+    text = unicodedata.normalize("NFKC", text)
+    return text.translate(_JSON_UNICODE_TRANSLATION)
+
+
+def _loads_json_array(text: str) -> list | None:
+    """Try to parse a JSON array, including unicode-punctuation cleanup."""
+    candidates = [text]
+    normalized = _normalize_llm_json(text)
+    if normalized != text:
+        candidates.append(normalized)
+
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(data, list):
+            return data
+    return None
 
 
 def _extract_json_array(text: str) -> list | None:
@@ -78,12 +120,9 @@ def _extract_json_array(text: str) -> list | None:
     text = _clean_llm_json(text)
     
     # 1. Direct parse
-    try:
-        data = json.loads(text)
-        if isinstance(data, list):
-            return data
-    except Exception:
-        pass
+    data = _loads_json_array(text)
+    if data is not None:
+        return data
         
     # 2. Heuristic extraction: find first [ and last ]
     start = text.find("[")
@@ -91,12 +130,9 @@ def _extract_json_array(text: str) -> list | None:
     
     if start != -1 and end != -1 and start < end:
         array_text = text[start:end+1]
-        try:
-            data = json.loads(array_text)
-            if isinstance(data, list):
-                return data
-        except Exception:
-            pass
+        data = _loads_json_array(array_text)
+        if data is not None:
+            return data
             
     # 3. Fallback to bracket pair matching across the string
     # Try multiple sub-strings if there are multiple arrays (rare, but possible)
@@ -105,12 +141,11 @@ def _extract_json_array(text: str) -> list | None:
         # Find closing bracket from end to avoid nested brackets issues
         current_end = text.rfind("]")
         while current_end > current_start:
-            try:
-                candidate = text[current_start:current_end+1]
-                data = json.loads(candidate)
-                if isinstance(data, list):
-                    return data
-            except Exception:
+            candidate = text[current_start:current_end+1]
+            data = _loads_json_array(candidate)
+            if data is not None:
+                return data
+            else:
                 current_end = text.rfind("]", current_start, current_end)
         current_start = text.find("[", current_start + 1)
         

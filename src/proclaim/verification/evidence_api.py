@@ -1843,7 +1843,8 @@ def check_sufficiency(
       'haiku': Claude Haiku via Anthropic API — Qwen still used for gap identification.
 
     Appends result to state.sufficiency_history and increments iteration.
-    Raises MaxIterationsExceeded if the iteration limit is reached.
+    If the iteration limit is reached, prints a message and returns the last
+    sufficiency result without mutating state so emit_verdict() can still run.
     """
     import os
     backend = os.environ.get("SUFFICIENCY_BACKEND", "mlp").lower()
@@ -1865,11 +1866,13 @@ def _check_sufficiency_llm(
     from proclaim.verification.subagents import identify_gaps
 
     if state.iteration >= state.MAX_ITERATIONS:
-        raise MaxIterationsExceeded(
+        print(
             f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
-            "Call emit_verdict() to produce your final verdict.",
-            state=state,
+            "Proceed to emit_verdict() without calling check_sufficiency() again."
         )
+        if state.sufficiency_history:
+            return state.sufficiency_history[-1]
+        return SufficiencyResult(label="insufficient", confidence=0.0, gaps=[])
 
     current_paper_count = len(state.papers)
     previous_paper_count = (
@@ -1940,11 +1943,13 @@ def _check_sufficiency_haiku(
     from proclaim.verification.model_registry import get_haiku_llm
 
     if state.iteration >= state.MAX_ITERATIONS:
-        raise MaxIterationsExceeded(
+        print(
             f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
-            "Call emit_verdict() to produce your final verdict.",
-            state=state,
+            "Proceed to emit_verdict() without calling check_sufficiency() again."
         )
+        if state.sufficiency_history:
+            return state.sufficiency_history[-1]
+        return SufficiencyResult(label="insufficient", confidence=0.0, gaps=[])
 
     current_paper_count = len(state.papers)
     previous_paper_count = (
@@ -2012,11 +2017,13 @@ def _check_sufficiency_mlp(
     """MLP-based sufficiency check (original implementation)."""
 
     if state.iteration >= state.MAX_ITERATIONS:
-        raise MaxIterationsExceeded(
+        print(
             f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
-            "Call emit_verdict() to produce your final verdict.",
-            state=state,
+            "Proceed to emit_verdict() without calling check_sufficiency() again."
         )
+        if state.sufficiency_history:
+            return state.sufficiency_history[-1]
+        return SufficiencyResult(label="insufficient", confidence=0.0, gaps=[])
 
     # Track paper count for this iteration
     current_paper_count = len(state.papers)
@@ -2400,7 +2407,7 @@ def emit_verdict(
     if workspace is not None:
         ws = Path(workspace)
         verdict_path = ws / "verdict.json"
-        verdict_path.write_text(v.model_dump_json(indent=2))
+        verdict_path.write_text(v.model_dump_json(indent=2), encoding="utf-8")
         state.checkpoint_save(ws)
         print(f"Verdict emitted: {verdict} (confidence: {confidence:.2f}). Saved to {verdict_path}.")
     else:
@@ -2623,6 +2630,13 @@ def setup_workspace(
             state.MAX_ITERATIONS = int(max_iter_env)
         except ValueError:
             pass
+
+    if state.iteration > state.MAX_ITERATIONS:
+        raise MaxIterationsExceeded(
+            f"Workspace state iteration ({state.iteration}) exceeds "
+            f"MAX_ITERATIONS ({state.MAX_ITERATIONS}).",
+            state=state,
+        )
 
     base_url = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1/")
     api_key = (

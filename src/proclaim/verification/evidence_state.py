@@ -74,7 +74,7 @@ class EvidenceState(BaseModel):
             self.save(self._workspace / "evidence_state.json")
             if self.trace:
                 trace_path = self._workspace / "trace.json"
-                trace_path.write_text(json.dumps(self.trace, indent=2))
+                trace_path.write_text(json.dumps(self.trace, indent=2), encoding="utf-8")
 
     # -- Mutation methods --------------------------------------------------
 
@@ -180,7 +180,7 @@ class EvidenceState(BaseModel):
             if path.is_dir():
                 path = path / "evidence_state.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.model_dump_json(indent=2))
+        path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
 
     def checkpoint_save(self, workspace) -> None:
         """Save both evidence_state.json and trace.json to workspace.
@@ -194,13 +194,13 @@ class EvidenceState(BaseModel):
         self.save(workspace / "evidence_state.json")
         if self.trace:
             trace_path = workspace / "trace.json"
-            trace_path.write_text(json.dumps(self.trace, indent=2))
+            trace_path.write_text(json.dumps(self.trace, indent=2), encoding="utf-8")
 
     @classmethod
     def load(cls, path: Path) -> "EvidenceState":
         """Load state from a JSON file on disk."""
         path = Path(path)
-        state = cls.model_validate_json(path.read_text())
+        state = cls.model_validate_json(path.read_text(encoding="utf-8"))
         # Infer workspace from path (expects workspace/evidence_state.json)
         if path.name == "evidence_state.json":
             state._workspace = path.parent
@@ -253,10 +253,10 @@ class TraceLog:
             **details,
         })
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(entries, indent=2))
+        self.path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
     def read(self) -> list[dict]:
         """Read all trace entries."""
         if self.path.exists():
-            return json.loads(self.path.read_text())
+            return json.loads(self.path.read_text(encoding="utf-8"))
         return []

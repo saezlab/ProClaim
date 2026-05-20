@@ -88,7 +88,7 @@ def render_papers(workspace: str) -> None:
     table with paper ID (linked), title, abstract preview, and full-text flag.
     """
     ws = Path(workspace)
-    state = json.loads((ws / "evidence_state.json").read_text())
+    state = json.loads((ws / "evidence_state.json").read_text(encoding="utf-8"))
     papers = state.get("papers", {})
 
     if not papers:
@@ -133,7 +133,7 @@ def render_facts(workspace: str) -> None:
     ``evidence_state.json`` in *workspace*.
     """
     ws = Path(workspace)
-    state = json.loads((ws / "evidence_state.json").read_text())
+    state = json.loads((ws / "evidence_state.json").read_text(encoding="utf-8"))
     facts = state.get("facts", [])
 
     if not facts:
@@ -193,7 +193,7 @@ def render_sufficiency(workspace: str) -> None:
     gaps. Reads from ``evidence_state.json`` in *workspace*.
     """
     ws = Path(workspace)
-    state = json.loads((ws / "evidence_state.json").read_text())
+    state = json.loads((ws / "evidence_state.json").read_text(encoding="utf-8"))
     hist = state.get("sufficiency_history", [])
     iteration = state.get("iteration", 0)
     max_iterations = state.get("MAX_ITERATIONS", 8)  # Read from state, default to 8
@@ -456,7 +456,7 @@ def render_verdict(workspace: str) -> None:
         display(HTML("<p><em>No verdict emitted yet.</em></p>"))
         return
 
-    v = json.loads(verdict_path.read_text())
+    v = json.loads(verdict_path.read_text(encoding="utf-8"))
     verdict = v.get("verdict", "INSUFFICIENT")
     conf = v.get("confidence", 0)
     reasoning = v.get("reasoning", "")
@@ -506,7 +506,7 @@ def render_filtering_summary(workspace: str) -> None:
     operations, showing which papers were removed and why.
     """
     ws = Path(workspace)
-    state = json.loads((ws / "evidence_state.json").read_text())
+    state = json.loads((ws / "evidence_state.json").read_text(encoding="utf-8"))
     trace = state.get("trace", [])
     papers = state.get("papers", {})
     facts = state.get("facts", [])

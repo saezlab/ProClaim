@@ -22,6 +22,7 @@ Usage:
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -213,6 +214,35 @@ def init_jupytext_log(path: Path, claim: str) -> None:
     path.write_text(header)
 
 
+def _unwrap_python_c_command(command: str) -> str | None:
+    """Return embedded Python source from ``python -c`` shell commands."""
+    stripped = command.strip()
+    if not stripped:
+        return None
+
+    try:
+        parts = shlex.split(stripped, posix=True)
+    except ValueError:
+        return None
+
+    if "&&" in parts:
+        parts = parts[parts.index("&&") + 1 :]
+
+    if len(parts) < 3 or parts[1] != "-c":
+        return None
+
+    executable = Path(parts[0]).name
+    if executable != "python" and not executable.startswith("python3"):
+        return None
+
+    return parts[2].strip("\n")
+
+
+def _normalize_jupytext_code(code: str) -> str:
+    """Normalize logged code so notebook cells contain Python, not shell wrappers."""
+    return _unwrap_python_c_command(code) or code
+
+
 def append_to_jupytext_log(
     path: Path,
     code: str,
@@ -227,8 +257,9 @@ def append_to_jupytext_log(
             for line in code.splitlines():
                 f.write(f"# {line}\n")
         else:
+            normalized_code = _normalize_jupytext_code(code)
             f.write("\n# %%\n")
-            f.write(code)
+            f.write(normalized_code)
             f.write("\n")
             if output.strip():
                 for line in output.strip().splitlines():
@@ -243,8 +274,8 @@ def generate_notebook(log_path: Path, notebook_path: Path) -> None:
     source and cannot represent captured outputs.  Our parser:
 
     * Splits on ``# %%`` / ``# %% [markdown]`` boundaries.
-    * Keeps multi-line bash commands (``python3 -c "…"``) in a single cell
-      instead of splitting at blank lines.
+        * Unwraps embedded ``python -c`` / ``python3 -c`` commands into notebook
+            Python cells.
     * Moves ``# → …`` output-comment lines into proper ``stream`` outputs.
     """
     import json as _json
@@ -297,6 +328,9 @@ def generate_notebook(log_path: Path, notebook_path: Path) -> None:
             # Trim trailing blank lines from code
             while code_lines and code_lines[-1].strip() == "":
                 code_lines.pop()
+
+            normalized_code = _normalize_jupytext_code("".join(code_lines)).rstrip("\n")
+            code_lines = [line + "\n" for line in normalized_code.splitlines()] if normalized_code else []
 
             cell: dict = {
                 "cell_type": "code",
@@ -484,7 +518,7 @@ def build_subprocess_env(cfg) -> dict:
 # Forced verdict helper
 # ---------------------------------------------------------------------------
 
-def _force_verdict(workspace: Path, claim: str, sub_env: dict, log_path: Path) -> None:
+def _force_verdict(workspace: Path, claim: str, sub_env: dict) -> None:
     """Force check_sufficiency + LLM-guided emit_verdict when the turn budget is exhausted.
 
     Mirrors what the agent would do in its final turn: runs check_sufficiency, then
@@ -498,7 +532,7 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict, log_path: Path) -
     script = textwrap.dedent(f"""\
         from proclaim.verification.evidence_api import (
             setup_workspace, populate_paper_features, check_sufficiency, emit_verdict,
-            get_evidence_summary, MaxIterationsExceeded,
+            get_evidence_summary,
         )
         from proclaim.verification.config import get_label_config
 
@@ -515,10 +549,7 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict, log_path: Path) -
             suf = state.sufficiency_history[-1]
             print(f"Reusing last sufficiency: {{suf.label}} (confidence={{suf.confidence:.3f}})")
         else:
-            try:
-                suf = check_sufficiency(state, llm)
-            except MaxIterationsExceeded:
-                suf = None
+            suf = check_sufficiency(state, llm)
 
         gaps = [g.description for g in (suf.gaps if suf else [])]
         suf_confidence = suf.confidence if suf else 0.0
@@ -622,8 +653,7 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict, log_path: Path) -
         except Exception:
             pass
 
-    append_to_jupytext_log(log_path, "# Forced verdict (max turns reached)", output)
-    logger.info("Forced verdict: %s", output[:300])
+    logger.info("Forced verdict")
 
 
 # ---------------------------------------------------------------------------
@@ -818,7 +848,9 @@ def verify_claim_direct(cfg) -> Path:
         # No tool calls — agent paused or finished
         if choice.finish_reason == "stop" or not assistant_msg.tool_calls:
             if should_stop(workspace, cfg.sufficiency_threshold):
-                logger.info("Stopping: verdict emitted or sufficiency reached.")
+                logger.info(
+                    "Stopping: verdict emitted or sufficiency reached."
+                )
                 break
             logger.info("Agent stopped without verdict (call %d). Re-prompting.", call_count)
             continue
@@ -858,7 +890,7 @@ def verify_claim_direct(cfg) -> Path:
     verdict_path = workspace / "verdict.json"
     if not verdict_path.exists():
         logger.info("No verdict emitted — forcing check_sufficiency + emit_verdict.")
-        _force_verdict(workspace, claim, sub_env, log_path)
+        _force_verdict(workspace, claim, sub_env)
 
     # Log final usage
     summary = tracker.summary()
