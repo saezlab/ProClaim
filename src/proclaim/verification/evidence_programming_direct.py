@@ -731,18 +731,76 @@ def verify_claim_direct(cfg) -> Path:
             return {
                 "role": "system",
                 "content": [{"type": "text", "text": text,
-                             "cache_control": {"type": "ephemeral"}}],
+                             "cache_control": {"type": "ephemeral", "ttl": "5m"}}],
             }
         return {"role": "system", "content": text}
 
-    def _cached_user_msg(text: str) -> dict:
-        if _use_cache:
+    def _cached_user_msg(text: str, prev_log_len: int = 0, curr_log_len: int = 0) -> dict:
+        """Split user message into stable cached prefix + new delta + uncached tail.
+
+        Anthropic's cache lookup requires the cache_control breakpoint to be at
+        the EXACT SAME character position as a previously-cached entry to get a
+        cache read.  Moving the breakpoint every call therefore never produces reads.
+
+        Fix: use TWO breakpoints per call.
+          BP#2 at (prev_log_len) — same position as last call's BP#3 → cache READ
+          BP#3 at (curr_log_len) — new log end position             → cache WRITE
+
+        On the very first caching step (no prior entry) only BP#3 is emitted.
+        """
+        if not _use_cache:
+            return {"role": "user", "content": text}
+
+        log_start = text.find("<execution_log>\n")
+        if log_start == -1:
+            return {"role": "user", "content": text}
+
+        log_content_start = log_start + len("<execution_log>\n")
+        curr_split = log_content_start + curr_log_len  # new content ends here
+
+        # Guard: must have substantial new content to cache
+        if curr_log_len < 500 or curr_split >= len(text) - 200:
+            return {"role": "user", "content": text}
+
+        prev_split = log_content_start + prev_log_len  # previous call's cache end
+
+        if prev_log_len < 500 or prev_split >= curr_split:
+            # First caching step: write a new cache entry at curr_split
             return {
                 "role": "user",
-                "content": [{"type": "text", "text": text,
-                             "cache_control": {"type": "ephemeral"}}],
+                "content": [
+                    {
+                        "type": "text",
+                        "text": text[:curr_split],
+                        "cache_control": {"type": "ephemeral", "ttl": "5m"},  # cache WRITE
+                    },
+                    {
+                        "type": "text",
+                        "text": text[curr_split:],
+                    },
+                ],
             }
-        return {"role": "user", "content": text}
+
+        # Subsequent steps: read at prev_split, write delta to curr_split
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": text[:prev_split],
+                    "cache_control": {"type": "ephemeral", "ttl": "5m"},  # cache READ (prev write pos)
+                },
+                {
+                    "type": "text",
+                    "text": text[prev_split:curr_split],
+                    "cache_control": {"type": "ephemeral", "ttl": "5m"},  # cache WRITE (new delta)
+                },
+                {
+                    "type": "text",
+                    "text": text[curr_split:],  # uncached tail (closing tag + prompt)
+                },
+            ],
+        }
 
     # Token usage tracking
     from proclaim.verification.cost_tracker import CostTracker
@@ -758,10 +816,17 @@ def verify_claim_direct(cfg) -> Path:
     # Tool results flow through the log — no conversation accumulation.
     max_calls = cfg.max_iterations * cfg.max_turns
     call_count = 0
+    _prev_log_len = 0   # len(execution_log) sent in the previous call; 0 on first call
+    _this_log_len = 0   # len(execution_log) read at the start of the current call
 
     while call_count < max_calls:
+        # Carry forward the log length from the previous iteration so we can
+        # split the user message into a cached prefix + uncached tail.
+        _prev_log_len = _this_log_len
+
         # *** CONTEXT REFRESH: rebuild messages from log before every call ***
         execution_log = serialize_execution_log(log_path)
+        _this_log_len = len(execution_log)
 
         turns_remaining = max_calls - call_count
         if call_count == 0:
@@ -794,10 +859,11 @@ def verify_claim_direct(cfg) -> Path:
 
         messages = [
             _cached_system_msg(system_prompt),
-            _cached_user_msg(user_text),
+            _cached_user_msg(user_text, prev_log_len=_prev_log_len, curr_log_len=_this_log_len),
         ]
 
         # --- LLM call ---
+        _t0 = time.monotonic()
         try:
             response = litellm.completion(
                 model=agent_model,
@@ -820,8 +886,20 @@ def verify_claim_direct(cfg) -> Path:
             except Exception as e2:
                 logger.error("LiteLLM retry failed: %s", e2)
                 break
+        _latency = time.monotonic() - _t0
 
         call_count += 1
+
+        choice = response.choices[0]
+        assistant_msg = choice.message
+
+        _tool_calls_trace = []
+        if assistant_msg.tool_calls:
+            for tc in assistant_msg.tool_calls:
+                _tool_calls_trace.append({
+                    "function": tc.function.name,
+                    "arguments": tc.function.arguments,
+                })
 
         # Track usage
         if hasattr(response, "usage") and response.usage:
@@ -830,10 +908,15 @@ def verify_claim_direct(cfg) -> Path:
                 "llm_call",
                 input_tokens=getattr(u, "prompt_tokens", 0) or 0,
                 output_tokens=getattr(u, "completion_tokens", 0) or 0,
+                latency=_latency,
+                call_number=call_count,
+                cache_read_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+                cache_write_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
+                system_prompt=system_prompt,
+                user_message=user_text,
+                assistant_response=assistant_msg.content or "",
+                tool_calls=_tool_calls_trace,
             )
-
-        choice = response.choices[0]
-        assistant_msg = choice.message
 
         # Log agent reasoning to execution log
         if assistant_msg.content:
@@ -899,6 +982,9 @@ def verify_claim_direct(cfg) -> Path:
     # Save usage stats
     usage_path = output_dir / "token_usage.json"
     usage_path.write_text(json.dumps(summary, indent=2))
+
+    trace_path = output_dir / "token_usage_trace.json"
+    trace_path.write_text(json.dumps(tracker.trace_as_dicts(), indent=2))
 
     # Generate notebook from jupytext log
     notebook_path = output_dir / "evidence_report.ipynb"
