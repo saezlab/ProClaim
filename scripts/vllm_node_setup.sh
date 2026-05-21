@@ -135,6 +135,7 @@ echo ""
 export saez_home=/hps/nobackup/saezrodriguez
 export HF_HOME="$saez_home/shared_hf_home"
 MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-8}"
+GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.8}"
 
 SINGULARITY_IMAGE="$saez_home/singularity_images/vllm-openai_latest.sif"
 if [[ ! -f "$SINGULARITY_IMAGE" ]]; then
@@ -148,7 +149,7 @@ SERVE_ARGS=(
     --served-model-name "${MODEL_NAME}" "./${MODEL_NAME}" "${MODEL}"
     --tensor-parallel-size "$gpu_count"
     --port "$available_port"
-    --gpu-memory-utilization 0.9
+    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
     --trust-remote-code
     --max-num-seqs "$MAX_NUM_SEQS"
 )
