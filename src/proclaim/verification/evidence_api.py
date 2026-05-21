@@ -655,6 +655,10 @@ def _s2_paper_to_record(data: dict, state: EvidenceState) -> "PaperRecord | None
     The open-access PDF URL is logged but not stored on PaperRecord
     (a ``pdf_url`` field would be needed).  ``get_full_text_article`` can
     still retrieve the PDF via its Unpaywall fallback.
+
+    Semantic Scholar-only records with no PubMed ID, no DOI, no abstract,
+    and no OA PDF are dropped up front because none of the downstream text
+    retrieval layers can recover usable evidence from them.
     """
     s2_id = data.get("paperId", "")
     external = data.get("externalIds") or {}
@@ -683,10 +687,19 @@ def _s2_paper_to_record(data: dict, state: EvidenceState) -> "PaperRecord | None
     if oa_url:
         logger.debug("S2 OA PDF available for %s: %s", pmid, oa_url)
 
+    abstract = data.get("abstract") or ""
+
+    if pmid.startswith("S2:") and not (doi_raw or abstract or oa_url):
+        logger.info(
+            "Skipping Semantic Scholar-only paper %s: no PMID, DOI, abstract, or OA PDF available",
+            pmid,
+        )
+        return None
+
     return PaperRecord(
         pmid=pmid,
         title=data.get("title") or "",
-        abstract=data.get("abstract") or "",
+        abstract=abstract,
         authors=authors,
         doi=doi_raw,
         source="semantic_scholar",

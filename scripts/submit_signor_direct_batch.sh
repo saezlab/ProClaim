@@ -5,17 +5,22 @@
 # Submit SIGNOR evaluation using the direct mode pipeline
 # (LiteLLM outer agent + bash + jupytext; vLLM subagent on the same GPU).
 #
+# Default mode: 4-chunk parallel (--array=0-3), one GPU per task, followed by
+# an auto-merge job that concatenates the chunk CSVs.
+# Use --single to run a single job (all rows, one GPU).
+#
 # Usage:
-#   bash scripts/submit_signor_direct_batch.sh                  # 8-GPU parallel
-#   bash scripts/submit_signor_direct_batch.sh --single         # single GPU
+#   bash scripts/submit_signor_direct_batch.sh                  # 4-GPU parallel (default)
+#   bash scripts/submit_signor_direct_batch.sh --single         # Single-GPU mode
 #   bash scripts/submit_signor_direct_batch.sh --single --limit 1 --reps 1  # test
 #   bash scripts/submit_signor_direct_batch.sh --reps 1         # 1 repetition
+#   bash scripts/submit_signor_direct_batch.sh --num-tasks 2    # 2-GPU parallel
 #   bash scripts/submit_signor_direct_batch.sh --workers 2 --worker-shards --max-num-seqs 16
 #   bash scripts/submit_signor_direct_batch.sh --status
 #   bash scripts/submit_signor_direct_batch.sh --cancel
 #   bash scripts/submit_signor_direct_batch.sh --logs
 #   bash scripts/submit_signor_direct_batch.sh --resume               # Resume last failed run
-#   bash scripts/submit_signor_direct_batch.sh --run-tag 20260503_112020 --reps 1 # Resume specific run
+#   bash scripts/submit_signor_direct_batch.sh --run-tag <TAG_ID> --reps 1 # Resume specific run
 # =============================================================================
 set -euo pipefail
 
@@ -30,7 +35,8 @@ TIME_LIMIT="24:00:00"
 CPUS=8
 MEM="64G"
 GPU_TYPE="a100"
-GPU_COUNT=1  # per array task; parallel mode uses 8 GPUs total via --array=0-7
+GPU_COUNT=1  # per array task; parallel mode uses 4 GPUs total via --array=0-3 (do NOT set to 4)
+NUM_TASKS=4
 
 # Project paths (on HPC)
 PROJECT_ROOT_OVERRIDE="${GRN_LLM_CORRECT_PROJECT_ROOT:-}"
@@ -65,6 +71,7 @@ while [[ $# -gt 0 ]]; do
         --workers) WORKERS_ARG="--workers $2"; shift 2 ;;
         --worker-shards) WORKER_SHARDS_ARG="--worker-shards"; shift ;;
         --max-num-seqs) MAX_NUM_SEQS="$2"; shift 2 ;;
+        --num-tasks) NUM_TASKS="$2"; shift 2 ;;
         --resume)  RESUME_TAG="__auto__"; shift ;;
         --run-tag)
             RESUME_TAG="$2"
@@ -78,7 +85,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $(basename "$0") [OPTIONS]"
             echo ""
             echo "Submission modes:"
-            echo "  (default)          8-chunk parallel: 8 GPUs, auto-merged results"
+            echo "  (default)          4-chunk parallel: 4 GPUs, auto-merged results"
             echo "  --single           Single-GPU mode: all rows on one GPU"
             echo ""
             echo "Resume:"
@@ -95,6 +102,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --time HH:MM:SS  Slurm wall-time limit (default: 24:00:00)"
             echo "  --reps N     Number of repetitions per claim (default: 3)"
             echo "  --limit N    Limit to N rows (single mode only)"
+            echo "  --num-tasks N  Number of parallel GPU tasks (default: 4; ignored with --single)"
             echo "  --workers N  Concurrent claim repetitions per GPU task (default: 1)"
             echo "  --worker-shards  Write one result CSV per worker, then merge into the task CSV"
             echo "  --max-num-seqs N  vLLM max concurrent sequences per GPU task (default: 8)"
@@ -109,6 +117,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if ! [[ "$NUM_TASKS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: --num-tasks must be a positive integer"
+    exit 1
+fi
 
 if [[ -n "$PROJECT_ROOT_OVERRIDE" ]]; then
     PROJECT_ROOT="$PROJECT_ROOT_OVERRIDE"
@@ -247,6 +260,12 @@ EXTRA_ARGS="${REPS_ARG}"
 if [[ "$MODE" == "single" ]]; then
     EXTRA_ARGS="${EXTRA_ARGS} ${LIMIT_ARG}"
 fi
+
+if [[ "$MODE" != "single" && -n "$WORKER_SHARDS_ARG" ]]; then
+    echo "ERROR: --worker-shards is only supported with --single in SIGNOR direct mode."
+    exit 1
+fi
+
 EXTRA_ARGS="${EXTRA_ARGS} ${WORKERS_ARG}"
 EXTRA_ARGS="${EXTRA_ARGS} ${WORKER_SHARDS_ARG}"
 EXTRA_ARGS="${EXTRA_ARGS# }"
@@ -266,6 +285,7 @@ echo "  Mode:       ${MODE}"
 echo "  Run tag:    ${RUN_TAG}"
 echo "  Time limit: ${TIME_LIMIT}"
 echo "  GPUs:       ${GPU_COUNT}x ${GPU_TYPE} per task"
+[[ "$MODE" == "parallel" ]] && echo "  Parallel tasks: ${NUM_TASKS}"
 echo "  CPUs:       ${CPUS}"
 echo "  Memory:     ${MEM}"
 echo "  vLLM seqs:  ${VLLM_MAX_NUM_SEQS}"
@@ -279,9 +299,9 @@ ssh_login "mkdir -p ${LOG_DIR}"
 echo ""
 
 if [[ "$MODE" == "parallel" ]]; then
-    ARRAY_FLAG="--array=0-7"
+    ARRAY_FLAG="--array=0-$((NUM_TASKS - 1))"
     SINGLE_MODE_VAL="false"
-    echo "Submitting 8-task array job..."
+    echo "Submitting ${NUM_TASKS}-task array job..."
 else
     ARRAY_FLAG=""
     SINGLE_MODE_VAL="true"
@@ -293,6 +313,7 @@ ARRAY_JOB_ID=$(ssh_login "
     export EXTRA_ARGS='${EXTRA_ARGS}'
     export SINGLE_MODE='${SINGLE_MODE_VAL}'
     export VLLM_MAX_NUM_SEQS='${VLLM_MAX_NUM_SEQS}'
+    export NUM_TASKS='${NUM_TASKS}'
     export GRN_LLM_CORRECT_PROJECT_ROOT='${PROJECT_ROOT}'
     sbatch \
         --job-name=${JOB_NAME} \

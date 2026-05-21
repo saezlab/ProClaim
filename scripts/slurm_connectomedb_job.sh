@@ -9,12 +9,20 @@
 #   RUN_TAG      — timestamped run identifier (e.g. 20260330_142500)
 #   EXTRA_ARGS   — additional args forwarded to run_connectomedb_eval.py (e.g. --reps 1)
 #   SINGLE_MODE  — set to "true" to process all rows without chunking
+#   NUM_TASKS    — number of array tasks used for dataset partitioning
 # =============================================================================
 set -euo pipefail
 
 PROJECT_ROOT="${GRN_LLM_CORRECT_PROJECT_ROOT:-/hps/nobackup/saezrodriguez/${USER}/workspace/grn-llm-correct}"
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 LOCAL_INFO_FILE="${PROJECT_ROOT}/.vllm_server_info_${SLURM_JOB_ID}_${TASK_ID}"
+DATASET_CSV="${PROJECT_ROOT}/datasets/connectomedb.csv"
+NUM_TASKS="${NUM_TASKS:-4}"
+
+if ! [[ "$NUM_TASKS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: NUM_TASKS must be a positive integer, got '${NUM_TASKS}'"
+    exit 1
+fi
 
 echo "============================================================"
 echo "  ConnectomeDB Evaluation Job"
@@ -22,24 +30,43 @@ echo "  Job ID:      ${SLURM_JOB_ID}"
 echo "  Task ID:     ${TASK_ID}"
 echo "  Run Tag:     ${RUN_TAG}"
 echo "  Single mode: ${SINGLE_MODE:-false}"
+echo "  Num tasks:   ${NUM_TASKS}"
 echo "  vLLM seqs:   ${VLLM_MAX_NUM_SEQS:-8}"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
 # Row range for this array task (ignored in single mode)
-# 318 rows split across 8 tasks: first 6 tasks get 40 rows, remaining 2 get 39
+# Compute a balanced partition from the current dataset size.
 # ---------------------------------------------------------------------------
-case "$TASK_ID" in
-    0) ROW_START=0;   ROW_LIMIT=40 ;;
-    1) ROW_START=40;  ROW_LIMIT=40 ;;
-    2) ROW_START=80;  ROW_LIMIT=40 ;;
-    3) ROW_START=120; ROW_LIMIT=40 ;;
-    4) ROW_START=160; ROW_LIMIT=40 ;;
-    5) ROW_START=200; ROW_LIMIT=40 ;;
-    6) ROW_START=240; ROW_LIMIT=39 ;;
-    7) ROW_START=279; ROW_LIMIT=39 ;;
-    *) ROW_START=0;   ROW_LIMIT=0  ;;
-esac
+TOTAL_ROWS=$(python3 - "$DATASET_CSV" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+with path.open(newline='') as handle:
+    print(max(sum(1 for _ in csv.reader(handle)) - 1, 0))
+PY
+)
+
+if (( TASK_ID >= 0 && TASK_ID < NUM_TASKS )); then
+    BASE_ROWS=$((TOTAL_ROWS / NUM_TASKS))
+    REMAINDER=$((TOTAL_ROWS % NUM_TASKS))
+
+    if (( TASK_ID < REMAINDER )); then
+        ROW_LIMIT=$((BASE_ROWS + 1))
+        ROW_START=$((TASK_ID * ROW_LIMIT))
+    else
+        ROW_LIMIT=$BASE_ROWS
+        ROW_START=$((REMAINDER * (BASE_ROWS + 1) + (TASK_ID - REMAINDER) * BASE_ROWS))
+    fi
+else
+    ROW_START=0
+    ROW_LIMIT=0
+fi
+
+echo "  Dataset rows: ${TOTAL_ROWS}"
+echo "  Task rows:    start=${ROW_START} limit=${ROW_LIMIT}"
 
 if [[ "${SINGLE_MODE:-false}" == "true" ]]; then
     ROW_START=0
