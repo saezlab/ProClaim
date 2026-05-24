@@ -137,6 +137,10 @@ export HF_HOME="$saez_home/shared_hf_home"
 MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-8}"
 GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.8}"
 
+# This env var is a local launcher input, not a supported vLLM env var.
+# Consume it here and remove it before starting vLLM to avoid noisy warnings.
+unset VLLM_MAX_NUM_SEQS
+
 SINGULARITY_IMAGE="$saez_home/singularity_images/vllm-openai_latest.sif"
 if [[ ! -f "$SINGULARITY_IMAGE" ]]; then
     echo "ERROR: Singularity image not found: ${SINGULARITY_IMAGE}"

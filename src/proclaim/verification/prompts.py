@@ -361,7 +361,7 @@ them directly via nb_execute.
    all newly retrieved papers in parallel. Do NOT write fact dicts manually.
   Do NOT loop over paper IDs and call a single-paper function — always pass the full list at once.
 6. Call populate_paper_features(state) after extracting facts.
-   This MUST be done before check_sufficiency() to compute NLP and metadata features.
+  This MUST be done before check_sufficiency() to compute NLP and metadata features.
 7. After extracting: call nb_render_facts to show the facts table.
 8. **Filter papers**: call filter_papers_by_stance(state) to remove papers with only
    default-stance (typically neutral/irrelevant) facts. This keeps only papers with

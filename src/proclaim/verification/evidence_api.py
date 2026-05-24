@@ -211,7 +211,7 @@ def function_docs() -> str:
         add_facts_from_dicts, update_synthesis, add_conflict,
         get_evidence_summary, check_sufficiency, get_sufficiency_history, compress_evidence,
         emit_verdict, formulate_pubmed_query, search_for_gap, refine_search_for_failed_papers,
-        populate_paper_features, populate_paper_features_parallel, filter_papers_by_stance,
+        populate_paper_features, filter_papers_by_stance,
         add_extraction_context_note,
     ]
 
@@ -1461,9 +1461,10 @@ def populate_paper_features(
     globally via model_registry after first use. To avoid first-call latency,
     use prewarm_all_models() during kernel setup.
 
-    **Automatic parallelization**: When 5+ papers need processing, this function
-    automatically switches to populate_paper_features_parallel() for better
-    performance (2-3x speedup).
+    **Execution model**: Feature computation currently runs sequentially.
+    Large paper sets can take a while, but the function is idempotent and skips
+    papers that already have both NLP and metadata features unless
+    ``force_recompute=True``.
 
     Args:
         state: The evidence state containing papers to process.
@@ -1474,26 +1475,7 @@ def populate_paper_features(
     Returns:
         Status message indicating how many papers were processed.
     """
-    # Auto-switch to parallel version if many papers need processing
-    papers_to_process = [
-        paper for paper in state.papers.values()
-        if force_recompute or paper.nlp is None or paper.metadata is None
-    ]
-
-    if len(papers_to_process) >= 5:
-        logger.info(
-            "Auto-switching to parallel feature computation (%d papers need processing)",
-            len(papers_to_process)
-        )
-        return populate_paper_features_parallel(
-            state=state,
-            compute_nli=compute_nli,
-            max_text_length=max_text_length,
-            force_recompute=force_recompute,
-            max_workers=4,
-        )
-
-    # Sequential processing for small number of papers
+    # Sequential feature processing
     from proclaim.verification.feature_tools import compute_entity_coverage
     from proclaim.verification.model_registry import (
         get_semantic_similarity_computer,
@@ -1596,175 +1578,175 @@ def populate_paper_features(
     return msg
 
 
-def populate_paper_features_parallel(
-    state: EvidenceState,
-    compute_nli: bool = True,
-    max_text_length: int = 10000,
-    force_recompute: bool = False,
-    max_workers: int = 4,
-) -> str:
-    """Parallel version of populate_paper_features using ThreadPoolExecutor.
+# def populate_paper_features_parallel(
+#     state: EvidenceState,
+#     compute_nli: bool = True,
+#     max_text_length: int = 10000,
+#     force_recompute: bool = False,
+#     max_workers: int = 4,
+# ) -> str:
+#     """Parallel version of populate_paper_features using ThreadPoolExecutor.
 
-    This function parallelizes feature extraction for multiple papers to reduce
-    wall-clock time. Due to PyTorch models not being fully thread-safe when using
-    GPU, this implementation uses locks to serialize access to each model while
-    still allowing concurrent execution of different stages (entity extraction,
-    metadata fetching, etc.).
+#     This function parallelizes feature extraction for multiple papers to reduce
+#     wall-clock time. Due to PyTorch models not being fully thread-safe when using
+#     GPU, this implementation uses locks to serialize access to each model while
+#     still allowing concurrent execution of different stages (entity extraction,
+#     metadata fetching, etc.).
 
-    Performance impact:
-    - Sequential: 10 papers × 7s = 70s
-    - Parallel (max_workers=4): ~20-25s (with lock contention)
+#     Performance impact:
+#     - Sequential: 10 papers × 7s = 70s
+#     - Parallel (max_workers=4): ~20-25s (with lock contention)
 
-    Note: For CPU-only models or if you have multiple GPUs, you could use
-    process-based parallelism (multiprocessing) for better scaling, but that
-    requires picklable models and state.
+#     Note: For CPU-only models or if you have multiple GPUs, you could use
+#     process-based parallelism (multiprocessing) for better scaling, but that
+#     requires picklable models and state.
 
-    Args:
-        state: The evidence state containing papers to process.
-        compute_nli: Whether to compute NLI features (requires GPU for best performance).
-        max_text_length: Maximum characters to use from each paper's full text.
-        force_recompute: If True, recompute features even if already present.
-        max_workers: Maximum number of parallel workers (default: 4).
-                     Higher values increase concurrency but also lock contention.
+#     Args:
+#         state: The evidence state containing papers to process.
+#         compute_nli: Whether to compute NLI features (requires GPU for best performance).
+#         max_text_length: Maximum characters to use from each paper's full text.
+#         force_recompute: If True, recompute features even if already present.
+#         max_workers: Maximum number of parallel workers (default: 4).
+#                      Higher values increase concurrency but also lock contention.
 
-    Returns:
-        Status message indicating how many papers were processed.
-    """
-    import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from proclaim.verification.feature_tools import compute_entity_coverage
-    from proclaim.verification.model_registry import (
-        get_semantic_similarity_computer,
-        get_nli_entailment_computer,
-        get_metadata_extractor,
-    )
+#     Returns:
+#         Status message indicating how many papers were processed.
+#     """
+#     import threading
+#     from concurrent.futures import ThreadPoolExecutor, as_completed
+#     from proclaim.verification.feature_tools import compute_entity_coverage
+#     from proclaim.verification.model_registry import (
+#         get_semantic_similarity_computer,
+#         get_nli_entailment_computer,
+#         get_metadata_extractor,
+#     )
 
-    # Thread locks for model access (PyTorch models are not thread-safe on GPU)
-    _sim_lock = threading.Lock()
-    _nli_lock = threading.Lock()
-    _meta_lock = threading.Lock()
+#     # Thread locks for model access (PyTorch models are not thread-safe on GPU)
+#     _sim_lock = threading.Lock()
+#     _nli_lock = threading.Lock()
+#     _meta_lock = threading.Lock()
 
-    logger.info("Populating paper features in parallel for %d papers (max_workers=%d)",
-                len(state.papers), max_workers)
+#     logger.info("Populating paper features in parallel for %d papers (max_workers=%d)",
+#                 len(state.papers), max_workers)
 
-    def _process_one_paper(paper) -> tuple[str, bool]:
-        """Process features for a single paper."""
-        pmid = paper.pmid
+#     def _process_one_paper(paper) -> tuple[str, bool]:
+#         """Process features for a single paper."""
+#         pmid = paper.pmid
 
-        # Check if features already exist
-        if not force_recompute and paper.nlp is not None and paper.metadata is not None:
-            logger.debug("Skipping PMID %s: features already populated", pmid)
-            return pmid, False
+#         # Check if features already exist
+#         if not force_recompute and paper.nlp is not None and paper.metadata is not None:
+#             logger.debug("Skipping PMID %s: features already populated", pmid)
+#             return pmid, False
 
-        # Get paper text, attempting fallback retrieval when the record is empty
-        text = paper.full_text or paper.abstract
-        if not text:
-            text = get_full_text_article(pmid, state) or paper.abstract
-        if not text:
-            logger.warning(
-                "Skipping PMID %s: no full text or abstract available after remote retrieval failure; see preceding warning for layer summary",
-                pmid,
-            )
-            # Still attempt metadata extraction
-            if force_recompute or paper.metadata is None:
-                try:
-                    with _meta_lock:
-                        meta_extractor = get_metadata_extractor()
-                        paper.metadata = meta_extractor.extract_metadata(pmid)
-                except Exception as exc:
-                    logger.error("Failed to extract metadata for PMID %s: %s", pmid, exc)
-            return pmid, True
+#         # Get paper text, attempting fallback retrieval when the record is empty
+#         text = paper.full_text or paper.abstract
+#         if not text:
+#             text = get_full_text_article(pmid, state) or paper.abstract
+#         if not text:
+#             logger.warning(
+#                 "Skipping PMID %s: no full text or abstract available after remote retrieval failure; see preceding warning for layer summary",
+#                 pmid,
+#             )
+#             # Still attempt metadata extraction
+#             if force_recompute or paper.metadata is None:
+#                 try:
+#                     with _meta_lock:
+#                         meta_extractor = get_metadata_extractor()
+#                         paper.metadata = meta_extractor.extract_metadata(pmid)
+#                 except Exception as exc:
+#                     logger.error("Failed to extract metadata for PMID %s: %s", pmid, exc)
+#             return pmid, True
 
-        text_source = "full_text" if paper.full_text else "abstract"
-        if not paper.full_text:
-            logger.info(
-                "PMID %s: no full text, using abstract (%d chars) for NLP features",
-                pmid, len(text),
-            )
+#         text_source = "full_text" if paper.full_text else "abstract"
+#         if not paper.full_text:
+#             logger.info(
+#                 "PMID %s: no full text, using abstract (%d chars) for NLP features",
+#                 pmid, len(text),
+#             )
 
-        text = text[:max_text_length]
+#         text = text[:max_text_length]
 
-        # --- NLP features (with locks for model access) ---
-        if force_recompute or paper.nlp is None:
-            try:
-                # Entity coverage (spaCy is reasonably thread-safe)
-                nlp = compute_entity_coverage(state.claim, text)
+#         # --- NLP features (with locks for model access) ---
+#         if force_recompute or paper.nlp is None:
+#             try:
+#                 # Entity coverage (spaCy is reasonably thread-safe)
+#                 nlp = compute_entity_coverage(state.claim, text)
 
-                # Semantic similarity (SBERT with GPU - needs lock)
-                with _sim_lock:
-                    sim_computer = get_semantic_similarity_computer()
-                    nlp.semantic_similarity = sim_computer.compute(state.claim, text)
+#                 # Semantic similarity (SBERT with GPU - needs lock)
+#                 with _sim_lock:
+#                     sim_computer = get_semantic_similarity_computer()
+#                     nlp.semantic_similarity = sim_computer.compute(state.claim, text)
 
-                # NLI entailment (CrossEncoder with GPU - needs lock)
-                if compute_nli:
-                    with _nli_lock:
-                        nli_computer = get_nli_entailment_computer()
-                        nli_result = nli_computer.compute(state.claim, text)
-                        nlp.nli_entailment = nli_result["nli_entailment"]
-                        nlp.nli_contradiction = nli_result["nli_contradiction"]
-                        nlp.nli_neutral = nli_result["nli_neutral"]
-                        nlp.nli_best_chunk_text = nli_result["nli_best_chunk_text"]
+#                 # NLI entailment (CrossEncoder with GPU - needs lock)
+#                 if compute_nli:
+#                     with _nli_lock:
+#                         nli_computer = get_nli_entailment_computer()
+#                         nli_result = nli_computer.compute(state.claim, text)
+#                         nlp.nli_entailment = nli_result["nli_entailment"]
+#                         nlp.nli_contradiction = nli_result["nli_contradiction"]
+#                         nlp.nli_neutral = nli_result["nli_neutral"]
+#                         nlp.nli_best_chunk_text = nli_result["nli_best_chunk_text"]
 
-                paper.nlp = nlp
-                logger.debug(
-                    "PMID %s: coverage=%.3f, similarity=%.3f",
-                    pmid,
-                    nlp.claim_entity_coverage or 0.0,
-                    nlp.semantic_similarity or 0.0,
-                )
-            except Exception as exc:
-                logger.error("Failed to compute NLP features for PMID %s: %s", pmid, exc)
+#                 paper.nlp = nlp
+#                 logger.debug(
+#                     "PMID %s: coverage=%.3f, similarity=%.3f",
+#                     pmid,
+#                     nlp.claim_entity_coverage or 0.0,
+#                     nlp.semantic_similarity or 0.0,
+#                 )
+#             except Exception as exc:
+#                 logger.error("Failed to compute NLP features for PMID %s: %s", pmid, exc)
 
-        # --- Metadata features (API calls can be parallel, but serialize access) ---
-        if force_recompute or paper.metadata is None:
-            try:
-                with _meta_lock:
-                    meta_extractor = get_metadata_extractor()
-                    paper.metadata = meta_extractor.extract_metadata(pmid)
-                logger.debug(
-                    "PMID %s: year=%s, log_IF=%.3f",
-                    pmid,
-                    paper.metadata.publication_year,
-                    paper.metadata.log_impact_factor or 0.0,
-                )
-            except Exception as exc:
-                logger.error("Failed to extract metadata for PMID %s: %s", pmid, exc)
+#         # --- Metadata features (API calls can be parallel, but serialize access) ---
+#         if force_recompute or paper.metadata is None:
+#             try:
+#                 with _meta_lock:
+#                     meta_extractor = get_metadata_extractor()
+#                     paper.metadata = meta_extractor.extract_metadata(pmid)
+#                 logger.debug(
+#                     "PMID %s: year=%s, log_IF=%.3f",
+#                     pmid,
+#                     paper.metadata.publication_year,
+#                     paper.metadata.log_impact_factor or 0.0,
+#                 )
+#             except Exception as exc:
+#                 logger.error("Failed to extract metadata for PMID %s: %s", pmid, exc)
 
-        return pmid, True
+#         return pmid, True
 
-    # Filter papers that need processing
-    papers_to_process = [
-        paper for paper in state.papers.values()
-        if force_recompute or paper.nlp is None or paper.metadata is None
-    ]
+#     # Filter papers that need processing
+#     papers_to_process = [
+#         paper for paper in state.papers.values()
+#         if force_recompute or paper.nlp is None or paper.metadata is None
+#     ]
 
-    if not papers_to_process:
-        msg = f"All {len(state.papers)} papers already have features populated"
-        logger.info(msg)
-        return msg
+#     if not papers_to_process:
+#         msg = f"All {len(state.papers)} papers already have features populated"
+#         logger.info(msg)
+#         return msg
 
-    processed_count = 0
-    skipped_count = len(state.papers) - len(papers_to_process)
+#     processed_count = 0
+#     skipped_count = len(state.papers) - len(papers_to_process)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_pmid = {
-            executor.submit(_process_one_paper, paper): paper.pmid
-            for paper in papers_to_process
-        }
+#     with ThreadPoolExecutor(max_workers=max_workers) as executor:
+#         future_to_pmid = {
+#             executor.submit(_process_one_paper, paper): paper.pmid
+#             for paper in papers_to_process
+#         }
 
-        for future in as_completed(future_to_pmid):
-            pmid, was_processed = future.result()
-            if was_processed:
-                processed_count += 1
-            else:
-                skipped_count += 1
+#         for future in as_completed(future_to_pmid):
+#             pmid, was_processed = future.result()
+#             if was_processed:
+#                 processed_count += 1
+#             else:
+#                 skipped_count += 1
 
-    # Save state
-    state.save()
+#     # Save state
+#     state.save()
 
-    msg = f"Populated features for {processed_count} papers in parallel, skipped {skipped_count} (already processed)"
-    logger.info(msg)
-    return msg
+#     msg = f"Populated features for {processed_count} papers in parallel, skipped {skipped_count} (already processed)"
+#     logger.info(msg)
+#     return msg
 
 
 # ---------------------------------------------------------------------------
