@@ -7,10 +7,11 @@ and jupytext for post-hoc notebook generation.  No Jupyter kernel, no MCP
 server, no Claude Agent SDK.
 
 Architecture:
-  - Single flat loop: each LLM call gets [system_prompt, execution_log]
-  - Per-call context refresh: messages are rebuilt from the execution log
-    before every LLM call — no conversation accumulation
-  - Tool results flow through the log, not through message history
+  - Single flat loop: each LLM call gets [system_prompt, workbook + instruction]
+  - Per-call context refresh: a compact markdown workbook is regenerated from
+    durable EvidenceState before every LLM call — no conversation accumulation
+  - Tool results flow into evidence_state.json (and into execution_log.py as
+    an audit artifact); the planner reads the workbook, not the raw log
   - State persistence: EvidenceState auto-saves to disk after every mutation
 
 Usage:
@@ -673,6 +674,16 @@ def verify_claim_direct(cfg) -> Path:
 
     # Initialize evidence state on disk
     from proclaim.verification.evidence_state import EvidenceState
+    from proclaim.verification.workbook import (
+        STABLE_VOLATILE_MARKER as WORKBOOK_STABLE_MARKER,
+        build_workbook,
+        write_workbook,
+    )
+    from proclaim.verification.action_ledger import (
+        record_action as _record_action,
+        snapshot_state as _snapshot_state,
+        StateSnapshot as _StateSnapshot,
+    )
     EvidenceState.init_new(claim=claim, subclaims=[claim], workspace=workspace)
 
     # Build system prompt
@@ -719,6 +730,7 @@ def verify_claim_direct(cfg) -> Path:
         _thinking_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _thinking_budget}
         _thinking_kwargs["temperature"] = 1
 
+
     # Anthropic prompt caching: mark the system message and the last user
     # message with cache_control so repeated turns reuse cached prefixes.
     # LiteLLM passes this through to Anthropic's API.  For non-Anthropic
@@ -735,69 +747,41 @@ def verify_claim_direct(cfg) -> Path:
             }
         return {"role": "system", "content": text}
 
-    def _cached_user_msg(text: str, prev_log_len: int = 0, curr_log_len: int = 0) -> dict:
-        """Split user message into stable cached prefix + new delta + uncached tail.
+    def _cached_user_msg(text: str) -> dict:
+        """Split the user message at the workbook stable/volatile marker.
 
-        Anthropic's cache lookup requires the cache_control breakpoint to be at
-        the EXACT SAME character position as a previously-cached entry to get a
-        cache read.  Moving the breakpoint every call therefore never produces reads.
-
-        Fix: use TWO breakpoints per call.
-          BP#2 at (prev_log_len) — same position as last call's BP#3 → cache READ
-          BP#3 at (curr_log_len) — new log end position             → cache WRITE
-
-        On the very first caching step (no prior entry) only BP#3 is emitted.
+        The workbook places invariant sections (Claim Frame + Guardrails)
+        before the marker and turn-variable sections (Header, State,
+        Action Loop, Recuration, Verdict Readiness, Artifact Index) after.
+        A single cache breakpoint at the marker lets every turn reuse the
+        stable prefix cache (claim + guardrails + system prompt), while the
+        volatile tail is re-sent each turn.
         """
         if not _use_cache:
             return {"role": "user", "content": text}
 
-        log_start = text.find("<execution_log>\n")
-        if log_start == -1:
+        marker = WORKBOOK_STABLE_MARKER
+        idx = text.find(marker)
+        if idx == -1:
             return {"role": "user", "content": text}
 
-        log_content_start = log_start + len("<execution_log>\n")
-        curr_split = log_content_start + curr_log_len  # new content ends here
-
-        # Guard: must have substantial new content to cache
-        if curr_log_len < 500 or curr_split >= len(text) - 200:
+        # Cache breakpoint sits just after the marker line so the entire
+        # marker + newline are part of the cached prefix.
+        split = idx + len(marker) + 1  # +1 for the trailing newline
+        if split < 500 or split >= len(text) - 200:
             return {"role": "user", "content": text}
 
-        prev_split = log_content_start + prev_log_len  # previous call's cache end
-
-        if prev_log_len < 500 or prev_split >= curr_split:
-            # First caching step: write a new cache entry at curr_split
-            return {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": text[:curr_split],
-                        "cache_control": {"type": "ephemeral", "ttl": "5m"},  # cache WRITE
-                    },
-                    {
-                        "type": "text",
-                        "text": text[curr_split:],
-                    },
-                ],
-            }
-
-        # Subsequent steps: read at prev_split, write delta to curr_split
         return {
             "role": "user",
             "content": [
                 {
                     "type": "text",
-                    "text": text[:prev_split],
-                    "cache_control": {"type": "ephemeral", "ttl": "5m"},  # cache READ (prev write pos)
+                    "text": text[:split],
+                    "cache_control": {"type": "ephemeral", "ttl": "5m"},
                 },
                 {
                     "type": "text",
-                    "text": text[prev_split:curr_split],
-                    "cache_control": {"type": "ephemeral", "ttl": "5m"},  # cache WRITE (new delta)
-                },
-                {
-                    "type": "text",
-                    "text": text[curr_split:],  # uncached tail (closing tag + prompt)
+                    "text": text[split:],
                 },
             ],
         }
@@ -812,27 +796,48 @@ def verify_claim_direct(cfg) -> Path:
     )
 
     # Single flat loop with per-call context refresh.
-    # Each LLM call receives only [system_prompt, execution_log].
-    # Tool results flow through the log — no conversation accumulation.
+    # Each LLM call receives [system_prompt, workbook + instruction].
+    # The execution log keeps growing on disk for audit, but the planner now
+    # reads the compact workbook regenerated each turn from EvidenceState.
     max_calls = cfg.max_iterations * cfg.max_turns
     call_count = 0
-    _prev_log_len = 0   # len(execution_log) sent in the previous call; 0 on first call
-    _this_log_len = 0   # len(execution_log) read at the start of the current call
 
     while call_count < max_calls:
-        # Carry forward the log length from the previous iteration so we can
-        # split the user message into a cached prefix + uncached tail.
-        _prev_log_len = _this_log_len
-
-        # *** CONTEXT REFRESH: rebuild messages from log before every call ***
-        execution_log = serialize_execution_log(log_path)
-        _this_log_len = len(execution_log)
-
         turns_remaining = max_calls - call_count
+
+        # *** CONTEXT REFRESH: regenerate the workbook from durable state ***
+        # The workbook is the planner's primary context.  It is rebuilt from
+        # EvidenceState on every turn so the planner sees the current paper /
+        # fact / sufficiency snapshot without scrolling the execution log.
+        try:
+            current_state = EvidenceState.load(workspace / "evidence_state.json")
+            workbook_path = write_workbook(
+                current_state,
+                workspace=workspace,
+                max_turns=max_calls,
+                turns_used=call_count,
+                sufficiency_threshold=cfg.sufficiency_threshold,
+                max_iterations=cfg.max_iterations,
+                label_cfg=label_cfg,
+            )
+            workbook_text = workbook_path.read_text()
+        except Exception as exc:
+            # Defensive: never let workbook generation kill the loop.  Fall
+            # back to a minimal stub so the planner still gets a valid prompt.
+            logger.warning("Workbook generation failed: %s", exc)
+            workbook_text = (
+                f"# ProClaim Workbook\n\n"
+                f"(workbook unavailable: {exc})\n\n"
+                f"{WORKBOOK_STABLE_MARKER}\n\n"
+                f"## 1. Header\n- Claim: {claim}\n- Iteration: ?\n"
+                f"- Turns remaining: {turns_remaining}\n"
+            )
+
         if call_count == 0:
             user_text = (
                 f"Verify the following scientific claim using evidence programming.\n\n"
                 f"Claim: {claim}\n\n"
+                f"<workbook>\n{workbook_text}\n</workbook>\n\n"
                 f"Start by calling bash with the setup code to import the evidence API. "
                 f"Follow the evidence programming workflow. "
                 f"Call check_sufficiency after each round. "
@@ -841,7 +846,7 @@ def verify_claim_direct(cfg) -> Path:
             )
         elif turns_remaining <= 2:
             user_text = (
-                f"<execution_log>\n{execution_log}\n</execution_log>\n\n"
+                f"<workbook>\n{workbook_text}\n</workbook>\n\n"
                 f"URGENT — only {turns_remaining} turn(s) remaining before hard stop.\n"
                 f"You MUST call check_sufficiency and then emit_verdict NOW.\n"
                 f"Do NOT run any more searches or extractions.\n"
@@ -849,17 +854,18 @@ def verify_claim_direct(cfg) -> Path:
             )
         else:
             user_text = (
-                f"<execution_log>\n{execution_log}\n</execution_log>\n\n"
+                f"<workbook>\n{workbook_text}\n</workbook>\n\n"
                 f"Continue evidence verification for claim: {claim}\n"
-                f"The execution log above shows all prior work. "
-                f"Continue the workflow: run code, check sufficiency, "
-                f"address remaining gaps, or emit verdict if ready. "
+                f"The workbook above is the compact planning surface derived "
+                f"from durable state. Use it to decide the next single action: "
+                f"search, extract, populate features, filter, check sufficiency, "
+                f"or emit a verdict if ready. "
                 f"Stop when confidence >= {cfg.sufficiency_threshold}."
             )
 
         messages = [
             _cached_system_msg(system_prompt),
-            _cached_user_msg(user_text, prev_log_len=_prev_log_len, curr_log_len=_this_log_len),
+            _cached_user_msg(user_text),
         ]
 
         # --- LLM call ---
@@ -948,6 +954,20 @@ def verify_claim_direct(cfg) -> Path:
 
             logger.info("Tool [call %d]: %s(%s)", call_count, fn_name, str(fn_args)[:200])
 
+            # Pre-action snapshot of durable state.  Reads
+            # evidence_state.json from disk so we capture mutations made by
+            # earlier tool calls in this same turn.  An empty snapshot is
+            # used when the file does not exist yet (very first call).
+            state_path = workspace / "evidence_state.json"
+            try:
+                if state_path.exists():
+                    _before_snap = _snapshot_state(EvidenceState.load(state_path))
+                else:
+                    _before_snap = _StateSnapshot()
+            except Exception as _snap_exc:  # never let snapshotting kill the run
+                logger.debug("Pre-action snapshot failed: %s", _snap_exc)
+                _before_snap = _StateSnapshot()
+
             result = dispatch_tool(
                 fn_name,
                 fn_args,
@@ -957,6 +977,26 @@ def verify_claim_direct(cfg) -> Path:
             )
 
             logger.info("Tool result: %s", result[:200])
+
+            # Post-action snapshot + ledger append.  The ledger writer
+            # spills large outputs to ``workspace/artifacts/`` and records
+            # only a compact summary + delta in the JSONL row.
+            try:
+                if state_path.exists():
+                    _after_snap = _snapshot_state(EvidenceState.load(state_path))
+                else:
+                    _after_snap = _StateSnapshot()
+                _record_action(
+                    workspace=workspace,
+                    turn=call_count,
+                    tool_name=fn_name,
+                    arguments=fn_args,
+                    raw_output=result or "",
+                    before=_before_snap,
+                    after=_after_snap,
+                )
+            except Exception as _led_exc:
+                logger.warning("Failed to record action ledger entry: %s", _led_exc)
 
         # Check stopping after tool dispatch.
         # Only stop on an emitted verdict here — sufficiency alone is not enough
