@@ -17,14 +17,15 @@ The execution log (``workspace/execution_log.py``) remains untouched and
 continues to be produced for audit / notebook rendering.
 
 Sections covered (per the improvement plan):
-  1. Header                — run identity, iteration, turn budget, status
-  2. Claim Frame           — claim, subclaims, consensus and stopping rule
-  3. State Snapshot        — paper / fact / sufficiency aggregates
-  4. Action Loop Record    — last N entries from the action ledger
-  5. Guardrails            — read-only operational policy
-  6. Recuration Queue      — placeholder for Phase 3 queue
+  1. Claim Frame           — claim, subclaims, consensus and stopping rule
+  2. Guardrails            — read-only operational policy
+  3. Header                — run identity, iteration, turn budget, status
+  4. State Snapshot        — paper / fact / sufficiency aggregates
+  5. Action Loop Record    — last N entries from the action ledger
+  6. Recuration Queue      — Phase 3 curation buckets
   7. Verdict Readiness     — derived from sufficiency_history + turn budget
   8. Raw Artifact Index    — handles for spilled raw outputs
+  9. Next-Turn Guidance    — per-turn reflection: diagnosis + next family
 """
 
 from __future__ import annotations
@@ -45,7 +46,6 @@ from proclaim.verification.evidence_state import EvidenceState
 from proclaim.verification.reflection import (
     ReflectionRecord,
     load_reflection,
-    render_reflection_bullets,
 )
 
 
@@ -243,11 +243,7 @@ def _section_state_snapshot(state: EvidenceState) -> str:
     return "\n".join(lines)
 
 
-def _section_action_loop_record(
-    records: Sequence[ActionRecord],
-    *,
-    reflection: Optional[ReflectionRecord] = None,
-) -> str:
+def _section_action_loop_record(records: Sequence[ActionRecord]) -> str:
     """Render the last few action ledger entries as a compact bullet list.
 
     Each bullet is a single line of the form::
@@ -257,22 +253,15 @@ def _section_action_loop_record(
     ``observation`` already carries the delta-derived summary, so we don't
     render the raw ``delta`` dict here.  We deliberately do *not* render
     ``action_type`` (the old heuristic was unreliable for mixed bash cells)
-    or a planner-facing next-step nudge — those belong in reflection.
-
-    When ``reflection`` is provided (Phase 3), its diagnosis is rendered as
-    a two-line lead-in *above* the action bullets so the planner sees
-    "why we're in this state" before "what we tried".
+    or a planner-facing next-step nudge — those belong in Section 9
+    (Next-Turn Guidance).
     """
     header = "## 5. Action Loop Record"
-    lead_in = render_reflection_bullets(reflection)
 
     if not records:
-        body = "- _(empty — no tool calls recorded yet for this run)_"
-        if lead_in:
-            return "\n".join([header, *lead_in, body])
-        return f"{header}\n{body}"
+        return f"{header}\n- _(empty — no tool calls recorded yet for this run)_"
 
-    lines = [header, *lead_in]
+    lines = [header]
     for rec in records:
         target = _clip(rec.target, 80) or "(no target)"
         summary = _clip(rec.observation, 140) or "(no output)"
@@ -407,6 +396,39 @@ def _section_raw_artifact_index(handles: Sequence[str], *, limit: int = 20) -> s
     return "\n".join(lines)
 
 
+def _section_next_turn_guidance(reflection: Optional[ReflectionRecord]) -> str:
+    """Render Section 9 — the reflection module's recommendation for this turn.
+
+    Placed at the very end of the volatile workbook so it sits next to the
+    orchestrator's "make ONE tool call" instruction in the user message —
+    the salient position for an action decision.
+
+    The reflection is regenerated every turn from the latest workbook state
+    (per-turn reflect), so this section always reflects current strategic
+    context, not a stale stall diagnosis.
+    """
+    header = "## 9. Next-Turn Guidance"
+    if reflection is None:
+        return (
+            f"{header}\n"
+            "- _(no reflection recorded yet — first turn, or reflect call failed)_"
+        )
+
+    classification = reflection.classification.value
+    next_family = reflection.proposed_next_family.value
+    diagnosis = reflection.diagnosis.strip() or "(empty)"
+
+    lines = [
+        header,
+        f"- Reflection (turn {reflection.turn}, classification: {classification}):",
+        f"    - Diagnosis: {diagnosis}",
+        f"    - Recommended next action family: `{next_family}`",
+    ]
+    if reflection.override_invoked:
+        lines.append(f"    - Guardrail override invoked: {reflection.override_invoked}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -537,7 +559,7 @@ def build_workbook_parts(
             sufficiency_threshold=sufficiency_threshold,
         ),
         _section_state_snapshot(state),
-        _section_action_loop_record(action_records, reflection=reflection),
+        _section_action_loop_record(action_records),
         _section_recuration_queue(curation_queue),
         _section_verdict_readiness(
             state,
@@ -545,6 +567,7 @@ def build_workbook_parts(
             sufficiency_threshold=sufficiency_threshold,
         ),
         _section_raw_artifact_index(artifact_handles),
+        _section_next_turn_guidance(reflection),
     ]
 
     stable_prefix = "\n\n".join(stable_sections) + "\n\n"

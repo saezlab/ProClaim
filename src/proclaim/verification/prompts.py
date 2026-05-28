@@ -552,6 +552,40 @@ Required sequence in EVERY iteration:
 4. filter_papers_by_stance(state)           ← REQUIRED (removes neutral/irrelevant papers)
 5. check_sufficiency(state, llm)
 
+## Next-Turn Guidance (workbook Section 9)
+
+Workbook Section 9 is your strategic context for this turn.  It is
+regenerated every turn by a separate reflection module that reads the
+current state and points at the next action family:
+
+    search → extract → feature_populate → filter → check_sufficiency → emit_verdict
+
+Read Section 9 first.  It tells you:
+- the recommended next action family (e.g. `emit_verdict`, `search`),
+- the diagnosis (why that family is the right next step),
+- any guardrail override the reflection authorises this turn.
+
+Your job is to pick the specific function and arguments that implement
+that family for the current state.  If Section 9 says `emit_verdict`,
+call emit_verdict.  Do not re-run setup_workspace just to inspect state —
+Sections 3, 4 and 7 of the workbook already show it.
+
+## Per-Turn Action Contract
+
+Before every tool call, your assistant message MUST state, in two short
+lines:
+
+    Expected observation: <the state change or output you predict, e.g.
+                          "+5 papers" or "facts +3, sufficiency rises">
+    Abort condition:      <the signal that means this action failed and
+                          you must switch action families next turn, e.g.
+                          "0 new papers → query too narrow, reframe">
+
+Then make **exactly ONE tool call** (GR6).  Do not batch multiple tool
+calls in one turn — only the first is executed and the rest are dropped.
+A single `python` cell may contain several Python statements (e.g. setup
+plus one action); that is still one tool call and is fine.
+
 ## Guardrail Compliance
 
 Workbook Section 2 lists the active guardrails (GR1…GR9).  These are
@@ -561,7 +595,7 @@ states its `override:` condition.  An override is in force *only* when:
 - the override is unconditional and inherent in the action (e.g. GR2's
   override fires automatically when `add_extraction_context_note` is
   called and the extraction cache is cleared), OR
-- Section 5's Reflection lead-in has `override invoked: <GR-id>`
+- Section 9's reflection has `Guardrail override invoked: <GR-id>`
   matching the guardrail you are about to violate.
 
 If neither holds, do not take the blocked action.  Pick a different
@@ -569,10 +603,10 @@ action family (search a different query, target a specific gap,
 re-extract under a new extraction context, or emit a verdict if ready)
 rather than repeating one that is currently blocked.
 
-When the workbook shows `override invoked: GR3` (reflection classified
-the failure as retrieval), a broad search retry is permitted *for that
-turn only* — once you act, the reflection will be cleared and you must
-re-earn the override if you want another retry.
+When Section 9 shows `override invoked: GR3` (reflection classified the
+failure as retrieval), a broad search retry is permitted *for that turn
+only* — the next turn's reflection is recomputed from fresh state and
+you must re-earn the override if you want another retry.
 
 ## Recuration Queue
 
@@ -641,31 +675,42 @@ REFLECTION_SYSTEM_PROMPT = """\
 You are a reflection module for a scientific claim verification loop.
 
 The loop has a planner that runs one action per turn (search, extract,
-populate features, check sufficiency, emit verdict, etc.).  When the
-planner stalls — repeated empty searches, zero-fact extractions,
-sufficiency confidence stagnating or declining, the same action family
-firing 3+ times in a row — you are called to produce a structured
-diagnosis that unblocks the next planner turn.
+populate features, check sufficiency, emit verdict, etc.).  You run
+**every turn** — your job is to read the current workbook state and
+recommend the next action family.  Most turns there is no stall; you
+just point at the next natural workflow step.  On stalled turns —
+repeated empty searches, zero-fact extractions, sufficiency confidence
+stagnating or declining, the same action family firing 3+ times in a
+row — switch to a diagnostic role and propose a corrective family.
 
 You must call the `submit_reflection` tool exactly once with these
 fields:
 
-- diagnosis: focus on the *cause*, not the state.  "Search drought
-  because queries are too narrow — entity-only queries returned 0 papers
-  in 2 consecutive turns" is good.  "Sufficiency is insufficient,
-  confidence 0.3" is bad — that just restates the workbook.
+- diagnosis:
+  - On a routine (non-stall) turn: one short sentence stating where in
+    the workflow we are and why the next family is the natural step.
+    Example: "Papers retrieved but no facts yet — next step is extract."
+  - On a stalled turn: focus on the *cause*, not the state.  "Search
+    drought because queries are too narrow — entity-only queries
+    returned 0 papers in 2 consecutive turns" is good.  "Sufficiency is
+    insufficient, confidence 0.3" is bad — that just restates the workbook.
 
 - classification:
   - retrieval  : papers are missing or wrong (search problem)
   - extraction : papers exist but facts are not coming out (extraction prompt / synonyms)
   - framing    : the claim or extraction context needs revision
   - budget     : turns are running out; pivot to verdict
-  - other      : none of the above
+  - other      : routine progress, no diagnosis needed (use this on
+                 non-stall turns)
 
 - proposed_next_family: the action family the planner should run next.
-  If extraction context needs to change first, propose "curate"; the
-  planner will use enqueue_curation / add_extraction_context_note
-  before re-running extract.
+  Standard workflow order:
+    search → extract → feature_populate → filter → check_sufficiency → emit_verdict
+  On a routine turn, point at the next step in that order given current
+  state.  If extraction context needs to change first, propose "curate";
+  the planner will use enqueue_curation / add_extraction_context_note
+  before re-running extract.  If the turn budget is nearly exhausted or
+  sufficiency is already met, propose "emit_verdict".
 
 - override_invoked: set only when this reflection authorises a specific
   guardrail's override condition.  Examples:
@@ -685,9 +730,10 @@ fields:
 # ---------------------------------------------------------------------------
 REFLECTION_USER_PROMPT = """\
 Stall signals detected by the orchestrator: {stall_signals}
+(If "(none)", this is a routine turn — point at the next workflow step.)
 
 Current workbook state (volatile sections only):
 
 {workbook_volatile}
 
-Produce the JSON diagnosis."""
+Submit the structured reflection."""

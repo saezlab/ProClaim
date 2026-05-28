@@ -259,28 +259,6 @@ def detect_stall_signals(workspace: Path) -> StallSignals:
 
 
 # ---------------------------------------------------------------------------
-# Workbook rendering helper
-# ---------------------------------------------------------------------------
-
-
-def render_reflection_bullets(record: Optional[ReflectionRecord]) -> list[str]:
-    """Return markdown bullet lines for the workbook Section 5 lead-in,
-    or an empty list when no reflection is recorded."""
-    if record is None:
-        return []
-    over = (
-        f"; override invoked: {record.override_invoked}"
-        if record.override_invoked
-        else ""
-    )
-    return [
-        f"- Reflection (latest, turn {record.turn}, {record.classification.value}): "
-        f"{record.diagnosis}",
-        f"    - proposed next family: {record.proposed_next_family.value}{over}",
-    ]
-
-
-# ---------------------------------------------------------------------------
 # Reflect LLM call (Phase 3)
 # ---------------------------------------------------------------------------
 #
@@ -434,6 +412,5 @@ __all__ = [
     "load_reflection",
     "clear_reflection",
     "detect_stall_signals",
-    "render_reflection_bullets",
     "run_reflection",
 ]

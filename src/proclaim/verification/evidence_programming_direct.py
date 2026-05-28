@@ -729,17 +729,13 @@ def verify_claim_direct(cfg) -> Path:
         write_workbook,
     )
     from proclaim.verification.action_ledger import (
-        compute_delta as _compute_delta,
         record_action as _record_action,
         snapshot_state as _snapshot_state,
         StateSnapshot as _StateSnapshot,
     )
     from proclaim.verification.curation import run_auto_curation
     from proclaim.verification.reflection import (
-        REFLECTION_FILENAME,
-        clear_reflection,
         detect_stall_signals,
-        load_reflection,
         run_reflection,
     )
     from proclaim.verification.workbook import build_workbook_parts
@@ -858,11 +854,19 @@ def verify_claim_direct(cfg) -> Path:
     # Each LLM call receives [system_prompt, workbook + instruction].
     # The execution log keeps growing on disk for audit, but the planner now
     # reads the compact workbook regenerated each turn from EvidenceState.
+    # ``max_calls`` is the hard kill-switch on total LLM calls.  ``planning_budget``
+    # is the realistic per-claim planning horizon that drives verdict-readiness
+    # gating (the URGENT warning + workbook status).  Keying gating off max_calls
+    # (= max_iterations * max_turns, e.g. 240) meant the "wrap up now" gate never
+    # fired until the very last calls; gating off max_turns warns the planner at a
+    # realistic point while max_calls still backstops a runaway loop.
     max_calls = cfg.max_iterations * cfg.max_turns
+    planning_budget = cfg.max_turns
     call_count = 0
 
     while call_count < max_calls:
-        turns_remaining = max_calls - call_count
+        turns_remaining = max_calls - call_count  # hard-ceiling log only
+        planning_turns_remaining = max(planning_budget - call_count, 0)
 
         # Phase 3: refresh the auto-populated curation buckets (gaps from
         # latest sufficiency check, conflicts, zero-fact papers) before the
@@ -873,58 +877,59 @@ def verify_claim_direct(cfg) -> Path:
         except Exception as exc:
             logger.debug("auto-curation refresh failed: %s", exc)
 
-        # Phase 3: detect stall signals.  Fire the reflect LLM only when no
-        # unconsumed reflection already exists on disk — clear_reflection
-        # (called after each productive planner action) is the throttle.
-        # This caps reflect-LLM cost at one call per stall *episode*, not
-        # per stall *turn*.
-        try:
-            signals = detect_stall_signals(workspace)
-            _reflection_exists = (workspace / REFLECTION_FILENAME).exists()
-            if signals.any_fired and not _reflection_exists:
-                logger.info(
-                    "Stall detected at call %d: %s — invoking reflect LLM",
-                    call_count, "; ".join(signals.reasons) or "(unknown)",
+        # Phase 4: per-turn reflection.  The reflect LLM runs every turn
+        # (skipped only on the very first call, before any state exists).
+        # It reads the volatile workbook tail and writes Section 9's
+        # recommendation to ``reflection.json``.  Stall signals are passed
+        # as context so the reflect LLM can switch to diagnostic mode when
+        # they fire, but they no longer gate the call.
+        state_file = workspace / "evidence_state.json"
+        if state_file.exists():
+            try:
+                signals = detect_stall_signals(workspace)
+            except Exception as exc:
+                logger.debug("stall-signal detection failed: %s", exc)
+                from proclaim.verification.reflection import StallSignals
+                signals = StallSignals()
+
+            try:
+                current_state = EvidenceState.load(state_file)
+                _, volatile_tail = build_workbook_parts(
+                    current_state,
+                    workspace=workspace,
+                    max_turns=planning_budget,
+                    turns_used=call_count,
+                    sufficiency_threshold=cfg.sufficiency_threshold,
+                    max_iterations=cfg.max_iterations,
+                    label_cfg=label_cfg,
                 )
-                try:
-                    current_state = EvidenceState.load(workspace / "evidence_state.json")
-                    _, volatile_tail = build_workbook_parts(
-                        current_state,
-                        workspace=workspace,
-                        max_turns=max_calls,
-                        turns_used=call_count,
-                        sufficiency_threshold=cfg.sufficiency_threshold,
-                        max_iterations=cfg.max_iterations,
-                        label_cfg=label_cfg,
-                    )
-                except Exception as exc:
-                    logger.debug("could not render volatile tail for reflect: %s", exc)
-                    volatile_tail = ""
+            except Exception as exc:
+                logger.debug("could not render volatile tail for reflect: %s", exc)
+                volatile_tail = ""
 
-                _reflect_t0 = time.monotonic()
-                try:
-                    reflect_record = run_reflection(
-                        workspace=workspace,
-                        workbook_volatile=volatile_tail,
-                        stall_signals=signals,
-                        turn=call_count,
-                        model=agent_model,
-                    )
-                except Exception as exc:
-                    logger.warning("Reflect LLM call failed: %s", exc)
-                    reflect_record = None
-                _reflect_latency = time.monotonic() - _reflect_t0
+            _reflect_t0 = time.monotonic()
+            try:
+                reflect_record = run_reflection(
+                    workspace=workspace,
+                    workbook_volatile=volatile_tail,
+                    stall_signals=signals,
+                    turn=call_count,
+                    model=agent_model,
+                )
+            except Exception as exc:
+                logger.warning("Reflect LLM call failed: %s", exc)
+                reflect_record = None
+            _reflect_latency = time.monotonic() - _reflect_t0
 
-                if reflect_record is not None:
-                    logger.info(
-                        "Reflection recorded: classification=%s next_family=%s override=%s (%.2fs)",
-                        reflect_record.classification.value,
-                        reflect_record.proposed_next_family.value,
-                        reflect_record.override_invoked or "-",
-                        _reflect_latency,
-                    )
-        except Exception as exc:
-            logger.debug("stall-signal handling failed: %s", exc)
+            if reflect_record is not None:
+                logger.info(
+                    "Reflection recorded (turn %d): classification=%s next_family=%s override=%s (%.2fs)",
+                    call_count,
+                    reflect_record.classification.value,
+                    reflect_record.proposed_next_family.value,
+                    reflect_record.override_invoked or "-",
+                    _reflect_latency,
+                )
 
         # *** CONTEXT REFRESH: regenerate the workbook from durable state ***
         # The workbook is the planner's primary context.  It is rebuilt from
@@ -935,7 +940,7 @@ def verify_claim_direct(cfg) -> Path:
             workbook_path = write_workbook(
                 current_state,
                 workspace=workspace,
-                max_turns=max_calls,
+                max_turns=planning_budget,
                 turns_used=call_count,
                 sufficiency_threshold=cfg.sufficiency_threshold,
                 max_iterations=cfg.max_iterations,
@@ -951,7 +956,7 @@ def verify_claim_direct(cfg) -> Path:
                 f"(workbook unavailable: {exc})\n\n"
                 f"{WORKBOOK_STABLE_MARKER}\n\n"
                 f"## 3. Header\n- Claim: {claim}\n- Iteration: ?\n"
-                f"- Turns remaining: {turns_remaining}\n"
+                f"- Turns remaining: {planning_turns_remaining}\n"
             )
 
         if call_count == 0:
@@ -965,10 +970,10 @@ def verify_claim_direct(cfg) -> Path:
                 f"Stop when confidence >= {cfg.sufficiency_threshold} or after "
                 f"{cfg.max_iterations} iterations."
             )
-        elif turns_remaining <= 2:
+        elif planning_turns_remaining <= 2:
             user_text = (
                 f"<workbook>\n{workbook_text}\n</workbook>\n\n"
-                f"URGENT — only {turns_remaining} turn(s) remaining before hard stop.\n"
+                f"URGENT — only {planning_turns_remaining} planning turn(s) remaining.\n"
                 f"You MUST call check_sufficiency and then emit_verdict NOW.\n"
                 f"Do NOT run any more searches or extractions.\n"
                 f"Claim: {claim}"
@@ -981,6 +986,8 @@ def verify_claim_direct(cfg) -> Path:
                 f"from durable state. Use it to decide the next single action: "
                 f"search, extract, populate features, filter, check sufficiency, "
                 f"or emit a verdict if ready. "
+                f"State your Expected observation and Abort condition, then make "
+                f"exactly ONE tool call. "
                 f"Stop when confidence >= {cfg.sufficiency_threshold}."
             )
 
@@ -1065,8 +1072,48 @@ def verify_claim_direct(cfg) -> Path:
             logger.info("Agent stopped without verdict (call %d). Re-prompting.", call_count)
             continue
 
+        # GR6: one next action only.  The planner sometimes batches several
+        # tool calls in a single turn; we honour the bounded-ReAct contract by
+        # dispatching only the first (its highest-priority intended action) and
+        # dropping the rest.  A zero-delta ledger note keeps the audit trail
+        # honest and lets the planner see, on its next turn, that extra calls
+        # were ignored.  The constraint is on the *number of tool calls*, not
+        # the Python statements inside one cell — a single python cell with
+        # setup + action is fine.  emit_verdict is a Python evidence-API call
+        # inside a python cell, not a top-level tool, so this never blocks it.
+        dispatched = assistant_msg.tool_calls[:1]
+        dropped = assistant_msg.tool_calls[1:]
+        if dropped:
+            logger.warning(
+                "GR6: planner emitted %d tool calls; dispatching only the first "
+                "(%s), dropping %d.",
+                len(assistant_msg.tool_calls),
+                dispatched[0].function.name,
+                len(dropped),
+            )
+            try:
+                state_path = workspace / "evidence_state.json"
+                if state_path.exists():
+                    _gr6_snap = _snapshot_state(EvidenceState.load(state_path))
+                else:
+                    _gr6_snap = _StateSnapshot()
+                _record_action(
+                    workspace=workspace,
+                    turn=call_count,
+                    tool_name="gr6_enforcement",
+                    arguments={"dropped": [tc.function.name for tc in dropped]},
+                    raw_output=(
+                        f"GR6: dropped {len(dropped)} extra tool call(s); "
+                        "one action per turn."
+                    ),
+                    before=_gr6_snap,
+                    after=_gr6_snap,  # zero delta — this is a policy note, not an action
+                )
+            except Exception as _gr6_exc:
+                logger.debug("GR6 ledger note failed: %s", _gr6_exc)
+
         # Dispatch tool calls — results are appended to execution log
-        for tc in assistant_msg.tool_calls:
+        for tc in dispatched:
             fn_name = tc.function.name
             try:
                 fn_args = json.loads(tc.function.arguments)
@@ -1118,27 +1165,6 @@ def verify_claim_direct(cfg) -> Path:
                 )
             except Exception as _led_exc:
                 logger.warning("Failed to record action ledger entry: %s", _led_exc)
-                _after_snap = _before_snap  # neutral delta for the clear-reflection check below
-
-            # Phase 3: consume the reflection when the just-completed action
-            # produced real progress (more papers, more facts, or higher
-            # sufficiency confidence).  If progress was nil, leave the
-            # reflection in place so the next workbook still surfaces it.
-            try:
-                _delta = _compute_delta(_before_snap, _after_snap)
-                _progress = (
-                    _delta.get("papers", 0) > 0
-                    or _delta.get("facts", 0) > 0
-                    or (
-                        isinstance(_delta.get("sufficiency"), dict)
-                        and _delta["sufficiency"].get("confidence", 0.0) > 0
-                    )
-                )
-                if _progress and (workspace / REFLECTION_FILENAME).exists():
-                    clear_reflection(workspace)
-                    logger.debug("Reflection cleared after productive action.")
-            except Exception as _clr_exc:
-                logger.debug("clear_reflection check failed: %s", _clr_exc)
 
         # Check stopping after tool dispatch.
         # Only stop on an emitted verdict here — sufficiency alone is not enough

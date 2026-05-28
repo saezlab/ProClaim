@@ -11,8 +11,8 @@ parsed from the verdict artifacts.
 Example command:
     uv run python experiments/run_signor_eval.py \
         --input-csv datasets/signor.csv \
-        --config experiments/configs/signor_smoke_gemini_config.yaml \
-        --limit 1 --reps 1 --run-tag smoke_gemini_test
+        --config experiments/configs/signor_smoke_config.yaml \
+        --limit 1 --reps 1 --run-tag smoke_test
     
 
     time uv run python -m proclaim.verification.evidence_programming_direct --config experiments/configs/signor_smoke_config.yaml \
