@@ -213,6 +213,10 @@ def function_docs() -> str:
         emit_verdict, formulate_pubmed_query, search_for_gap, refine_search_for_failed_papers,
         populate_paper_features, filter_papers_by_stance,
         add_extraction_context_note,
+        enqueue_curation,
+        # NOTE: record_reflection is intentionally not exposed to the planner.
+        # Reflection is produced by an orchestrator-driven reflect LLM, not
+        # by the planner itself (see proclaim.verification.reflection.run_reflection).
     ]
 
     # Import model registry function for documentation
@@ -1398,6 +1402,11 @@ def add_extraction_context_note(state: EvidenceState, note: str) -> None:
     belong in the verdict reasoning, not here.  Injecting conclusions biases the
     extraction LLM and will produce incorrect stance labels.
 
+    Side effect (Phase 3): the PMIDs being cleared are auto-enqueued into the
+    Re-extract bucket of ``curation_queue.json`` (when a workspace is bound to
+    the state), so the workbook surfaces "what needs re-extracting" without
+    the planner having to remember it.
+
     Args:
         state: The live EvidenceState object.
         note: A terminology/disambiguation note to inject into the EXTRACT_FACTS prompt.
@@ -1418,7 +1427,10 @@ def add_extraction_context_note(state: EvidenceState, note: str) -> None:
         ...     "at serine 9, activating it.",  # pre-conclusion, not a synonym
         ... )
     """
-    n_cleared = len(state.extracted_pmids)
+    # Snapshot the cache BEFORE state.add_extraction_context clears it — these
+    # are the PMIDs that now need re-extraction under the new context.
+    cleared_pmids = list(state.extracted_pmids)
+    n_cleared = len(cleared_pmids)
     n_papers = len(state.papers)
     state.add_extraction_context(note)
     state.append_trace("add_extraction_context", {
@@ -1426,6 +1438,22 @@ def add_extraction_context_note(state: EvidenceState, note: str) -> None:
         "extracted_pmids_cleared": n_cleared,
         "total_context_notes": len(state.extraction_context),
     })
+    # Auto-enqueue into the Re-extract curation bucket (best-effort).
+    workspace = getattr(state, "_workspace", None)
+    if workspace is not None and cleared_pmids:
+        try:
+            from proclaim.verification.curation import auto_enqueue_re_extract
+            short_note = note.strip().replace("\n", " ")
+            if len(short_note) > 100:
+                short_note = short_note[:99] + "…"
+            auto_enqueue_re_extract(
+                workspace,
+                cleared_pmids,
+                reason=f"extraction_context changed: {short_note!r}",
+                source="auto",
+            )
+        except Exception as exc:
+            logger.debug("auto_enqueue_re_extract failed: %s", exc)
     print(
         f"Added extraction context note. Cleared all extracted_pmids ({n_cleared} → 0).\n"
         f"NEXT STEP: re-extract ALL {n_papers} papers with the updated prompt:\n"
@@ -2308,6 +2336,21 @@ def filter_papers_by_stance(
         "removed_pmids": list(papers_to_remove),
     })
 
+    # Auto-enqueue removed PMIDs into the filtered_to_revisit curation bucket
+    # (best-effort — never let queue maintenance break filtering).
+    workspace = getattr(state, "_workspace", None)
+    if workspace is not None and papers_to_remove:
+        try:
+            from proclaim.verification.curation import auto_enqueue_filtered
+            auto_enqueue_filtered(
+                workspace,
+                papers_to_remove,
+                reason=f"filtered_by_stance: had no facts in {keep_stances}",
+                source="auto",
+            )
+        except Exception as exc:
+            logger.debug("auto_enqueue_filtered failed: %s", exc)
+
     # Auto-save
     state._auto_save()
 
@@ -2409,6 +2452,85 @@ def emit_verdict(
         print(f"Verdict emitted: {verdict} (confidence: {confidence:.2f}).")
 
     return v
+
+
+# ---------------------------------------------------------------------------
+# Recuration (Phase 3)
+# ---------------------------------------------------------------------------
+# Reflection is produced by an orchestrator-driven reflect LLM call (see
+# proclaim.verification.reflection.run_reflection), not by the planner.
+# Only enqueue_curation is exposed to the planner here.
+
+
+def enqueue_curation(
+    state: EvidenceState,
+    bucket: str,
+    *,
+    pmid: Optional[str] = None,
+    description: Optional[str] = None,
+    conflict_id: Optional[str] = None,
+    reason: str = "",
+    priority: str = "medium",
+    subclaim: str = "",
+    gap_type: str = "",
+    source: str = "planner",
+) -> bool:
+    """Explicitly add an item to the recuration queue.
+
+    Bucket-specific required fields:
+
+    * ``re_rank`` / ``re_extract`` / ``filtered_to_revisit`` / ``zero_fact``:
+      pass ``pmid`` and ``reason``.
+    * ``gaps``: pass ``description`` (with optional ``subclaim``,
+      ``priority``, ``gap_type``).
+    * ``contradictions``: pass ``conflict_id`` and ``reason`` (used as
+      summary).
+
+    Returns True iff a new entry was created (duplicates are ignored).
+    """
+    from proclaim.verification.curation import BUCKETS_PAPER, CurationQueue
+
+    workspace = getattr(state, "_workspace", None)
+    if workspace is None:
+        raise ValueError(
+            "enqueue_curation requires state to be bound to a workspace."
+        )
+
+    queue = CurationQueue.load(workspace)
+    created = False
+    if bucket in BUCKETS_PAPER:
+        if not pmid:
+            raise ValueError(f"bucket {bucket!r} requires a pmid")
+        created = queue.add_paper(bucket, pmid, reason or "(no reason)", source=source)  # type: ignore[arg-type]
+    elif bucket == "gaps":
+        if not description:
+            raise ValueError("bucket 'gaps' requires a description")
+        created = queue.add_gap(
+            description,
+            subclaim=subclaim,
+            priority=priority,
+            gap_type=gap_type,
+            source=source,  # type: ignore[arg-type]
+        )
+    elif bucket == "contradictions":
+        if not conflict_id:
+            raise ValueError("bucket 'contradictions' requires a conflict_id")
+        created = queue.add_contradiction(
+            conflict_id, reason or "(no summary)", source=source  # type: ignore[arg-type]
+        )
+    else:
+        raise ValueError(f"Unknown bucket: {bucket!r}")
+    queue.save(workspace)
+    if created:
+        state.append_trace(
+            "enqueue_curation",
+            {"bucket": bucket, "pmid": pmid, "description": description,
+             "conflict_id": conflict_id, "reason": reason, "source": source},
+        )
+        print(f"Enqueued into curation['{bucket}'] (source={source}).")
+    else:
+        print(f"curation['{bucket}'] already contains this entry — skipped.")
+    return created
 
 
 # ---------------------------------------------------------------------------

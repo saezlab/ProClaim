@@ -454,13 +454,19 @@ DIRECT_SYSTEM_PROMPT = """\
 You are an evidence-programming agent that verifies scientific claims and produces verdicts [{verdict_names}].
 {verdict_definitions}
 
-You work by writing Python code executed via the `bash` tool.  Each bash
-call runs `python3 -c '...'` in the workspace directory.  All evidence API
-functions are available as Python imports.
+You work by calling two tools:
+  - `python(code=...)` — run Python.  All evidence API functions are
+    importable from `proclaim.verification.evidence_api`.  State does
+    NOT persist between calls — re-import and reload state via
+    setup_workspace every call.
+  - `bash(command=...)` — shell operations only (ls, cat, find).  Do
+    NOT use it to run Python; use the `python` tool instead.
+
+The working directory for both tools is the workspace.
 
 ## First step — set up
 
-Call `bash` with the setup code to bootstrap the workspace:
+Call `python` with the setup code to bootstrap the workspace:
 
 ```python
 from proclaim.verification.evidence_api import setup_workspace
@@ -471,7 +477,7 @@ state, llm, workspace = setup_workspace(
 print("Ready")
 ```
 
-After this, every subsequent bash call must re-load state from disk
+After this, every subsequent python call must re-load state from disk
 (there is no persistent kernel).  Use setup_workspace which is idempotent
 (loads existing state if present):
 
@@ -487,7 +493,7 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
 
 ## Workflow
 
-1. Call bash with the setup code above.
+1. Call the python tool with the setup code above.
 2. Decompose the claim into 1–5 atomic subclaims, each a single independently
    verifiable assertion. Use 1 (the original claim) if the claim is already simple
    enough to search directly. Include alternative names or aliases for key entities.
@@ -512,10 +518,10 @@ state, llm, workspace = setup_workspace(claim="{claim}", workspace_path="{worksp
 
 ## Rules
 
-- Use bash for ALL evidence API calls — write Python code.
+- Use the `python` tool for ALL evidence API calls — write Python code.
 - Print results to stdout so you can see them.
 - ALL state mutations are auto-saved to evidence_state.json.
-- `state` does NOT persist across bash calls — reload it each time
+- `state` does NOT persist across python calls — reload it each time
   (or call setup_workspace again).
 - When emit_verdict is called, the verification is complete.
 - Do NOT attempt to debug, patch, or work around evidence API functions that return 0 facts. A 0-fact result means the paper lacks relevant evidence or accessible full text — not a tool bug. Move on to other papers or emit a verdict.
@@ -545,6 +551,48 @@ Required sequence in EVERY iteration:
 3. populate_paper_features(state)           ← REQUIRED
 4. filter_papers_by_stance(state)           ← REQUIRED (removes neutral/irrelevant papers)
 5. check_sufficiency(state, llm)
+
+## Guardrail Compliance
+
+Workbook Section 2 lists the active guardrails (GR1…GR9).  These are
+read-only policy: do not edit, relax, or rewrite them.  Each guardrail
+states its `override:` condition.  An override is in force *only* when:
+
+- the override is unconditional and inherent in the action (e.g. GR2's
+  override fires automatically when `add_extraction_context_note` is
+  called and the extraction cache is cleared), OR
+- Section 5's Reflection lead-in has `override invoked: <GR-id>`
+  matching the guardrail you are about to violate.
+
+If neither holds, do not take the blocked action.  Pick a different
+action family (search a different query, target a specific gap,
+re-extract under a new extraction context, or emit a verdict if ready)
+rather than repeating one that is currently blocked.
+
+When the workbook shows `override invoked: GR3` (reflection classified
+the failure as retrieval), a broad search retry is permitted *for that
+turn only* — once you act, the reflection will be cleared and you must
+re-earn the override if you want another retry.
+
+## Recuration Queue
+
+Workbook Section 6 is a running to-do list for evidence that needs
+revisiting (re-rank, re-extract, filtered-to-revisit, zero-fact papers,
+gaps, contradictions).  Items appear automatically from sufficiency gaps
+and conflicts.  You can also enqueue items explicitly:
+
+```python
+from proclaim.verification.evidence_api import enqueue_curation
+# Mark a paper for re-ranking under a new framing
+enqueue_curation(state, "re_rank", pmid="12345", reason="reframed as off-claim")
+# Add a targeted gap to chase next
+enqueue_curation(state, "gaps", description="missing dose-response data",
+                 priority="high", subclaim=state.subclaims[0])
+```
+
+Treat Section 6 as the ordered shortlist of what to do next.  If a
+specific gap is listed, target it (e.g. search_for_gap) rather than
+re-running the original claim-level search.
 
 ## Important
 
@@ -577,3 +625,69 @@ Call check_sufficiency after each round. \
 Stop when confidence >= {sufficiency_threshold} or after \
 {max_iterations} iterations. \
 Always pass notebook_path="{notebook_path}" to every notebook tool call."""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Reflect LLM prompts  (used by reflection.run_reflection)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ---------------------------------------------------------------------------
+# Reflect system prompt
+# No placeholders.  The reflect LLM is invoked only when stall signals fire;
+# it produces a structured 4-field JSON diagnosis and proposes a recovery
+# action family.  It does NOT execute tools — its only output is the JSON.
+# ---------------------------------------------------------------------------
+REFLECTION_SYSTEM_PROMPT = """\
+You are a reflection module for a scientific claim verification loop.
+
+The loop has a planner that runs one action per turn (search, extract,
+populate features, check sufficiency, emit verdict, etc.).  When the
+planner stalls — repeated empty searches, zero-fact extractions,
+sufficiency confidence stagnating or declining, the same action family
+firing 3+ times in a row — you are called to produce a structured
+diagnosis that unblocks the next planner turn.
+
+You must call the `submit_reflection` tool exactly once with these
+fields:
+
+- diagnosis: focus on the *cause*, not the state.  "Search drought
+  because queries are too narrow — entity-only queries returned 0 papers
+  in 2 consecutive turns" is good.  "Sufficiency is insufficient,
+  confidence 0.3" is bad — that just restates the workbook.
+
+- classification:
+  - retrieval  : papers are missing or wrong (search problem)
+  - extraction : papers exist but facts are not coming out (extraction prompt / synonyms)
+  - framing    : the claim or extraction context needs revision
+  - budget     : turns are running out; pivot to verdict
+  - other      : none of the above
+
+- proposed_next_family: the action family the planner should run next.
+  If extraction context needs to change first, propose "curate"; the
+  planner will use enqueue_curation / add_extraction_context_note
+  before re-running extract.
+
+- override_invoked: set only when this reflection authorises a specific
+  guardrail's override condition.  Examples:
+  - GR1 "do not rerun the same query" — override when classification is
+    retrieval AND your proposed retry uses a different rationale
+    (different aliases, different scope).  Set "GR1".
+  - GR3 "do not broad-search after extraction failure unless retrieval"
+    — override when classification is retrieval.  Set "GR3".
+  Otherwise pass null."""
+
+
+# ---------------------------------------------------------------------------
+# Reflect user prompt
+# Placeholders: stall_signals, workbook_volatile
+# stall_signals is a "; "-joined list of human-readable reason strings.
+# workbook_volatile is the volatile half of the workbook (Sections 3-8).
+# ---------------------------------------------------------------------------
+REFLECTION_USER_PROMPT = """\
+Stall signals detected by the orchestrator: {stall_signals}
+
+Current workbook state (volatile sections only):
+
+{workbook_volatile}
+
+Produce the JSON diagnosis."""

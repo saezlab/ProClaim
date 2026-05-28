@@ -7,7 +7,8 @@ Phase 1 scope (see doc/IMPROVEMENT_PLAN.md):
   - Replace the full execution log as the planner's primary context.
 
 Phase 2 scope (this revision):
-  - Render Section 4 (Action Loop Record) from action_ledger.jsonl entries.
+  - Render Section 5 (Action Loop Record) from action_ledger.jsonl entries
+    as a compact bullet list (one bullet per tool call).
   - Render Section 8 (Raw Artifact Index) from artifact handles persisted
     by the orchestrator alongside the ledger.
 
@@ -39,7 +40,13 @@ from proclaim.verification.action_ledger import (
     load_artifact_handles,
     load_recent_records,
 )
+from proclaim.verification.curation import CurationQueue, render_curation_section
 from proclaim.verification.evidence_state import EvidenceState
+from proclaim.verification.reflection import (
+    ReflectionRecord,
+    load_reflection,
+    render_reflection_bullets,
+)
 
 
 WORKBOOK_SCHEMA_VERSION = "workbook.v1"
@@ -129,12 +136,10 @@ def _section_header(
     iteration = state.iteration
     turns_remaining = max(max_turns - turns_used, 0)
     status = _derive_status(state, turns_remaining, sufficiency_threshold, workspace)
-    normalized = _normalize_claim(state.claim)
 
     lines = [
-        "## 1. Header",
+        "## 3. Header",
         f"- Claim: {state.claim}",
-        f"- Normalized claim: {normalized}",
         f"- Workspace: {workspace}",
         f"- Iteration: {iteration}",
         f"- Turns remaining: {turns_remaining} / {max_turns}",
@@ -170,7 +175,7 @@ def _section_claim_frame(
     )
 
     lines = [
-        "## 2. Claim Frame",
+        "## 1. Claim Frame",
         f"- Input claim: {state.claim}",
         f"- Verdict labels: {verdict_names}",
         "- Target question: whether the literature overall supports, refutes, or leaves the claim uncertain",
@@ -197,7 +202,6 @@ def _section_state_snapshot(state: EvidenceState) -> str:
     facts = state.facts
 
     total_papers = len(papers)
-    papers_with_summary = sum(1 for p in papers.values() if p.summary)
     papers_with_full_text = sum(1 for p in papers.values() if p.full_text)
     extracted_pmids = set(state.extracted_pmids or [])
 
@@ -214,7 +218,6 @@ def _section_state_snapshot(state: EvidenceState) -> str:
 
     rows = [
         ("Papers retrieved", total_papers),
-        ("Papers with summaries", papers_with_summary),
         ("Papers with full text", papers_with_full_text),
         ("Papers extracted (cache)", len(extracted_pmids)),
         ("Zero-fact papers (extracted, no facts)", len(zero_fact_papers)),
@@ -233,57 +236,67 @@ def _section_state_snapshot(state: EvidenceState) -> str:
     suff_trend = _format_sufficiency_trend(state)
     open_gaps = _format_open_gaps(state)
 
-    lines = ["## 3. State Snapshot", *table, "", "- Sufficiency trend:"]
+    lines = ["## 4. State Snapshot", *table, "", "- Sufficiency trend:"]
     lines.extend(suff_trend)
     lines.append("- Open gaps:")
     lines.extend(open_gaps)
     return "\n".join(lines)
 
 
-def _section_action_loop_record(records: Sequence[ActionRecord]) -> str:
-    """Render the last few action ledger entries as a compact markdown table.
+def _section_action_loop_record(
+    records: Sequence[ActionRecord],
+    *,
+    reflection: Optional[ReflectionRecord] = None,
+) -> str:
+    """Render the last few action ledger entries as a compact bullet list.
 
-    Each row holds the same fields specified in the improvement plan
-    (Section 4): id, type, target, observation, delta, diagnosis, next,
-    artifact handle.  Long cells are clipped and table-breaking characters
-    (``|`` and newlines) are escaped so the table stays parseable.
+    Each bullet is a single line of the form::
+
+        - #<id> <target> — <observation>[; <diagnosis>][ <artifact_handle>]
+
+    ``observation`` already carries the delta-derived summary, so we don't
+    render the raw ``delta`` dict here.  We deliberately do *not* render
+    ``action_type`` (the old heuristic was unreliable for mixed bash cells)
+    or a planner-facing next-step nudge — those belong in reflection.
+
+    When ``reflection`` is provided (Phase 3), its diagnosis is rendered as
+    a two-line lead-in *above* the action bullets so the planner sees
+    "why we're in this state" before "what we tried".
     """
-    header = (
-        "## 4. Action Loop Record\n"
-        "| Id | Type | Target | Observed | Delta | Diagnosis | Next | Artifact |\n"
-        "| --- | --- | --- | --- | --- | --- | --- | --- |"
-    )
+    header = "## 5. Action Loop Record"
+    lead_in = render_reflection_bullets(reflection)
 
     if not records:
-        return (
-            header
-            + "\n| _(empty — no tool calls recorded yet for this run)_ "
-            + "|  |  |  |  |  |  |  |"
-        )
+        body = "- _(empty — no tool calls recorded yet for this run)_"
+        if lead_in:
+            return "\n".join([header, *lead_in, body])
+        return f"{header}\n{body}"
 
-    rows: list[str] = []
+    lines = [header, *lead_in]
     for rec in records:
-        rows.append(
-            "| "
-            + " | ".join(
-                [
-                    str(rec.action_id),
-                    _md_cell(rec.action_type, 24),
-                    _md_cell(rec.target, 60),
-                    _md_cell(rec.observation, 90),
-                    _md_cell(_format_delta(rec.delta), 80),
-                    _md_cell(rec.diagnosis or "—", 80),
-                    _md_cell(rec.next_step or "—", 60),
-                    _md_cell(rec.artifact_handle or "—", 60),
-                ]
-            )
-            + " |"
-        )
-    return header + "\n" + "\n".join(rows)
+        target = _clip(rec.target, 80) or "(no target)"
+        summary = _clip(rec.observation, 140) or "(no output)"
+        bullet = f"- #{rec.action_id} {target} — {summary}"
+        if rec.diagnosis:
+            bullet += f"; {_clip(rec.diagnosis, 140)}"
+        if rec.artifact_handle:
+            bullet += f" [{rec.artifact_handle}]"
+        lines.append(bullet)
+    return "\n".join(lines)
+
+
+def _clip(value: Optional[str], limit: int) -> str:
+    """Collapse newlines and clip to ``limit`` chars for a single-line bullet."""
+    if not value:
+        return ""
+    s = str(value).replace("\n", " ").replace("\r", " ").strip()
+    if len(s) > limit:
+        s = s[: max(limit - 1, 1)] + "…"
+    return s
 
 
 def _section_guardrails(guardrails: Iterable[dict[str, str]]) -> str:
-    blocks = ["## 5. Guardrails"]
+    blocks = ["## 2. Guardrails"]
     for gr in guardrails:
         blocks.append(f"- {gr['id']}:")
         blocks.append(f"    - source: {gr['source']}")
@@ -298,17 +311,9 @@ def _section_guardrails(guardrails: Iterable[dict[str, str]]) -> str:
     return "\n".join(blocks)
 
 
-def _section_recuration_queue() -> str:
-    """Phase 3 placeholder — six standard buckets."""
-    return (
-        "## 6. Recuration Queue\n"
-        "- Re-rank: (none)\n"
-        "- Re-extract: (none)\n"
-        "- Filtered to revisit: (none)\n"
-        "- Zero-fact papers needing claim-frame adjustment: (none)\n"
-        "- Gaps / new subclaims needing targeted search: (none)\n"
-        "- Contradictions needing resolution: (none)"
-    )
+def _section_recuration_queue(queue: Optional[CurationQueue]) -> str:
+    """Render Section 6 from a CurationQueue (or an empty default)."""
+    return render_curation_section(queue)
 
 
 def _section_verdict_readiness(
@@ -407,16 +412,6 @@ def _section_raw_artifact_index(handles: Sequence[str], *, limit: int = 20) -> s
 # ---------------------------------------------------------------------------
 
 
-def _normalize_claim(claim: str) -> str:
-    """Light normalization — strip whitespace and collapse runs of spaces.
-
-    A fuller normalization (alias canonicalization, entity-relation parsing)
-    is the responsibility of the agent's Claim Frame step.  This helper
-    keeps the header stable so the planner can compare turn-over-turn.
-    """
-    return " ".join(claim.split())
-
-
 def _derive_status(
     state: EvidenceState,
     turns_remaining: int,
@@ -455,73 +450,6 @@ def _format_sufficiency_trend(state: EvidenceState) -> list[str]:
             f"{len(res.gaps)} gaps)"
         )
     return lines
-
-
-def _md_cell(value: str, limit: int) -> str:
-    """Escape a value for a markdown table cell and clip to ``limit`` chars."""
-    if value is None:
-        return "—"
-    s = str(value).replace("\n", " ").replace("\r", " ").replace("|", "\\|").strip()
-    if not s:
-        return "—"
-    if len(s) > limit:
-        s = s[: max(limit - 1, 1)] + "…"
-    return s
-
-
-def _format_delta(delta: dict) -> str:
-    """Compact one-line rendering of an action-record delta dict."""
-    if not delta:
-        return "(none)"
-    parts: list[str] = []
-    # Stable ordering — flag the high-signal fields first.
-    for key in (
-        "papers",
-        "facts",
-        "extracted_pmids",
-        "facts_by_stance",
-        "conflicts",
-        "sufficiency",
-        "open_gaps",
-        "iteration",
-    ):
-        if key not in delta:
-            continue
-        parts.append(_format_delta_entry(key, delta[key]))
-    # Pick up anything not in the curated list above.
-    for key, val in delta.items():
-        if key in (
-            "papers",
-            "facts",
-            "extracted_pmids",
-            "facts_by_stance",
-            "conflicts",
-            "sufficiency",
-            "open_gaps",
-            "iteration",
-        ):
-            continue
-        parts.append(_format_delta_entry(key, val))
-    return ", ".join(parts) if parts else "(none)"
-
-
-def _format_delta_entry(key: str, value) -> str:
-    if isinstance(value, dict):
-        if key == "sufficiency":
-            return (
-                f"sufficiency={value.get('label')}@{value.get('confidence', 0):.2f}"
-            )
-        inner = ",".join(f"{k}{_signed(v)}" for k, v in value.items())
-        return f"{key}({inner})"
-    if isinstance(value, (int, float)):
-        return f"{key}{_signed(value)}"
-    return f"{key}={value}"
-
-
-def _signed(n) -> str:
-    if isinstance(n, float):
-        return f"+{n:.2f}" if n >= 0 else f"{n:.2f}"
-    return f"+{n}" if n >= 0 else str(n)
 
 
 def _format_open_gaps(state: EvidenceState) -> list[str]:
@@ -564,6 +492,8 @@ def build_workbook_parts(
     action_records: Optional[Sequence[ActionRecord]] = None,
     artifact_handles: Optional[Sequence[str]] = None,
     action_window: int = DEFAULT_WORKBOOK_WINDOW,
+    reflection: Optional[ReflectionRecord] = None,
+    curation_queue: Optional[CurationQueue] = None,
 ) -> tuple[str, str]:
     """Build the workbook as a (stable_prefix, volatile_tail) pair.
 
@@ -571,9 +501,9 @@ def build_workbook_parts(
     cache-friendly portion; the volatile tail is regenerated each turn.
     Both strings already include trailing newlines.
 
-    ``action_records`` and ``artifact_handles`` default to reading from
-    ``workspace/action_ledger.jsonl`` (and the workspace's ``artifacts/``
-    listing).  Pass explicit values to short-circuit disk I/O in tests.
+    ``action_records``, ``artifact_handles``, ``reflection`` and
+    ``curation_queue`` default to reading from disk under ``workspace``.
+    Pass explicit values to short-circuit disk I/O in tests.
     """
     turns_remaining = max(max_turns - turns_used, 0)
     grs = list(guardrails if guardrails is not None else DEFAULT_GUARDRAILS)
@@ -582,6 +512,10 @@ def build_workbook_parts(
         action_records = load_recent_records(workspace, n=action_window)
     if artifact_handles is None:
         artifact_handles = load_artifact_handles(workspace)
+    if reflection is None:
+        reflection = load_reflection(workspace)
+    if curation_queue is None:
+        curation_queue = CurationQueue.load(workspace)
 
     stable_sections = [
         "# ProClaim Workbook",
@@ -603,8 +537,8 @@ def build_workbook_parts(
             sufficiency_threshold=sufficiency_threshold,
         ),
         _section_state_snapshot(state),
-        _section_action_loop_record(action_records),
-        _section_recuration_queue(),
+        _section_action_loop_record(action_records, reflection=reflection),
+        _section_recuration_queue(curation_queue),
         _section_verdict_readiness(
             state,
             turns_remaining=turns_remaining,
@@ -631,6 +565,8 @@ def build_workbook(
     action_records: Optional[Sequence[ActionRecord]] = None,
     artifact_handles: Optional[Sequence[str]] = None,
     action_window: int = DEFAULT_WORKBOOK_WINDOW,
+    reflection: Optional[ReflectionRecord] = None,
+    curation_queue: Optional[CurationQueue] = None,
 ) -> str:
     """Render the full markdown workbook (stable prefix + marker + volatile tail).
 
@@ -650,6 +586,8 @@ def build_workbook(
         action_records=action_records,
         artifact_handles=artifact_handles,
         action_window=action_window,
+        reflection=reflection,
+        curation_queue=curation_queue,
     )
     return f"{stable}{STABLE_VOLATILE_MARKER}\n\n{volatile}"
 
@@ -667,6 +605,8 @@ def write_workbook(
     action_records: Optional[Sequence[ActionRecord]] = None,
     artifact_handles: Optional[Sequence[str]] = None,
     action_window: int = DEFAULT_WORKBOOK_WINDOW,
+    reflection: Optional[ReflectionRecord] = None,
+    curation_queue: Optional[CurationQueue] = None,
 ) -> Path:
     """Serialize the workbook to ``workspace/workbook.md`` and return the path."""
     text = build_workbook(
@@ -681,6 +621,8 @@ def write_workbook(
         action_records=action_records,
         artifact_handles=artifact_handles,
         action_window=action_window,
+        reflection=reflection,
+        curation_queue=curation_queue,
     )
     workspace.mkdir(parents=True, exist_ok=True)
     path = workspace / WORKBOOK_FILENAME

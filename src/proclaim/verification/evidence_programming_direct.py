@@ -129,10 +129,36 @@ def build_tool_schemas(disable_web_search: bool = False) -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "python",
+                "description": (
+                    "Execute Python code in the workspace. The evidence-API "
+                    "functions (setup_workspace, search_pubmed_llm, "
+                    "extract_and_add_facts, populate_paper_features, "
+                    "check_sufficiency, emit_verdict, ...) are importable "
+                    "from proclaim.verification.evidence_api. State does NOT "
+                    "persist between calls — re-import and reload state via "
+                    "setup_workspace every call."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": "Python source to execute.",
+                        },
+                    },
+                    "required": ["code"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "bash",
                 "description": (
-                    "Execute a command in bash. Use for running Python code: "
-                    "python3 -c 'code'. Working directory is the workspace."
+                    "Execute a shell command. Use the python tool to run "
+                    "Python code; this is for shell operations like ls, "
+                    "cat, find. Working directory is the workspace."
                 ),
                 "parameters": {
                     "type": "object",
@@ -407,7 +433,30 @@ def dispatch_tool(
     env: dict,
 ) -> str:
     """Dispatch a tool call to the appropriate handler."""
-    if name == "bash":
+    if name == "python":
+        code = arguments.get("code", "")
+        try:
+            result = subprocess.run(
+                ["python3", "-c", code],
+                capture_output=True,
+                text=True,
+                timeout=600,
+                cwd=str(workspace),
+                env=env,
+            )
+            output = result.stdout
+            if result.stderr:
+                output += "\n" + result.stderr
+            output = output.strip()
+        except subprocess.TimeoutExpired:
+            output = "[ERROR: python command timed out after 600 seconds]"
+        except Exception as e:
+            output = f"[ERROR: {e}]"
+
+        append_to_jupytext_log(log_path, code, output)
+        return _smart_truncate(output) if output else "(no output)"
+
+    elif name == "bash":
         command = arguments.get("command", "")
         try:
             result = subprocess.run(
@@ -680,10 +729,20 @@ def verify_claim_direct(cfg) -> Path:
         write_workbook,
     )
     from proclaim.verification.action_ledger import (
+        compute_delta as _compute_delta,
         record_action as _record_action,
         snapshot_state as _snapshot_state,
         StateSnapshot as _StateSnapshot,
     )
+    from proclaim.verification.curation import run_auto_curation
+    from proclaim.verification.reflection import (
+        REFLECTION_FILENAME,
+        clear_reflection,
+        detect_stall_signals,
+        load_reflection,
+        run_reflection,
+    )
+    from proclaim.verification.workbook import build_workbook_parts
     EvidenceState.init_new(claim=claim, subclaims=[claim], workspace=workspace)
 
     # Build system prompt
@@ -693,8 +752,8 @@ def verify_claim_direct(cfg) -> Path:
         ""
         if cfg.disable_web_search
         else (
-            "   d. web_search(query) — call this tool directly (NOT via bash) to search the\n"
-            "      web for evidence not found in PubMed/S2; use when academic databases\n"
+            "   d. web_search(query) — call this tool directly (NOT via python or bash) to search\n"
+            "      the web for evidence not found in PubMed/S2; use when academic databases\n"
             "      return few results or for recent findings not yet indexed."
         )
     )
@@ -805,6 +864,68 @@ def verify_claim_direct(cfg) -> Path:
     while call_count < max_calls:
         turns_remaining = max_calls - call_count
 
+        # Phase 3: refresh the auto-populated curation buckets (gaps from
+        # latest sufficiency check, conflicts, zero-fact papers) before the
+        # workbook is rendered.  Failures are non-fatal — the workbook will
+        # still render with whatever queue is on disk.
+        try:
+            run_auto_curation(workspace)
+        except Exception as exc:
+            logger.debug("auto-curation refresh failed: %s", exc)
+
+        # Phase 3: detect stall signals.  Fire the reflect LLM only when no
+        # unconsumed reflection already exists on disk — clear_reflection
+        # (called after each productive planner action) is the throttle.
+        # This caps reflect-LLM cost at one call per stall *episode*, not
+        # per stall *turn*.
+        try:
+            signals = detect_stall_signals(workspace)
+            _reflection_exists = (workspace / REFLECTION_FILENAME).exists()
+            if signals.any_fired and not _reflection_exists:
+                logger.info(
+                    "Stall detected at call %d: %s — invoking reflect LLM",
+                    call_count, "; ".join(signals.reasons) or "(unknown)",
+                )
+                try:
+                    current_state = EvidenceState.load(workspace / "evidence_state.json")
+                    _, volatile_tail = build_workbook_parts(
+                        current_state,
+                        workspace=workspace,
+                        max_turns=max_calls,
+                        turns_used=call_count,
+                        sufficiency_threshold=cfg.sufficiency_threshold,
+                        max_iterations=cfg.max_iterations,
+                        label_cfg=label_cfg,
+                    )
+                except Exception as exc:
+                    logger.debug("could not render volatile tail for reflect: %s", exc)
+                    volatile_tail = ""
+
+                _reflect_t0 = time.monotonic()
+                try:
+                    reflect_record = run_reflection(
+                        workspace=workspace,
+                        workbook_volatile=volatile_tail,
+                        stall_signals=signals,
+                        turn=call_count,
+                        model=agent_model,
+                    )
+                except Exception as exc:
+                    logger.warning("Reflect LLM call failed: %s", exc)
+                    reflect_record = None
+                _reflect_latency = time.monotonic() - _reflect_t0
+
+                if reflect_record is not None:
+                    logger.info(
+                        "Reflection recorded: classification=%s next_family=%s override=%s (%.2fs)",
+                        reflect_record.classification.value,
+                        reflect_record.proposed_next_family.value,
+                        reflect_record.override_invoked or "-",
+                        _reflect_latency,
+                    )
+        except Exception as exc:
+            logger.debug("stall-signal handling failed: %s", exc)
+
         # *** CONTEXT REFRESH: regenerate the workbook from durable state ***
         # The workbook is the planner's primary context.  It is rebuilt from
         # EvidenceState on every turn so the planner sees the current paper /
@@ -829,7 +950,7 @@ def verify_claim_direct(cfg) -> Path:
                 f"# ProClaim Workbook\n\n"
                 f"(workbook unavailable: {exc})\n\n"
                 f"{WORKBOOK_STABLE_MARKER}\n\n"
-                f"## 1. Header\n- Claim: {claim}\n- Iteration: ?\n"
+                f"## 3. Header\n- Claim: {claim}\n- Iteration: ?\n"
                 f"- Turns remaining: {turns_remaining}\n"
             )
 
@@ -838,7 +959,7 @@ def verify_claim_direct(cfg) -> Path:
                 f"Verify the following scientific claim using evidence programming.\n\n"
                 f"Claim: {claim}\n\n"
                 f"<workbook>\n{workbook_text}\n</workbook>\n\n"
-                f"Start by calling bash with the setup code to import the evidence API. "
+                f"Start by calling the python tool with the setup code to import the evidence API. "
                 f"Follow the evidence programming workflow. "
                 f"Call check_sufficiency after each round. "
                 f"Stop when confidence >= {cfg.sufficiency_threshold} or after "
@@ -997,6 +1118,27 @@ def verify_claim_direct(cfg) -> Path:
                 )
             except Exception as _led_exc:
                 logger.warning("Failed to record action ledger entry: %s", _led_exc)
+                _after_snap = _before_snap  # neutral delta for the clear-reflection check below
+
+            # Phase 3: consume the reflection when the just-completed action
+            # produced real progress (more papers, more facts, or higher
+            # sufficiency confidence).  If progress was nil, leave the
+            # reflection in place so the next workbook still surfaces it.
+            try:
+                _delta = _compute_delta(_before_snap, _after_snap)
+                _progress = (
+                    _delta.get("papers", 0) > 0
+                    or _delta.get("facts", 0) > 0
+                    or (
+                        isinstance(_delta.get("sufficiency"), dict)
+                        and _delta["sufficiency"].get("confidence", 0.0) > 0
+                    )
+                )
+                if _progress and (workspace / REFLECTION_FILENAME).exists():
+                    clear_reflection(workspace)
+                    logger.debug("Reflection cleared after productive action.")
+            except Exception as _clr_exc:
+                logger.debug("clear_reflection check failed: %s", _clr_exc)
 
         # Check stopping after tool dispatch.
         # Only stop on an emitted verdict here — sufficiency alone is not enough

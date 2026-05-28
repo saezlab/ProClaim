@@ -9,7 +9,13 @@ appended incrementally to an output CSV. Token usage and cost estimates are
 parsed from the verdict artifacts.
 
 Example command:
-    time uv run python -m proclaim.verification.evidence_programming_direct --config experiments/configs/test_config.yaml \
+    uv run python experiments/run_signor_eval.py \
+        --input-csv datasets/signor.csv \
+        --config experiments/configs/signor_smoke_gemini_config.yaml \
+        --limit 1 --reps 1 --run-tag smoke_gemini_test
+    
+
+    time uv run python -m proclaim.verification.evidence_programming_direct --config experiments/configs/signor_smoke_config.yaml \
         --claim "SRC directly inhibits CTTN." \
         --output-dir results/test_direct_1
 

@@ -6,14 +6,14 @@ Phase 2 scope (see doc/IMPROVEMENT_PLAN.md):
 * Persist a concise ``ActionRecord`` per tool call in
   ``workspace/action_ledger.jsonl``.
 * Compute pre/post state deltas from ``EvidenceState`` so the workbook's
-  Section 4 (Action Loop Record) can show what actually changed.
+  Section 5 (Action Loop Record) can show what actually changed.
 * Spill large raw outputs to ``workspace/artifacts/`` and reference them
   via short handles instead of inlining them into the workbook.
 
 The ledger is the orchestrator's anti-repetition memory: each turn the
-planner sees the last few records (action type, target, observation,
-delta, diagnosis, next step, artifact handle) rendered in Section 4 of
-``workbook.md``.
+planner sees the last few records (target, delta-derived summary,
+optional diagnosis, artifact handle) rendered as a bullet list in
+Section 5 of ``workbook.md``.
 
 Design notes
 ------------
@@ -21,10 +21,11 @@ Design notes
 * Append-only.  Records are never edited; later corrections are added as
   new records with a diagnosis explaining the change.
 * Snapshots are derived purely from ``EvidenceState`` — no extra storage.
-* Action classification uses simple substring heuristics on the executed
-  command/args.  When the heuristic cannot identify a known evidence-API
-  call the record falls back to the bare tool name (``bash``,
-  ``read_file``, ``web_search``).
+* The record carries a ``target`` string (the evidence-API call or query
+  the tool was driving) and a ``delta``-derived ``observation`` summary.
+  We do not classify each record into an action family: a single bash
+  cell can chain search → extract → check_sufficiency, so the delta
+  itself is the honest signal.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -67,12 +68,10 @@ class ActionRecord(BaseModel):
     * ``action_id``        – monotonically increasing index inside the run.
     * ``turn``             – outer LLM call number this action belongs to.
     * ``timestamp``        – UTC ISO timestamp.
-    * ``action_type``      – classified family (search, extract, …).
-    * ``target``           – query string, PMID list, function name, …
+    * ``target``           – query string, PMID list, function call, …
     * ``observation``      – one-line high-signal summary of what changed.
     * ``delta``            – non-zero state deltas as a small dict.
     * ``diagnosis``        – why progress did or did not happen (optional).
-    * ``next_step``        – planner-facing hint about the next action.
     * ``artifact_handle``  – ``artifact://...`` pointer or None.
     * ``raw_size_chars``   – char length of the raw tool output.
     """
@@ -80,12 +79,10 @@ class ActionRecord(BaseModel):
     action_id: int
     turn: int
     timestamp: str
-    action_type: str
     target: str
     observation: str
     delta: dict[str, Any] = Field(default_factory=dict)
     diagnosis: Optional[str] = None
-    next_step: Optional[str] = None
     artifact_handle: Optional[str] = None
     raw_size_chars: int = 0
 
@@ -206,74 +203,89 @@ def compute_delta(before: StateSnapshot, after: StateSnapshot) -> dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
-# Action classification (heuristic)
+# Target extraction (no classification)
 # ---------------------------------------------------------------------------
 
-# (function name → action_type) — recognised evidence-API and infra calls.
-_ACTION_FAMILIES: tuple[tuple[str, str], ...] = (
-    ("setup_workspace", "setup"),
-    ("search_pubmed_llm", "search"),
-    ("search_pubmed", "search"),
-    ("search_semantic_scholar_dual", "search"),
-    ("search_semantic_scholar_recommendations", "search"),
-    ("search_semantic_scholar", "search"),
-    ("search_for_gap", "search"),
-    ("formulate_gap_queries", "search"),
-    ("refine_search_for_failed_papers", "search-refine"),
-    ("extract_and_add_facts", "extract"),
-    ("add_facts_from_dicts", "extract"),
-    ("populate_paper_features", "feature-populate"),
-    ("filter_papers_by_stance", "curate"),
-    ("check_sufficiency", "sufficiency-check"),
-    ("get_sufficiency_history", "sufficiency-check"),
-    ("add_extraction_context_note", "curate"),
-    ("emit_verdict", "verdict"),
+# Evidence-API function names we recognise in python/bash cells.  A single
+# cell can mention several of these (setup → search → extract → check); the
+# target extractor prefers the *last non-setup* mention so the rendered
+# target reflects the cell's tail intent.  We do NOT translate these
+# into action families — the delta is the honest signal of what
+# actually happened.
+_KNOWN_API_CALLS: tuple[str, ...] = (
+    "setup_workspace",
+    "search_pubmed_llm",
+    "search_pubmed",
+    "search_semantic_scholar_dual",
+    "search_semantic_scholar_recommendations",
+    "search_semantic_scholar",
+    "search_for_gap",
+    "formulate_gap_queries",
+    "refine_search_for_failed_papers",
+    "extract_and_add_facts",
+    "add_facts_from_dicts",
+    "populate_paper_features",
+    "filter_papers_by_stance",
+    "check_sufficiency",
+    "get_sufficiency_history",
+    "add_extraction_context_note",
+    "emit_verdict",
 )
+
+_SETUP_CALLS: frozenset[str] = frozenset({"setup_workspace"})
 
 
 _CALL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
-def classify_action(tool_name: str, arguments: dict) -> tuple[str, str]:
-    """Return ``(action_type, target)`` for a tool invocation.
+def extract_target(tool_name: str, arguments: dict) -> str:
+    """Return a short target string describing what the tool was driving.
 
-    ``tool_name`` is the OpenAI function-calling name (``bash``, ``read_file``,
-    ``web_search``).  For ``bash`` we scan the command for known evidence-API
-    function names and use the first match.
+    ``tool_name`` is the OpenAI function-calling name (``python``,
+    ``bash``, ``read_file``, ``web_search``).  For ``python``/``bash``
+    we scan the source/command for known evidence-API function names;
+    ``setup_workspace`` is treated as boilerplate, so we prefer the
+    last non-setup call.
     """
     if tool_name == "web_search":
-        q = str(arguments.get("query", ""))[:120]
-        return "web-search", q
+        return str(arguments.get("query", ""))[:120]
     if tool_name == "read_file":
-        return "read-file", str(arguments.get("path", ""))[:120]
-    if tool_name != "bash":
-        return tool_name, ""
+        return str(arguments.get("path", ""))[:120]
+    if tool_name == "python":
+        command = str(arguments.get("code", ""))
+    elif tool_name == "bash":
+        command = str(arguments.get("command", ""))
+    else:
+        return ""
 
-    command = str(arguments.get("command", ""))
+    matches: list[tuple[int, str]] = []  # (position, fn_name)
+    for fn_name in _KNOWN_API_CALLS:
+        for m in re.finditer(rf"\b{re.escape(fn_name)}\s*\(", command):
+            matches.append((m.start(), fn_name))
 
-    # First evidence-API call mentioned in the command wins.  Iterate the
-    # registry in declaration order so more specific names (e.g.
-    # ``refine_search_for_failed_papers``) match before generic ``search_…``
-    # if both appear.
-    for fn_name, family in _ACTION_FAMILIES:
-        if re.search(rf"\b{re.escape(fn_name)}\s*\(", command):
-            return family, _extract_call_target(command, fn_name)
+    if matches:
+        matches.sort(key=lambda t: t[0])
+        non_setup = [m for m in matches if m[1] not in _SETUP_CALLS]
+        _, fn_name = non_setup[-1] if non_setup else matches[-1]
+        return _extract_call_target(command, fn_name)
 
-    # Fall back to the first identifier-shaped call we can spot.
     match = _CALL_RE.search(command)
     if match:
-        return "bash", match.group(1)
-    return "bash", command[:60].replace("\n", " ").strip()
+        return match.group(1)
+    return command[:60].replace("\n", " ").strip()
 
 
 def _extract_call_target(command: str, fn_name: str) -> str:
-    """Best-effort extraction of the first useful argument to a call."""
+    """Best-effort extraction of the last useful argument to a call.
+
+    Uses the *last* occurrence of ``fn_name(`` to match the selection
+    rule in ``extract_target``.
+    """
     pattern = re.compile(rf"\b{re.escape(fn_name)}\s*\((.*?)\)", re.DOTALL)
-    m = pattern.search(command)
-    if not m:
+    matches = list(pattern.finditer(command))
+    if not matches:
         return fn_name
-    arg_blob = m.group(1).strip()
-    arg_blob = arg_blob.replace("\n", " ")
+    arg_blob = matches[-1].group(1).strip().replace("\n", " ")
     if len(arg_blob) > 120:
         arg_blob = arg_blob[:117] + "..."
     return f"{fn_name}({arg_blob})" if arg_blob else fn_name
@@ -284,11 +296,7 @@ def _extract_call_target(command: str, fn_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def summarize_observation(
-    action_type: str,
-    raw_output: str,
-    delta: dict[str, Any],
-) -> str:
+def summarize_observation(raw_output: str, delta: dict[str, Any]) -> str:
     """Build a one-line, planner-friendly observation string.
 
     Preference order:
@@ -331,67 +339,43 @@ def summarize_observation(
 
 
 def diagnose(
-    action_type: str,
+    target: str,
     delta: dict[str, Any],
     raw_output: str,
 ) -> Optional[str]:
     """Classify a failure mode when an action produced no useful progress.
 
-    Returns ``None`` when the action plausibly made progress.  The intent is
-    to flag the obvious dead-ends (zero new papers, zero new facts, declining
-    sufficiency, errors) so the planner can pivot instead of repeating.
+    Returns ``None`` when the action plausibly made progress.  ``target``
+    is the rendered call/query string from ``extract_target``; we
+    substring-match against it to decide which family-specific dead-end
+    checks apply.  The intent is to flag obvious dead-ends (zero new
+    papers, zero new facts, declining sufficiency, errors) so the
+    planner can pivot instead of repeating.
     """
     out_lower = raw_output.lower() if raw_output else ""
     if "[error" in out_lower or "traceback" in out_lower:
-        # Capture the first line that looks like an error to aid debugging
         for line in raw_output.splitlines():
             stripped = line.strip()
             if stripped.startswith("[ERROR") or "Error" in stripped:
                 return f"error: {stripped[:160]}"
         return "error: tool returned an error"
 
-    if action_type == "search" and not delta.get("papers"):
+    tlow = target.lower()
+    if "search" in tlow and not delta.get("papers"):
         return "no new papers retained"
-    if action_type == "extract" and not delta.get("facts"):
+    if ("extract_and_add_facts" in tlow or "add_facts_from_dicts" in tlow) and not delta.get(
+        "facts"
+    ):
         if delta.get("extracted_pmids", 0) > 0:
             return "papers extracted but zero new facts"
         return "no facts added (extraction not triggered or all already cached)"
-    if action_type == "sufficiency-check":
+    if "check_sufficiency" in tlow:
         suf = delta.get("sufficiency")
         if isinstance(suf, dict) and suf.get("label", "").lower() != "sufficient":
             return f"still {suf.get('label')} @ {suf.get('confidence', 0):.2f}"
-    if action_type == "feature-populate" and not raw_output.strip():
+    if "populate_paper_features" in tlow and not raw_output.strip():
         return "no features populated (may already be cached)"
 
-    return None
-
-
-def suggest_next_step(
-    action_type: str,
-    delta: dict[str, Any],
-    diagnosis: Optional[str],
-) -> Optional[str]:
-    """A short, mechanical hint for what the planner might consider next.
-
-    These are heuristic nudges — the planner remains free to choose any
-    action consistent with the active guardrails.  Returning ``None``
-    keeps the workbook compact when no useful hint is obvious.
-    """
-    if diagnosis and diagnosis.startswith("error"):
-        return "inspect artifact and adjust call signature"
-    if action_type == "search" and not delta.get("papers"):
-        return "try refine_search_for_failed_papers or reformulate the query"
-    if action_type == "extract" and not delta.get("facts"):
-        return "add_extraction_context_note for missing aliases, then retry"
-    if action_type == "feature-populate":
-        return "filter_papers_by_stance then check_sufficiency"
-    if action_type == "curate":
-        return "check_sufficiency"
-    if action_type == "sufficiency-check":
-        suf = delta.get("sufficiency")
-        if isinstance(suf, dict) and suf.get("label", "").lower() == "sufficient":
-            return "emit_verdict"
-        return "address top gap via gap-targeted search"
     return None
 
 
@@ -404,28 +388,44 @@ def _signed(n: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+_ERROR_MARKERS = ("traceback", "[error")
+
+
+def _looks_like_error(raw_output: str) -> bool:
+    lo = raw_output.lower()
+    return any(marker in lo for marker in _ERROR_MARKERS)
+
+
 def spill_to_artifact(
     workspace: Path,
     raw_output: str,
     *,
     action_id: int,
-    action_type: str,
+    slug: str,
     threshold: int = DEFAULT_SPILL_THRESHOLD,
+    force: bool = False,
 ) -> Optional[str]:
     """If ``raw_output`` exceeds ``threshold`` chars, write it to disk and
     return an ``artifact://...`` handle.  Otherwise return ``None``.
 
     Files live under ``workspace/artifacts/`` with deterministic names so
-    re-running the same workspace doesn't shuffle them.
+    re-running the same workspace doesn't shuffle them.  ``slug`` is the
+    caller-provided filename component (typically derived from the
+    target string).
+
+    ``force=True`` spills regardless of length — used for outputs that
+    look like errors (traceback / ``[ERROR``), where the full text is
+    high-signal even when it falls under the size threshold.
     """
-    if not raw_output or len(raw_output) <= threshold:
+    if not raw_output:
+        return None
+    if not force and len(raw_output) <= threshold:
         return None
 
     artifacts_dir = workspace / ARTIFACTS_DIRNAME
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    slug = _slugify(action_type)
-    filename = f"action_{action_id:04d}_{slug}.txt"
+    filename = f"action_{action_id:04d}_{_slugify(slug)}.txt"
     (artifacts_dir / filename).write_text(raw_output, encoding="utf-8")
     return f"artifact://{ARTIFACTS_DIRNAME}/{filename}"
 
@@ -511,40 +511,49 @@ def record_action(
 ) -> ActionRecord:
     """Convenience entry point used by the orchestrator after each tool call.
 
-    Builds the delta, classifies the action, summarises observation +
+    Builds the delta, extracts a target string, summarises observation +
     diagnosis, optionally spills the raw output, persists the record, and
     returns it for any callers that want to log it inline.
     """
     ledger = ActionLedger(workspace)
     action_id = ledger.next_action_id()
-    action_type, target = classify_action(tool_name, arguments)
+    target = extract_target(tool_name, arguments)
     delta = compute_delta(before, after)
-    observation = summarize_observation(action_type, raw_output, delta)
-    diag = diagnose(action_type, delta, raw_output)
-    next_step = suggest_next_step(action_type, delta, diag)
+    observation = summarize_observation(raw_output, delta)
+    diag = diagnose(target, delta, raw_output)
     handle = spill_to_artifact(
         workspace,
         raw_output,
         action_id=action_id,
-        action_type=action_type,
+        slug=_target_slug(tool_name, target),
         threshold=spill_threshold,
+        force=_looks_like_error(raw_output) if raw_output else False,
     )
 
     record = ActionRecord(
         action_id=action_id,
         turn=turn,
         timestamp=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        action_type=action_type,
         target=target,
         observation=observation,
         delta=delta,
         diagnosis=diag,
-        next_step=next_step,
         artifact_handle=handle,
         raw_size_chars=len(raw_output or ""),
     )
     ledger.append(record)
     return record
+
+
+def _target_slug(tool_name: str, target: str) -> str:
+    """Pick a short slug for artifact filenames from the tool/target pair."""
+    if target:
+        # Take only the function-name head (before any "(") to keep
+        # filenames stable across runs with different arg values.
+        head = target.split("(", 1)[0].strip()
+        if head:
+            return head
+    return tool_name or "action"
 
 
 def load_recent_records(
@@ -569,10 +578,9 @@ __all__ = [
     "DEFAULT_WORKBOOK_WINDOW",
     "snapshot_state",
     "compute_delta",
-    "classify_action",
+    "extract_target",
     "summarize_observation",
     "diagnose",
-    "suggest_next_step",
     "spill_to_artifact",
     "record_action",
     "load_recent_records",
