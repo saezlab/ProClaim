@@ -218,15 +218,6 @@ def _compute_cost(tokens: Dict[str, int], in_price: float, out_price: float) -> 
     return round(cost, 4)
 
 
-def _compute_cost_non_cached(tokens: Dict[str, int], in_price: float, out_price: float) -> float:
-    """Cost counting only true non-cached input and output tokens."""
-    return round(
-        (tokens["input_tokens"] / 1_000_000) * in_price
-        + (tokens["output_tokens"] / 1_000_000) * out_price,
-        4,
-    )
-
-
 def init_output_csv(csv_path: Path, fieldnames: list[str]) -> None:
     """Create a CSV with a header if it does not already exist."""
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,7 +323,6 @@ def run_evaluation(
             tokens["input_tokens"] + tokens["cache_creation_tokens"] + tokens["cache_read_tokens"]
         )
         stats["cost_estimate"] = _compute_cost(tokens, in_price, out_price)
-        stats["cost_non_cached_estimate"] = _compute_cost_non_cached(tokens, in_price, out_price)
         return stats
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -376,7 +366,6 @@ def run_evaluation(
             "cache_read_tokens": 0,
             "total_input_tokens": 0,
             "cost_estimate": 0.0,
-            "cost_non_cached_estimate": 0.0,
         }
 
     logger.info(f"Run finished in {time.time() - start_time:.1f}s")
@@ -392,7 +381,6 @@ def run_evaluation(
         tokens["input_tokens"] + tokens["cache_creation_tokens"] + tokens["cache_read_tokens"]
     )
     stats["cost_estimate"] = _compute_cost(tokens, in_price, out_price)
-    stats["cost_non_cached_estimate"] = _compute_cost_non_cached(tokens, in_price, out_price)
     return stats
 
 
@@ -465,7 +453,6 @@ def build_row_result(
             "Cache_Read_Tokens": stats.get("cache_read_tokens", 0),
             "Total_Input_Tokens": stats.get("total_input_tokens", 0),
             "Cost_Estimate": stats.get("cost_estimate", 0.0),
-            "Cost_Non_Cached": stats.get("cost_non_cached_estimate", 0.0),
         },
     }
 
@@ -545,7 +532,7 @@ def main():
         "Claim_String", "Is_Flipped", "Repetition", "Agent_Verdict",
         "Agent_Confidence", "Reasoning_Snippet", "Output_Directory",
         "Input_Tokens", "Output_Tokens", "Cache_Creation_Tokens", "Cache_Read_Tokens",
-        "Total_Input_Tokens", "Cost_Estimate", "Cost_Non_Cached"
+        "Total_Input_Tokens", "Cost_Estimate"
     ]
     
     output_path.parent.mkdir(parents=True, exist_ok=True)

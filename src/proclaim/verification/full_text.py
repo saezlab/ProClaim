@@ -62,6 +62,33 @@ def _clean_ws(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _eutils_params(**extra: str) -> dict:
+    """Build NCBI E-utilities request params with API key + etiquette fields.
+
+    Passing ``api_key`` raises the per-IP rate limit from 3 to 10 req/s, which
+    sharply reduces HTTP 429s.  ``email``/``tool`` are NCBI etiquette fields.
+    Reads from config (env / .env) with a plain-env fallback.
+    """
+    api_key = None
+    email = None
+    try:
+        from proclaim.verification.config import get_settings
+        api_key = get_settings().api.pubmed_api_key
+        email = get_settings().api.pubmed_email
+    except Exception:
+        pass
+    api_key = api_key or os.getenv("PUBMED_API_KEY")
+    email = email or os.getenv("PUBMED_EMAIL")
+
+    params = dict(extra)
+    params["tool"] = "proclaim"
+    if api_key:
+        params["api_key"] = api_key
+    if email:
+        params["email"] = email
+    return params
+
+
 def _format_abstract_fallback(abstract: str, title: str = "") -> Optional[str]:
     """Format a last-resort abstract into the text shape used by Layer 4."""
     abstract = (abstract or "").strip()
@@ -121,7 +148,7 @@ def _fetch_pmc(pmid: str, title: str = "") -> tuple[Optional[str], list[str]]:
         # PMID → PMCID
         link_resp = requests.get(
             f"{_EUTILS_BASE}/elink.fcgi",
-            params={"dbfrom": "pubmed", "db": "pmc", "id": pmid, "retmode": "xml"},
+            params=_eutils_params(dbfrom="pubmed", db="pmc", id=pmid, retmode="xml"),
             timeout=30,
         )
         link_resp.raise_for_status()
@@ -143,7 +170,7 @@ def _fetch_pmc(pmid: str, title: str = "") -> tuple[Optional[str], list[str]]:
         # Fetch PMC XML
         fetch_resp = requests.get(
             f"{_EUTILS_BASE}/efetch.fcgi",
-            params={"db": "pmc", "id": pmcid, "rettype": "xml", "retmode": "xml"},
+            params=_eutils_params(db="pmc", id=pmcid, rettype="xml", retmode="xml"),
             timeout=60,
         )
         fetch_resp.raise_for_status()
@@ -297,7 +324,7 @@ def _resolve_doi(pmid: str) -> Optional[str]:
     try:
         resp = requests.get(
             f"{_EUTILS_BASE}/efetch.fcgi",
-            params={"db": "pubmed", "id": pmid, "retmode": "xml"},
+            params=_eutils_params(db="pubmed", id=pmid, retmode="xml"),
             timeout=15,
         )
         resp.raise_for_status()
@@ -633,7 +660,7 @@ def _fetch_pubmed_structured_abstract(pmid: str) -> tuple[Optional[str], bool, s
         try:
             resp = requests.get(
                 f"{_EUTILS_BASE}/efetch.fcgi",
-                params={"db": "pubmed", "id": pmid, "retmode": "xml"},
+                params=_eutils_params(db="pubmed", id=pmid, retmode="xml"),
                 timeout=15,
             )
             if resp.status_code == 429 or 500 <= resp.status_code < 600:

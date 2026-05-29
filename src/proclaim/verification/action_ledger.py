@@ -251,6 +251,14 @@ def extract_target(tool_name: str, arguments: dict) -> str:
         return str(arguments.get("query", ""))[:120]
     if tool_name == "read_file":
         return str(arguments.get("path", ""))[:120]
+    if tool_name == "reflect":
+        cls_ = arguments.get("classification", "")
+        nxt = arguments.get("proposed_next_family", "")
+        ovr = arguments.get("override_invoked")
+        parts = [f"cls:{cls_}", f"next:{nxt}"]
+        if ovr:
+            parts.append(f"override:{ovr}")
+        return "reflect(" + ", ".join(parts) + ")"
     if tool_name == "python":
         command = str(arguments.get("code", ""))
     elif tool_name == "bash":

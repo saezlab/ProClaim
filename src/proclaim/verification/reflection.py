@@ -347,12 +347,19 @@ def run_reflection(
     stall_signals: StallSignals,
     turn: int,
     model: str,
-) -> Optional[ReflectionRecord]:
+) -> tuple[Optional[ReflectionRecord], Optional[dict]]:
     """Run a single reflect LLM call and persist the result.
 
-    Returns the persisted record, or ``None`` on API failure (the
-    orchestrator continues without a reflection lead-in, which still
-    surfaces the stall through the workbook's Action Loop Record).
+    Returns ``(record, usage)`` where ``record`` is the persisted
+    :class:`ReflectionRecord` (or ``None`` if the call produced no usable
+    reflection) and ``usage`` is a plain dict of litellm token-usage fields
+    for the orchestrator's ``CostTracker`` (or ``None`` if the API call
+    failed before producing a response).
+
+    The orchestrator continues without a reflection lead-in when ``record``
+    is ``None``; the stall still surfaces through the workbook's Action Loop
+    Record.  ``usage`` is reported separately so reflect tokens are billed
+    even when the tool-call payload is missing or malformed.
     """
     import litellm
     from proclaim.verification.prompts import (
@@ -370,6 +377,7 @@ def run_reflection(
         {"role": "user", "content": user_text},
     ]
     tools = _build_reflection_tools()
+
     try:
         response = litellm.completion(
             model=model,
@@ -381,22 +389,43 @@ def run_reflection(
                 "function": {"name": _REFLECTION_TOOL_NAME},
             },
         )
+    except Exception:
+        # API call failed before producing a response — nothing to bill.
+        return None, None
+
+    # Capture token usage from the completed call, mirroring the planner's
+    # field reads (see evidence_programming_direct.py) so the keys line up
+    # with CostTracker.record(...).
+    usage: Optional[dict] = None
+    u = getattr(response, "usage", None)
+    if u:
+        usage = {
+            "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
+            "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+            "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
+        }
+
+    # Tokens are already spent at this point; parse/persist failures still
+    # return ``usage`` so the orchestrator can bill the call.
+    try:
         tool_calls = response.choices[0].message.tool_calls or []
         if not tool_calls:
-            return None
+            return None, usage
         parsed = json.loads(tool_calls[0].function.arguments)
+        record = write_reflection(
+            workspace,
+            turn=turn,
+            diagnosis=str(parsed.get("diagnosis", "")).strip()
+            or "(reflect LLM returned empty diagnosis)",
+            classification=str(parsed.get("classification", "other")).lower(),
+            proposed_next_family=str(parsed.get("proposed_next_family", "none")).lower(),
+            override_invoked=parsed.get("override_invoked") or None,
+        )
     except Exception:
-        return None
+        return None, usage
 
-    return write_reflection(
-        workspace,
-        turn=turn,
-        diagnosis=str(parsed.get("diagnosis", "")).strip()
-        or "(reflect LLM returned empty diagnosis)",
-        classification=str(parsed.get("classification", "other")).lower(),
-        proposed_next_family=str(parsed.get("proposed_next_family", "none")).lower(),
-        override_invoked=parsed.get("override_invoked") or None,
-    )
+    return record, usage
 
 
 __all__ = [

@@ -220,6 +220,14 @@ class APISettings(BaseSettings):
         default=None,
         description="Elsevier API key for INDRA full-text via ScienceDirect.",
     )
+    pubmed_api_key: Optional[str] = Field(
+        default=None,
+        description="NCBI E-utilities API key (raises rate limit 3→10 req/s).",
+    )
+    pubmed_email: Optional[str] = Field(
+        default=None,
+        description="Email for NCBI E-utilities etiquette (tool identification).",
+    )
 
     # Derived: resolved API key ------------------------------------------
     @property

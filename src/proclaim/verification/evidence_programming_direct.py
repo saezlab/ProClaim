@@ -909,7 +909,7 @@ def verify_claim_direct(cfg) -> Path:
 
             _reflect_t0 = time.monotonic()
             try:
-                reflect_record = run_reflection(
+                reflect_record, reflect_usage = run_reflection(
                     workspace=workspace,
                     workbook_volatile=volatile_tail,
                     stall_signals=signals,
@@ -918,8 +918,23 @@ def verify_claim_direct(cfg) -> Path:
                 )
             except Exception as exc:
                 logger.warning("Reflect LLM call failed: %s", exc)
-                reflect_record = None
+                reflect_record, reflect_usage = None, None
             _reflect_latency = time.monotonic() - _reflect_t0
+
+            # Bill the reflect LLM call into the same tracker as the planner.
+            # Tokens are recorded under a distinct "reflect_llm" action so the
+            # trace stays separable, while the aggregate token/cost totals fold
+            # it in automatically.
+            if reflect_usage:
+                tracker.record(
+                    "reflect_llm",
+                    input_tokens=reflect_usage.get("prompt_tokens", 0) or 0,
+                    output_tokens=reflect_usage.get("completion_tokens", 0) or 0,
+                    latency=_reflect_latency,
+                    call_number=call_count,
+                    cache_read_tokens=reflect_usage.get("cache_read_input_tokens", 0) or 0,
+                    cache_write_tokens=reflect_usage.get("cache_creation_input_tokens", 0) or 0,
+                )
 
             if reflect_record is not None:
                 logger.info(
@@ -930,6 +945,23 @@ def verify_claim_direct(cfg) -> Path:
                     reflect_record.override_invoked or "-",
                     _reflect_latency,
                 )
+                try:
+                    _reflect_snap = _snapshot_state(current_state)
+                    _record_action(
+                        workspace=workspace,
+                        turn=call_count,
+                        tool_name="reflect",
+                        arguments={
+                            "classification": reflect_record.classification.value,
+                            "proposed_next_family": reflect_record.proposed_next_family.value,
+                            "override_invoked": reflect_record.override_invoked or None,
+                        },
+                        raw_output=reflect_record.diagnosis,
+                        before=_reflect_snap,
+                        after=_reflect_snap,
+                    )
+                except Exception as _refl_exc:
+                    logger.debug("Failed to record reflection in ledger: %s", _refl_exc)
 
         # *** CONTEXT REFRESH: regenerate the workbook from durable state ***
         # The workbook is the planner's primary context.  It is rebuilt from

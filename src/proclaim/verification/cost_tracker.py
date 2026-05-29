@@ -32,7 +32,6 @@ class TraceEntry:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     cost_usd: float = 0.0
-    cost_non_cached_usd: float = 0.0
     latency_seconds: float = 0.0
     details: dict = field(default_factory=dict)
 
@@ -95,10 +94,6 @@ class CostTracker:
             + cache_read_tokens  / 1_000_000 * self._in_price * 0.10
             + output_tokens      / 1_000_000 * self._out_price
         )
-        cost_non_cached = (
-            non_cached  / 1_000_000 * self._in_price
-            + output_tokens / 1_000_000 * self._out_price
-        )
 
         self._trace.append(
             TraceEntry(
@@ -109,7 +104,6 @@ class CostTracker:
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
                 cost_usd=cost,
-                cost_non_cached_usd=cost_non_cached,
                 latency_seconds=latency,
                 details=dict(details),
             )
@@ -144,16 +138,13 @@ class CostTracker:
         return sum(e.cost_usd for e in self._trace)
 
     @property
-    def total_cost_non_cached_usd(self) -> float:
-        return sum(e.cost_non_cached_usd for e in self._trace)
-
-    @property
     def total_latency_seconds(self) -> float:
         return sum(e.latency_seconds for e in self._trace)
 
     @property
     def num_llm_calls(self) -> int:
-        return sum(1 for e in self._trace if e.action == "llm_call")
+        # Planner turns ("llm_call") plus per-turn reflect calls ("reflect_llm").
+        return sum(1 for e in self._trace if e.action in ("llm_call", "reflect_llm"))
 
     def summary(self) -> dict:
         return {
@@ -162,7 +153,6 @@ class CostTracker:
             "cache_write_tokens": self.total_cache_write_tokens,
             "output_tokens": self.total_output_tokens,
             "cost_usd": round(self.total_cost_usd, 6),
-            "cost_non_cached_usd": round(self.total_cost_non_cached_usd, 6),
             "latency_seconds": round(self.total_latency_seconds, 2),
             "num_llm_calls": self.num_llm_calls,
         }
@@ -178,7 +168,6 @@ class CostTracker:
                 "cache_write_tokens": e.cache_write_tokens,
                 "output_tokens": e.output_tokens,
                 "cost_usd": round(e.cost_usd, 6),
-                "cost_non_cached_usd": round(e.cost_non_cached_usd, 6),
                 "latency_seconds": round(e.latency_seconds, 3),
                 **e.details,
             }
