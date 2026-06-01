@@ -863,10 +863,34 @@ def verify_claim_direct(cfg) -> Path:
     max_calls = cfg.max_iterations * cfg.max_turns
     planning_budget = cfg.max_turns
     call_count = 0
+    # Per-iteration turn tracking.  ``call_count`` is the GLOBAL planning-call
+    # accumulator (never reset); it only backstops runaway loops via max_calls.
+    # The verdict/sufficiency warnings instead key off how many turns have been
+    # spent *within the current iteration* — i.e. since the last
+    # check_sufficiency, which is what advances ``state.iteration``.
+    # ``iteration_turn`` counts turns in the current iteration; ``last_seen_iter``
+    # detects the iteration rollover so we can reset it.
+    iteration_turn = 0
+    last_seen_iter = 0
 
     while call_count < max_calls:
         turns_remaining = max_calls - call_count  # hard-ceiling log only
-        planning_turns_remaining = max(planning_budget - call_count, 0)
+
+        # Detect iteration rollover (a check_sufficiency since last turn bumped
+        # state.iteration) and reset the per-iteration turn counter.
+        try:
+            _cur_iter = EvidenceState.load(workspace / "evidence_state.json").iteration
+        except Exception:
+            _cur_iter = last_seen_iter
+        if _cur_iter != last_seen_iter:
+            iteration_turn = 0
+            last_seen_iter = _cur_iter
+
+        # Turns remaining within THIS iteration (per-iteration budget).
+        iter_turns_remaining = max(planning_budget - iteration_turn, 0)
+        # True once we are in the final iteration (0-indexed: check_sufficiency
+        # stops once state.iteration reaches max_iterations).
+        is_last_iteration = _cur_iter >= cfg.max_iterations - 1
 
         # Phase 3: refresh the auto-populated curation buckets (gaps from
         # latest sufficiency check, conflicts, zero-fact papers) before the
@@ -898,7 +922,7 @@ def verify_claim_direct(cfg) -> Path:
                     current_state,
                     workspace=workspace,
                     max_turns=planning_budget,
-                    turns_used=call_count,
+                    turns_used=iteration_turn,
                     sufficiency_threshold=cfg.sufficiency_threshold,
                     max_iterations=cfg.max_iterations,
                     label_cfg=label_cfg,
@@ -973,7 +997,7 @@ def verify_claim_direct(cfg) -> Path:
                 current_state,
                 workspace=workspace,
                 max_turns=planning_budget,
-                turns_used=call_count,
+                turns_used=iteration_turn,
                 sufficiency_threshold=cfg.sufficiency_threshold,
                 max_iterations=cfg.max_iterations,
                 label_cfg=label_cfg,
@@ -987,8 +1011,8 @@ def verify_claim_direct(cfg) -> Path:
                 f"# ProClaim Workbook\n\n"
                 f"(workbook unavailable: {exc})\n\n"
                 f"{WORKBOOK_STABLE_MARKER}\n\n"
-                f"## 3. Header\n- Claim: {claim}\n- Iteration: ?\n"
-                f"- Turns remaining: {planning_turns_remaining}\n"
+                f"## 3. Header\n- Claim: {claim}\n- Iteration: {_cur_iter}\n"
+                f"- Turns remaining this iteration: {iter_turns_remaining}\n"
             )
 
         if call_count == 0:
@@ -1002,12 +1026,28 @@ def verify_claim_direct(cfg) -> Path:
                 f"Stop when confidence >= {cfg.sufficiency_threshold} or after "
                 f"{cfg.max_iterations} iterations."
             )
-        elif planning_turns_remaining <= 2:
+        elif is_last_iteration and iter_turns_remaining <= 2:
+            # Final iteration AND its turn budget is nearly exhausted: wrap up the
+            # whole run now — sufficiency check then verdict.
             user_text = (
                 f"<workbook>\n{workbook_text}\n</workbook>\n\n"
-                f"URGENT — only {planning_turns_remaining} planning turn(s) remaining.\n"
+                f"URGENT — final iteration, only {iter_turns_remaining} turn(s) "
+                f"remaining in this iteration.\n"
                 f"You MUST call check_sufficiency and then emit_verdict NOW.\n"
                 f"Do NOT run any more searches or extractions.\n"
+                f"Claim: {claim}"
+            )
+        elif iter_turns_remaining <= 2:
+            # Earlier iteration whose per-iteration turn budget is nearly spent:
+            # nudge toward closing out THIS iteration with a sufficiency check.
+            # A verdict is not forced — further iterations remain.
+            user_text = (
+                f"<workbook>\n{workbook_text}\n</workbook>\n\n"
+                f"Only {iter_turns_remaining} turn(s) remaining in this iteration "
+                f"(iteration {_cur_iter} of {cfg.max_iterations}).\n"
+                f"Call check_sufficiency now to close out this iteration before "
+                f"the turn budget is exhausted.\n"
+                f"Do NOT start new searches or extractions this iteration.\n"
                 f"Claim: {claim}"
             )
         else:
@@ -1055,6 +1095,7 @@ def verify_claim_direct(cfg) -> Path:
         _latency = time.monotonic() - _t0
 
         call_count += 1
+        iteration_turn += 1  # turns spent in the current iteration (reset on rollover)
 
         choice = response.choices[0]
         assistant_msg = choice.message

@@ -132,17 +132,25 @@ def _section_header(
     max_turns: int,
     turns_used: int,
     sufficiency_threshold: float,
+    max_iterations: int,
 ) -> str:
     iteration = state.iteration
+    # ``turns_used`` is the per-iteration turn count (reset after each
+    # check_sufficiency), so ``turns_remaining`` is the budget left in THIS
+    # iteration — not the whole run.
     turns_remaining = max(max_turns - turns_used, 0)
-    status = _derive_status(state, turns_remaining, sufficiency_threshold, workspace)
+    is_last_iteration = iteration >= max_iterations - 1
+    status = _derive_status(
+        state, turns_remaining, sufficiency_threshold, workspace,
+        is_last_iteration=is_last_iteration,
+    )
 
     lines = [
         "## 3. Header",
         f"- Claim: {state.claim}",
         f"- Workspace: {workspace}",
-        f"- Iteration: {iteration}",
-        f"- Turns remaining: {turns_remaining} / {max_turns}",
+        f"- Iteration: {iteration} / {max_iterations}",
+        f"- Turns remaining this iteration: {turns_remaining} / {max_turns}",
         f"- Status: {status}",
         f"- Schema version: {WORKBOOK_SCHEMA_VERSION}",
     ]
@@ -310,6 +318,7 @@ def _section_verdict_readiness(
     *,
     turns_remaining: int,
     sufficiency_threshold: float,
+    is_last_iteration: bool = False,
 ) -> str:
     if state.sufficiency_history:
         last = state.sufficiency_history[-1]
@@ -345,11 +354,19 @@ def _section_verdict_readiness(
     if not blockers:
         blockers.append("(none — verdict can be emitted)")
 
-    forced_risk = (
-        "HIGH — turn budget low; expect forced verdict if no resolution this turn."
-        if turns_remaining <= 2 and not ready
-        else "low"
-    )
+    if turns_remaining <= 2 and not ready:
+        if is_last_iteration:
+            forced_risk = (
+                "HIGH — final iteration, turn budget low; expect forced verdict "
+                "if no resolution this turn."
+            )
+        else:
+            forced_risk = (
+                "MEDIUM — iteration turn budget low; expect a forced "
+                "check_sufficiency to close out this iteration."
+            )
+    else:
+        forced_risk = "low"
 
     lines = [
         "## 7. Verdict Readiness",
@@ -439,7 +456,13 @@ def _derive_status(
     turns_remaining: int,
     sufficiency_threshold: float,
     workspace: Path,
+    *,
+    is_last_iteration: bool = False,
 ) -> str:
+    # When this iteration's turn budget is nearly spent, the urgency depends on
+    # whether it is the FINAL iteration.  Final iteration → wrap up the run with
+    # a verdict.  Earlier iteration → just close out the iteration with a
+    # sufficiency check (further iterations remain).
     if (workspace / "verdict.json").exists():
         return "complete (verdict emitted)"
     if state.sufficiency_history:
@@ -451,13 +474,15 @@ def _derive_status(
         if sufficient:
             return f"ready-for-verdict (sufficiency=sufficient, confidence={last.confidence:.2f})"
         if turns_remaining <= 2:
+            kind = "forced-verdict-imminent" if is_last_iteration else "check-sufficiency-imminent"
             return (
-                f"forced-verdict-imminent (sufficiency={last.label}, "
+                f"{kind} (sufficiency={last.label}, "
                 f"confidence={last.confidence:.2f}, turns_remaining={turns_remaining})"
             )
         return f"collecting-evidence (sufficiency={last.label}, confidence={last.confidence:.2f})"
     if turns_remaining <= 2:
-        return f"forced-verdict-imminent (no sufficiency check yet, turns_remaining={turns_remaining})"
+        kind = "forced-verdict-imminent" if is_last_iteration else "check-sufficiency-imminent"
+        return f"{kind} (no sufficiency check yet, turns_remaining={turns_remaining})"
     return "collecting-evidence (no sufficiency check yet)"
 
 
@@ -527,7 +552,12 @@ def build_workbook_parts(
     ``curation_queue`` default to reading from disk under ``workspace``.
     Pass explicit values to short-circuit disk I/O in tests.
     """
+    # ``turns_used`` / ``turns_remaining`` are per-iteration (reset after each
+    # check_sufficiency).  ``is_last_iteration`` decides whether a nearly-spent
+    # turn budget means "force a verdict" (last iteration) or merely "force a
+    # sufficiency check to close out this iteration" (earlier iterations).
     turns_remaining = max(max_turns - turns_used, 0)
+    is_last_iteration = state.iteration >= max_iterations - 1
     grs = list(guardrails if guardrails is not None else DEFAULT_GUARDRAILS)
 
     if action_records is None:
@@ -557,6 +587,7 @@ def build_workbook_parts(
             max_turns=max_turns,
             turns_used=turns_used,
             sufficiency_threshold=sufficiency_threshold,
+            max_iterations=max_iterations,
         ),
         _section_state_snapshot(state),
         _section_action_loop_record(action_records),
@@ -565,6 +596,7 @@ def build_workbook_parts(
             state,
             turns_remaining=turns_remaining,
             sufficiency_threshold=sufficiency_threshold,
+            is_last_iteration=is_last_iteration,
         ),
         _section_raw_artifact_index(artifact_handles),
         _section_next_turn_guidance(reflection),
