@@ -1904,6 +1904,23 @@ def _check_sufficiency_llm(
     papers_added_this_iteration = current_paper_count - previous_paper_count
     state.papers_per_iteration.append(current_paper_count)
 
+    # Early exit if no papers or no facts extracted
+    if current_paper_count == 0 or len(state.facts) == 0:
+        logger.info(
+            "check_sufficiency (LLM): no papers or facts found. "
+            "Returning insufficient with confidence=0.0"
+        )
+        print(
+            f"check_sufficiency: iter={state.iteration} label=insufficient "
+            f"confidence=0.0000 papers={current_paper_count} "
+            f"(no evidence to evaluate - no papers or facts)"
+        )
+        result = SufficiencyResult(label="insufficient", confidence=0.0, gaps=[])
+        state.sufficiency_history.append(result)
+        state.iteration += 1
+        state._auto_save()
+        return result
+
     label, score, raw_response = check_sufficiency_llm(state, llm, threshold)
 
     override_reason = None
@@ -1981,6 +1998,23 @@ def _check_sufficiency_haiku(
     papers_added_this_iteration = current_paper_count - previous_paper_count
     state.papers_per_iteration.append(current_paper_count)
 
+    # Early exit if no papers or no facts extracted
+    if current_paper_count == 0 or len(state.facts) == 0:
+        logger.info(
+            "check_sufficiency (Haiku): no papers or facts found. "
+            "Returning insufficient with confidence=0.0"
+        )
+        print(
+            f"check_sufficiency: iter={state.iteration} label=insufficient "
+            f"confidence=0.0000 papers={current_paper_count} "
+            f"(no features to extract - no papers or facts)"
+        )
+        result = SufficiencyResult(label="insufficient", confidence=0.0, gaps=[])
+        state.sufficiency_history.append(result)
+        state.iteration += 1
+        state._auto_save()
+        return result
+
     haiku_llm = get_haiku_llm()
     label, score, raw_response = check_sufficiency_llm(state, haiku_llm, threshold)
 
@@ -2057,6 +2091,23 @@ def _check_sufficiency_mlp(
 
     # Record current count for next iteration
     state.papers_per_iteration.append(current_paper_count)
+
+    # Early exit if no papers or no facts extracted
+    if current_paper_count == 0 or len(state.facts) == 0:
+        logger.info(
+            "check_sufficiency (MLP): no papers or facts found. "
+            "Returning insufficient with confidence=0.0"
+        )
+        print(
+            f"check_sufficiency: iter={state.iteration} label=insufficient "
+            f"confidence=0.0000 papers={current_paper_count} "
+            f"(no features to extract - no papers or facts)"
+        )
+        result = SufficiencyResult(label="insufficient", confidence=0.0, gaps=[])
+        state.sufficiency_history.append(result)
+        state.iteration += 1
+        state._auto_save()
+        return result
 
     # Get MLP classifier and feature aggregator from model registry
     from proclaim.verification.model_registry import get_mlp_classifier, get_feature_aggregator
