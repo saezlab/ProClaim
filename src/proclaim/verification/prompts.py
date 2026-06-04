@@ -737,3 +737,99 @@ Current workbook state (volatile sections only):
 {workbook_volatile}
 
 Submit the structured reflection."""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sufficiency & verdict prompts
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ---------------------------------------------------------------------------
+# LLM-based sufficiency classifier  (used by llm_sufficiency.py)
+# Placeholders: claim, reference
+# NOTE: This template contains literal JSON braces, so it is filled via
+# str.replace("{claim}", ...) / str.replace("{reference}", ...) — NOT .format().
+# ---------------------------------------------------------------------------
+LLM_SUFFICIENCY_PROMPT = """\
+You are a scientific evaluator. Given a CLAIM and a REFERENCE (paper titles, \
+abstracts, and NLP features), assess whether the REFERENCE contains sufficient \
+evidence to support or refute the CLAIM.
+
+Assign a sufficiency score between 0.0 and 1.0:
+- 1.0: The REFERENCE contains decisive evidence — either clearly supporting OR \
+clearly refuting the CLAIM. Both directions are equally "sufficient". Papers that \
+unanimously refute the claim deserve the same high score as papers that unanimously \
+support it.
+- 0.0: The REFERENCE is entirely irrelevant (entities, topic, and semantics are \
+unrelated to the claim), or no papers were found.
+- Values in between reflect partial relevance, inconclusive evidence, or genuinely \
+conflicting evidence. Conflicting evidence means the papers are relevant and credible, \
+but split in direction — after weighing their content, methodology, and credibility, \
+no clear verdict can be reached. Do NOT judge conflict by the ratio of papers alone; \
+a single high-quality paper can outweigh several weaker ones.
+
+### FEATURE DEFINITIONS
+Each paper in the REFERENCE includes pre-computed Metadata and NLP fields:
+
+Metadata:
+- publication_year: Year the paper was published.
+- log_impact_factor: log(1 + journal impact factor). Higher = more prestigious venue.
+- normalized_citation_count: Citations / paper age. Measures community attention.
+- author_h_index_max: Highest H-index among all authors. Proxy for author credibility.
+
+NLP (computed relative to the CLAIM):
+- claim_entity_coverage: Fraction of claim biomedical entities also in the paper (0–1).
+- semantic_similarity: SBERT cosine similarity between claim and abstract (0–1).
+- nli_entailment: DeBERTa NLI probability that the nli_best_chunk_text ENTAILS the claim (0–1).
+- nli_contradiction: Probability the nli_best_chunk_text CONTRADICTS (refutes) the claim (0–1).
+- nli_neutral: Probability the nli_best_chunk_text is NEUTRAL (0–1). Sum ≈ 1.
+- nli_best_chunk_text: The most relevant text passage used to compute NLI scores.
+
+### CLAIM
+{claim}
+
+### REFERENCE
+{reference}
+
+First, output a brief ### EXPLANATION (plain text reasoning).
+Then output ### EVALUATION as a JSON object with exactly these keys:
+
+```json
+{
+  "sufficiency_score": <float 0.0–1.0>,
+  "reasoning": "<one-sentence summary>"
+}
+```
+Output ONLY the EXPLANATION block followed by the EVALUATION JSON block. No other text.\
+"""
+
+# ---------------------------------------------------------------------------
+# Forced verdict  (used by evidence_programming_direct.py::_force_verdict)
+# Prompts the subagent LLM to decide the final verdict when the turn budget
+# is exhausted.  Filled via .format() inside the generated subprocess script.
+# Placeholders: claim, verdict_definitions, summary, facts_text, gaps_text,
+#               verdict_names
+# ---------------------------------------------------------------------------
+FORCE_VERDICT_PROMPT = """\
+You are a scientific evidence evaluator. Based on the evidence below,
+determine the verdict for this claim using exactly one of the defined labels.
+
+Claim: {claim}
+
+Verdict label definitions:
+{verdict_definitions}
+
+Evidence summary:
+{summary}
+
+Extracted facts:
+{facts_text}
+
+Gaps identified:
+{gaps_text}
+
+Output your answer in this exact format:
+VERDICT: <one of {verdict_names}>
+CONFIDENCE: <0.0-1.0>
+REASONING: <one paragraph>
+KEY_EVIDENCE: <bullet 1> | <bullet 2> | <bullet 3>
+"""

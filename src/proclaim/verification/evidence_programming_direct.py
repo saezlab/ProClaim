@@ -575,9 +575,6 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict) -> None:
     prompts the subagent LLM to evaluate the evidence and decide SUPPORT/REFUTE/UNCERTAIN,
     then calls emit_verdict.  No hardcoded verdict defaults — the LLM makes the call.
     """
-    from proclaim.verification.config import get_label_config as _get_label_cfg
-    _verdict_names = ', '.join(_get_label_cfg().verdict_names())
-
     abs_workspace = str(workspace.resolve())
     script = textwrap.dedent(f"""\
         from proclaim.verification.evidence_api import (
@@ -611,29 +608,15 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict) -> None:
             f"  [{{f.stance}}] {{f.text[:200]}}" for f in state.facts[:20]
         ) or "  (none)"
 
-        verdict_prompt = (
-            "You are a scientific evidence evaluator. Based on the evidence below,\\n"
-            "determine the verdict for this claim using exactly one of the defined labels.\\n"
-            "\\n"
-            f"Claim: {{state.claim}}\\n"
-            "\\n"
-            "Verdict label definitions:\\n"
-            f"{{label_cfg.verdict_prompt_block()}}\\n"
-            "\\n"
-            "Evidence summary:\\n"
-            f"{{summary}}\\n"
-            "\\n"
-            "Extracted facts:\\n"
-            f"{{facts_text}}\\n"
-            "\\n"
-            "Gaps identified:\\n"
-            f"{{chr(10).join(f'  - {{g}}' for g in gaps[:5]) or '  (none)'}}\\n"
-            "\\n"
-            "Output your answer in this exact format:\\n"
-            f"VERDICT: <one of {_verdict_names}>\\n"
-            "CONFIDENCE: <0.0-1.0>\\n"
-            "REASONING: <one paragraph>\\n"
-            "KEY_EVIDENCE: <bullet 1> | <bullet 2> | <bullet 3>\\n"
+        from proclaim.verification.prompts import FORCE_VERDICT_PROMPT
+        gaps_text = chr(10).join(f"  - {{g}}" for g in gaps[:5]) or "  (none)"
+        verdict_prompt = FORCE_VERDICT_PROMPT.format(
+            claim=state.claim,
+            verdict_definitions=label_cfg.verdict_prompt_block(),
+            summary=summary,
+            facts_text=facts_text,
+            gaps_text=gaps_text,
+            verdict_names=", ".join(label_cfg.verdict_names()),
         )
 
         response = llm(verdict_prompt)

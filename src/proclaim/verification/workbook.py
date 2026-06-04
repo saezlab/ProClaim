@@ -170,11 +170,6 @@ def _section_claim_frame(
         if state.subclaims
         else "  - (none — claim not yet decomposed)"
     )
-    extraction_lines = (
-        "\n".join(f"  - {note}" for note in state.extraction_context)
-        if state.extraction_context
-        else "  - (none)"
-    )
 
     stopping_rule = (
         f"Stop when sufficiency confidence >= {sufficiency_threshold:.2f} "
@@ -200,8 +195,6 @@ def _section_claim_frame(
     lines.append("  - Treat synonyms / aliases captured in extraction context as on-claim.")
     lines.append("  - Scope, mechanism class, and compartmental constraints can flip relevance — keep them explicit.")
     lines.append(f"- Stopping rule: {stopping_rule}")
-    lines.append("- Extraction context in force:")
-    lines.append(extraction_lines)
     return "\n".join(lines)
 
 
@@ -248,6 +241,16 @@ def _section_state_snapshot(state: EvidenceState) -> str:
     lines.extend(suff_trend)
     lines.append("- Open gaps:")
     lines.extend(open_gaps)
+
+    # Show the active (latest) extraction context note so the planner knows
+    # what aliases are in scope without scanning historical notes.  Older notes
+    # are superseded and omitted; the full history is in the trace log.
+    if state.extraction_context:
+        lines.append("- Extraction context in force (latest):")
+        lines.append(f"  - {state.extraction_context[-1]}")
+    else:
+        lines.append("- Extraction context in force: (none)")
+
     return "\n".join(lines)
 
 

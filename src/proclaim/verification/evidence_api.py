@@ -1427,14 +1427,25 @@ def add_extraction_context_note(state: EvidenceState, note: str) -> None:
         ...     "at serine 9, activating it.",  # pre-conclusion, not a synonym
         ... )
     """
+    # Reject duplicate notes — the same note being added twice wastes a full
+    # re-extraction pass and pollutes the workbook with redundant bullets.
+    normalized = note.strip()
+    if normalized in [n.strip() for n in state.extraction_context]:
+        print(
+            f"Extraction context note already present — skipping (no cache cleared).\n"
+            f"Existing notes ({len(state.extraction_context)}):\n"
+            + "\n".join(f"  [{i}] {n}" for i, n in enumerate(state.extraction_context))
+        )
+        return
+
     # Snapshot the cache BEFORE state.add_extraction_context clears it — these
     # are the PMIDs that now need re-extraction under the new context.
     cleared_pmids = list(state.extracted_pmids)
     n_cleared = len(cleared_pmids)
     n_papers = len(state.papers)
-    state.add_extraction_context(note)
+    state.add_extraction_context(normalized)
     state.append_trace("add_extraction_context", {
-        "note": note,
+        "note": normalized,
         "extracted_pmids_cleared": n_cleared,
         "total_context_notes": len(state.extraction_context),
     })
@@ -1443,7 +1454,7 @@ def add_extraction_context_note(state: EvidenceState, note: str) -> None:
     if workspace is not None and cleared_pmids:
         try:
             from proclaim.verification.curation import auto_enqueue_re_extract
-            short_note = note.strip().replace("\n", " ")
+            short_note = normalized.replace("\n", " ")
             if len(short_note) > 100:
                 short_note = short_note[:99] + "…"
             auto_enqueue_re_extract(
