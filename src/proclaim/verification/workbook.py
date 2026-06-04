@@ -21,6 +21,7 @@ Sections covered (per the improvement plan):
   2. Guardrails            — read-only operational policy
   3. Header                — run identity, iteration, turn budget, status
   4. State Snapshot        — paper / fact / sufficiency aggregates
+  4a. Known Evidence Digest— Phase 4: facts by stance/PMID + verdict packet path
   5. Action Loop Record    — last N entries from the action ledger
   6. Recuration Queue      — Phase 3 curation buckets
   7. Verdict Readiness     — derived from sufficiency_history + turn budget
@@ -44,6 +45,7 @@ from proclaim.verification.action_ledger import (
 from proclaim.verification.curation import CurationQueue, render_curation_section
 from proclaim.verification.evidence_state import EvidenceState
 from proclaim.verification.reflection import (
+    ReflectionNextFamily,
     ReflectionRecord,
     load_reflection,
 )
@@ -254,6 +256,37 @@ def _section_state_snapshot(state: EvidenceState) -> str:
     return "\n".join(lines)
 
 
+def _section_known_evidence_digest(
+    state: EvidenceState,
+    *,
+    verdict_packet_path: Optional[Path] = None,
+    max_facts_per_stance: int = 8,
+) -> str:
+    """Render Section 4a — a compact, fact-centered digest of the full corpus.
+
+    Phase 4 (recovery plan): the planner previously saw counts and gaps but not
+    a statement of *what is known*, which anchored verdicts on "missing
+    evidence" rather than the extracted facts. This volatile section surfaces
+    facts grouped by stance/PMID (capped tighter than the full verdict packet so
+    the workbook stays bounded) and points at the written verdict packet for the
+    complete view.
+
+    Numbered ``4a`` deliberately, so the existing Section IDs (5–9) downstream
+    code and the prompt reference do not have to renumber.
+    """
+    from proclaim.verification.verdict_packet import build_known_facts_digest
+
+    lines = ["## 4a. Known Evidence Digest"]
+    digest = build_known_facts_digest(state, max_facts_per_stance=max_facts_per_stance)
+    lines.append(digest)
+    if verdict_packet_path is not None:
+        lines.append("")
+        lines.append(
+            f"- Full verdict packet (all facts, no caps): `{verdict_packet_path.name}`"
+        )
+    return "\n".join(lines)
+
+
 def _section_action_loop_record(records: Sequence[ActionRecord]) -> str:
     """Render the last few action ledger entries as a compact bullet list.
 
@@ -329,14 +362,39 @@ def _section_verdict_readiness(
         confidence = last.confidence
         gap_summaries = [g.description for g in last.gaps]
     else:
+        last = None
         sufficiency_label = "(not yet checked)"
         confidence = 0.0
         gap_summaries = []
 
-    ready = (
-        sufficiency_label.lower() == "sufficient"
-        and confidence >= sufficiency_threshold
-    )
+    has_non_default_facts = _has_non_default_facts(state)
+    stagnated = _sufficiency_stagnated(state)
+
+    # Verdict readiness is true when any of the Phase 3 escapes hold. Each is a
+    # deterministic signal that further retrieval is unlikely to change the
+    # outcome, so the loop should pivot to emitting a verdict.
+    ready = False
+    ready_reason: Optional[str] = None
+    if sufficiency_label.lower() == "sufficient" and confidence >= sufficiency_threshold:
+        ready = True
+        ready_reason = "sufficiency met threshold"
+    elif last is not None and _only_low_diversity_caveat(last):
+        ready = True
+        ready_reason = (
+            "sufficient; only blocked by a soft low-source-diversity caveat"
+        )
+    elif has_non_default_facts and stagnated:
+        ready = True
+        ready_reason = (
+            "sufficiency confidence flat/declining over recent checks while "
+            "directional facts already exist — stagnation escape"
+        )
+    elif has_non_default_facts and (is_last_iteration or turns_remaining <= 2):
+        ready = True
+        ready_reason = (
+            "final iteration / turn budget low and directional facts exist — "
+            "emit a verdict on current evidence"
+        )
 
     missing_lines: list[str] = []
     if not ready and gap_summaries:
@@ -346,16 +404,19 @@ def _section_verdict_readiness(
         missing_lines.append("    - (none recorded)")
 
     blockers = []
-    if sufficiency_label.lower() != "sufficient":
-        blockers.append(f"sufficiency label is {sufficiency_label!r}")
-    if confidence < sufficiency_threshold:
-        blockers.append(
-            f"confidence {confidence:.2f} below threshold {sufficiency_threshold:.2f}"
-        )
-    if not state.facts:
-        blockers.append("no facts extracted yet")
-    if not blockers:
-        blockers.append("(none — verdict can be emitted)")
+    if ready:
+        blockers.append(f"(none — verdict can be emitted: {ready_reason})")
+    else:
+        if sufficiency_label.lower() != "sufficient":
+            blockers.append(f"sufficiency label is {sufficiency_label!r}")
+        if confidence < sufficiency_threshold:
+            blockers.append(
+                f"confidence {confidence:.2f} below threshold {sufficiency_threshold:.2f}"
+            )
+        if not has_non_default_facts:
+            blockers.append("no directional (non-default-stance) facts extracted yet")
+        if not blockers:
+            blockers.append("(none — verdict can be emitted)")
 
     if turns_remaining <= 2 and not ready:
         if is_last_iteration:
@@ -446,6 +507,17 @@ def _section_next_turn_guidance(reflection: Optional[ReflectionRecord]) -> str:
     ]
     if reflection.override_invoked:
         lines.append(f"    - Guardrail override invoked: {reflection.override_invoked}")
+    # Phase 4: when the recommendation is to emit a verdict, anchor the planner
+    # on the fact-centered Known Evidence Digest / verdict packet rather than on
+    # this action/reflection history — the latter biases the verdict toward
+    # "missing evidence" instead of what the facts actually say.
+    if next_family == ReflectionNextFamily.EMIT_VERDICT.value:
+        lines.append(
+            "    - When emitting the verdict, base `reasoning`, `key_evidence`, and "
+            "`gaps_remaining` on Section 4a (Known Evidence Digest) / the verdict "
+            "packet — check each fact's direction against the claim. Do not derive "
+            "the verdict from action history, reflection diagnosis, or guardrails."
+        )
     return "\n".join(lines)
 
 
@@ -476,6 +548,16 @@ def _derive_status(
         )
         if sufficient:
             return f"ready-for-verdict (sufficiency=sufficient, confidence={last.confidence:.2f})"
+        # Phase 3 escapes: a soft low-diversity caveat, or stagnant confidence
+        # with directional facts already on hand, both mean further retrieval is
+        # unlikely to help — flag verdict readiness rather than "collecting".
+        if _only_low_diversity_caveat(last):
+            return "ready-for-verdict (sufficient; soft low-diversity caveat only)"
+        if _has_non_default_facts(state) and _sufficiency_stagnated(state):
+            return (
+                f"ready-for-verdict (stagnation escape: confidence flat/declining "
+                f"at {last.confidence:.2f} with directional facts)"
+            )
         if turns_remaining <= 2:
             kind = "forced-verdict-imminent" if is_last_iteration else "check-sufficiency-imminent"
             return (
@@ -487,6 +569,57 @@ def _derive_status(
         kind = "forced-verdict-imminent" if is_last_iteration else "check-sufficiency-imminent"
         return f"{kind} (no sufficiency check yet, turns_remaining={turns_remaining})"
     return "collecting-evidence (no sufficiency check yet)"
+
+
+def _sufficiency_stagnated(
+    state: EvidenceState, window: int = 3, min_delta: float = 0.02
+) -> bool:
+    """Return True when sufficiency confidence is flat or declining.
+
+    Deterministic stagnation signal for the verdict-readiness escape: once the
+    classifier has produced at least ``window`` checks and the confidence over
+    that window neither rises by ``min_delta`` nor recovers from a decline,
+    further retrieval is unlikely to help and the loop should pivot to a
+    verdict (provided non-default facts already exist — that gate lives in
+    Section 7, not here).
+
+    Mirrors the trend logic in ``evidence_api.get_sufficiency_history`` but
+    collapses "flat" and "declining" into a single boolean.
+    """
+    hist = state.sufficiency_history
+    if len(hist) < window:
+        return False
+    recent = [r.confidence for r in hist[-window:]]
+    score_range = max(recent) - min(recent)
+    declining = recent[-1] < recent[0]
+    return score_range < min_delta or declining
+
+
+def _has_non_default_facts(state: EvidenceState) -> bool:
+    """Return True when at least one fact carries a non-default stance.
+
+    Default-stance (NEUTRAL) facts are relevant context but cannot, on their
+    own, anchor a SUPPORT/REFUTE verdict; the stagnation escape requires real
+    directional evidence before recommending a verdict.
+    """
+    from proclaim.verification.config import get_label_config
+
+    default_stance = get_label_config().default_stance
+    return any(str(f.stance) != default_stance for f in state.facts)
+
+
+def _only_low_diversity_caveat(result) -> bool:
+    """Return True when a SUFFICIENT result's only open gap is a soft caveat.
+
+    A SUFFICIENT check whose remaining gaps are all LOW_DIVERSITY is blocked
+    only by the soft source-diversity warning (Phase 3), not by a real
+    evidence gap — so it should still count as verdict-ready.
+    """
+    from proclaim.verification.data_models import GapType
+
+    if result.label.lower() != "sufficient" or not result.gaps:
+        return False
+    return all(g.gap_type == GapType.LOW_DIVERSITY for g in result.gaps)
 
 
 def _format_sufficiency_trend(state: EvidenceState) -> list[str]:
@@ -544,6 +677,7 @@ def build_workbook_parts(
     action_window: int = DEFAULT_WORKBOOK_WINDOW,
     reflection: Optional[ReflectionRecord] = None,
     curation_queue: Optional[CurationQueue] = None,
+    verdict_packet_path: Optional[Path] = None,
 ) -> tuple[str, str]:
     """Build the workbook as a (stable_prefix, volatile_tail) pair.
 
@@ -593,6 +727,9 @@ def build_workbook_parts(
             max_iterations=max_iterations,
         ),
         _section_state_snapshot(state),
+        _section_known_evidence_digest(
+            state, verdict_packet_path=verdict_packet_path
+        ),
         _section_action_loop_record(action_records),
         _section_recuration_queue(curation_queue),
         _section_verdict_readiness(
@@ -625,6 +762,7 @@ def build_workbook(
     action_window: int = DEFAULT_WORKBOOK_WINDOW,
     reflection: Optional[ReflectionRecord] = None,
     curation_queue: Optional[CurationQueue] = None,
+    verdict_packet_path: Optional[Path] = None,
 ) -> str:
     """Render the full markdown workbook (stable prefix + marker + volatile tail).
 
@@ -646,6 +784,7 @@ def build_workbook(
         action_window=action_window,
         reflection=reflection,
         curation_queue=curation_queue,
+        verdict_packet_path=verdict_packet_path,
     )
     return f"{stable}{STABLE_VOLATILE_MARKER}\n\n{volatile}"
 
@@ -666,7 +805,25 @@ def write_workbook(
     reflection: Optional[ReflectionRecord] = None,
     curation_queue: Optional[CurationQueue] = None,
 ) -> Path:
-    """Serialize the workbook to ``workspace/workbook.md`` and return the path."""
+    """Serialize the workbook to ``workspace/workbook.md`` and return the path.
+
+    Also writes the clean verdict packet (``verdict_packet.md``) alongside the
+    workbook so the forced-verdict path and the planner share one fact-centered
+    view. Packet failures are non-fatal — workbook rendering must not depend on
+    it.
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    verdict_packet_path: Optional[Path] = None
+    try:
+        from proclaim.verification.verdict_packet import write_verdict_packet
+
+        verdict_packet_path = write_verdict_packet(
+            state, workspace=workspace, label_cfg=label_cfg
+        )
+    except Exception:  # pragma: no cover - packet is an aid, not a dependency
+        verdict_packet_path = None
+
     text = build_workbook(
         state,
         workspace=workspace,
@@ -681,8 +838,8 @@ def write_workbook(
         action_window=action_window,
         reflection=reflection,
         curation_queue=curation_queue,
+        verdict_packet_path=verdict_packet_path,
     )
-    workspace.mkdir(parents=True, exist_ok=True)
     path = workspace / WORKBOOK_FILENAME
     path.write_text(text)
     return path

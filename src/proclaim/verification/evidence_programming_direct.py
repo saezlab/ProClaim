@@ -579,8 +579,8 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict) -> None:
     script = textwrap.dedent(f"""\
         from proclaim.verification.evidence_api import (
             setup_workspace, populate_paper_features, check_sufficiency, emit_verdict,
-            get_evidence_summary,
         )
+        from proclaim.verification.verdict_packet import build_verdict_packet
         from proclaim.verification.config import get_label_config
 
         state, llm, workspace = setup_workspace(
@@ -601,21 +601,16 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict) -> None:
         gaps = [g.description for g in (suf.gaps if suf else [])]
         suf_confidence = suf.confidence if suf else 0.0
 
-        # Prompt the subagent LLM to evaluate evidence and decide the verdict.
+        # Prompt the subagent LLM with the Phase 4 clean verdict packet, built
+        # from the FULL corpus (not the sufficiency candidate subset).  This
+        # gives the verdict LLM every extracted fact grouped by stance/PMID, so
+        # it can correct direction mistakes instead of anchoring on gaps.
         label_cfg = get_label_config()
-        summary = get_evidence_summary(state)
-        facts_text = "\\n".join(
-            f"  [{{f.stance}}] {{f.text[:200]}}" for f in state.facts[:20]
-        ) or "  (none)"
+        verdict_packet = build_verdict_packet(state, label_cfg=label_cfg)
 
         from proclaim.verification.prompts import FORCE_VERDICT_PROMPT
-        gaps_text = chr(10).join(f"  - {{g}}" for g in gaps[:5]) or "  (none)"
         verdict_prompt = FORCE_VERDICT_PROMPT.format(
-            claim=state.claim,
-            verdict_definitions=label_cfg.verdict_prompt_block(),
-            summary=summary,
-            facts_text=facts_text,
-            gaps_text=gaps_text,
+            verdict_packet=verdict_packet,
             verdict_names=", ".join(label_cfg.verdict_names()),
         )
 

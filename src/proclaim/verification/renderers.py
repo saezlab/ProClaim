@@ -531,27 +531,45 @@ def render_filtering_summary(workspace: str) -> None:
     summaries = []
     for i, op in enumerate(filter_ops, 1):
         kept_stances = ", ".join(op.get("keep_stances", []))
-        before = op.get("papers_before", 0)
-        after = op.get("papers_after", 0)
-        removed_count = op.get("papers_removed", 0)
-        removed_pmids = op.get("removed_pmids", [])
+        # New non-destructive schema; fall back to legacy field names.
+        total = op.get("papers_total", op.get("papers_before", 0))
+        candidate_pmids = op.get("candidate_pmids")
+        excluded_pmids = op.get("excluded_pmids", op.get("removed_pmids", []))
+        candidate_count = (
+            len(candidate_pmids) if candidate_pmids is not None
+            else op.get("papers_after", 0)
+        )
+        excluded_count = len(excluded_pmids)
+        non_destructive = op.get("non_destructive", False)
 
         summary = (
             f"<div style='border:1px solid #cbd5e1;border-radius:8px;padding:12px;"
             f"margin:12px 0;background:#f8fafc'>"
             f"<h4 style='margin:0 0 8px 0'>Filter Operation {i}</h4>"
             f"<p><strong>Kept stances:</strong> {kept_stances}</p>"
-            f"<p><strong>Papers before:</strong> {before} → "
-            f"<strong>After:</strong> {after} "
-            f"(<span style='color:#ef4444'>-{removed_count}</span>)</p>"
         )
+        if non_destructive:
+            summary += (
+                f"<p><strong>Papers total:</strong> {total} | "
+                f"<strong>Sufficiency candidates:</strong> {candidate_count} | "
+                f"<strong>Retained but excluded:</strong> "
+                f"<span style='color:#f59e0b'>{excluded_count}</span></p>"
+            )
+            excluded_label = "Excluded from classifier (still retained)"
+        else:
+            summary += (
+                f"<p><strong>Papers before:</strong> {total} → "
+                f"<strong>After:</strong> {candidate_count} "
+                f"(<span style='color:#ef4444'>-{excluded_count}</span>)</p>"
+            )
+            excluded_label = "Removed papers"
 
-        if removed_pmids:
-            summary += "<p><strong>Removed papers:</strong></p><ul>"
-            for pmid in removed_pmids[:10]:  # Show first 10
+        if excluded_pmids:
+            summary += f"<p><strong>{excluded_label}:</strong></p><ul>"
+            for pmid in excluded_pmids[:10]:  # Show first 10
                 summary += f"<li>{pmid}</li>"
-            if len(removed_pmids) > 10:
-                summary += f"<li><em>...and {len(removed_pmids) - 10} more</em></li>"
+            if len(excluded_pmids) > 10:
+                summary += f"<li><em>...and {len(excluded_pmids) - 10} more</em></li>"
             summary += "</ul>"
 
         summary += "</div>"

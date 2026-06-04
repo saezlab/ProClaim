@@ -1840,11 +1840,51 @@ def get_evidence_summary(state: EvidenceState) -> str:
 # (MLP classifier, NLP models, etc. are now managed by model_registry.py)
 
 
+def get_sufficiency_candidate_pmids(state: EvidenceState) -> list[str]:
+    """Return the PMIDs eligible for sufficiency classifier input.
+
+    If ``filter_papers_by_stance`` has been applied (recorded via
+    ``state.stance_filter_keep_stances``), this is the recorded candidate
+    list — which may be empty when no paper carries a non-default-stance fact.
+    Otherwise the full retrieved corpus is the candidate set.
+
+    PMIDs are intersected with ``state.papers`` defensively so the view never
+    references a paper that is no longer present.
+    """
+    if state.stance_filter_keep_stances:
+        return [p for p in state.sufficiency_candidate_pmids if p in state.papers]
+    return list(state.papers.keys())
+
+
+def build_sufficiency_view(state: EvidenceState) -> EvidenceState:
+    """Build a deep clone of ``state`` restricted to sufficiency candidates.
+
+    The classifier should score only papers/facts with a non-default stance
+    (see ``filter_papers_by_stance``), while verdict and workbook continue to
+    use the full corpus. This helper produces that restricted view without
+    touching the original state.
+
+    The clone has ``_workspace`` cleared so any auto-save triggered by a
+    sufficiency backend is a no-op — it can never overwrite the real
+    ``evidence_state.json`` with the pruned candidate subset.
+    """
+    candidates = set(get_sufficiency_candidate_pmids(state))
+    view = state.clone()
+    # Only restrict when a stance filter has actually run; otherwise the full
+    # corpus is the candidate set and the clone already matches it.
+    if state.stance_filter_keep_stances:
+        view.papers = {p: rec for p, rec in view.papers.items() if p in candidates}
+        view.facts = [f for f in view.facts if f.source_pmid in candidates]
+    view._workspace = None
+    return view
+
+
 def check_sufficiency(
     state: EvidenceState,
     llm,
     threshold: float = 0.5,
     min_total_papers: int = 3,
+    hard_min_paper_gate: bool = False,
 ) -> SufficiencyResult:
     """Run the trained MLP sufficiency classifier on the current evidence state.
 
@@ -1865,11 +1905,21 @@ def check_sufficiency(
         state: Evidence state to check
         llm: LLM instance for gap identification
         threshold: MLP probability threshold for sufficiency (default: 0.5)
-        min_total_papers: Minimum total number of papers required in the state
-                          before allowing SUFFICIENT result. If fewer papers
-                          are present in total, force INSUFFICIENT to
-                          encourage more retrieval. Set to 0 to disable.
-                          (default: 3)
+        min_total_papers: Candidate-paper count at/above which source diversity
+                          is considered adequate. Below this count a SUFFICIENT
+                          result is flagged as low-diversity. This is only a
+                          *threshold* — whether it warns or blocks is controlled
+                          by ``hard_min_paper_gate``. Set to 0 to disable the
+                          low-diversity check entirely. (default: 3)
+        hard_min_paper_gate: Policy for the low-diversity threshold. When
+                          ``False`` (default) the gate is *soft*: a SUFFICIENT
+                          result with too few candidate papers stays SUFFICIENT
+                          but carries a LOW_DIVERSITY caveat gap. When ``True``
+                          the gate is *hard*: SUFFICIENT is flipped to
+                          INSUFFICIENT to force more retrieval (legacy
+                          behaviour). SIGNOR often accepts single-paper
+                          evidence, so the soft default avoids vetoing
+                          otherwise-sufficient evidence.
     The backend is selected via the SUFFICIENCY_BACKEND environment variable
     (propagated by VerificationSettings.build_sdk_env):
       'mlp' (default): trained MLP classifier — original behaviour.
@@ -1882,11 +1932,99 @@ def check_sufficiency(
     """
     import os
     backend = os.environ.get("SUFFICIENCY_BACKEND", "mlp").lower()
+
+    # Score only the candidate papers/facts (SUPPORT/REFUTE by default), while
+    # the original full corpus is preserved for verdict and workbook. The view
+    # is a workspace-less clone, so backend mutations and auto-saves land on the
+    # clone; we copy the bookkeeping back to the original exactly once below.
+    view = build_sufficiency_view(state)
     if backend == "haiku":
-        return _check_sufficiency_haiku(state, llm, threshold, min_total_papers)
-    if backend == "llm":
-        return _check_sufficiency_llm(state, llm, threshold, min_total_papers)
-    return _check_sufficiency_mlp(state, llm, threshold, min_total_papers)
+        result = _check_sufficiency_haiku(view, llm, threshold, min_total_papers, hard_min_paper_gate)
+    elif backend == "llm":
+        result = _check_sufficiency_llm(view, llm, threshold, min_total_papers, hard_min_paper_gate)
+    else:
+        result = _check_sufficiency_mlp(view, llm, threshold, min_total_papers, hard_min_paper_gate)
+
+    # Sync sufficiency bookkeeping from the view back to the real state. These
+    # are the only fields the backends mutate; state.papers/state.facts stay
+    # at full-corpus size on the original.
+    state.sufficiency_history = view.sufficiency_history
+    state.iteration = view.iteration
+    state.papers_per_iteration = view.papers_per_iteration
+    state._auto_save()
+
+    candidate_count = len(view.papers)
+    total_count = len(state.papers)
+    if candidate_count != total_count:
+        print(
+            f"  sufficiency view: papers_for_classifier={candidate_count} "
+            f"(papers_total={total_count})"
+        )
+
+    return result
+
+
+def _low_diversity_gate(
+    label: str,
+    *,
+    current_paper_count: int,
+    min_total_papers: int,
+    hard_min_paper_gate: bool,
+    iteration: int,
+    max_iterations: int,
+    claim: str,
+):
+    """Apply the (soft by default) low-source-diversity gate.
+
+    SIGNOR often accepts single-paper or low-source evidence, so a small
+    candidate-paper count must not silently veto an otherwise-sufficient
+    classifier result. When ``label == "sufficient"`` and the candidate paper
+    count is below ``min_total_papers``:
+
+      * hard gate (``hard_min_paper_gate=True``): flip to ``insufficient`` and
+        return a HIGH-priority LOW_DIVERSITY gap (legacy behaviour), except on
+        the final iteration where flipping would only burn the forced verdict.
+      * soft gate (default): keep ``sufficient`` and return a LOW-priority
+        LOW_DIVERSITY *caveat* gap so the low diversity is visible without
+        blocking the verdict.
+
+    Returns ``(label, gate_gap, is_hard_override)``. ``gate_gap`` is ``None``
+    when the gate does not apply.
+    """
+    from proclaim.verification.data_models import Gap, GapType, GapPriority
+
+    triggered = (
+        label == "sufficient"
+        and min_total_papers > 0
+        and current_paper_count < min_total_papers
+    )
+    if not triggered:
+        return label, None, False
+
+    if hard_min_paper_gate and iteration < max_iterations:
+        gap = Gap(
+            subclaim=claim,
+            gap_type=GapType.LOW_DIVERSITY,
+            description=(
+                f"Minimum paper requirement not met: only {current_paper_count} "
+                f"candidate paper(s) with non-default-stance evidence "
+                f"(need at least {min_total_papers}). Continue searching."
+            ),
+            priority=GapPriority.HIGH,
+        )
+        return "insufficient", gap, True
+
+    gap = Gap(
+        subclaim=claim,
+        gap_type=GapType.LOW_DIVERSITY,
+        description=(
+            f"Low source diversity: only {current_paper_count} candidate "
+            f"paper(s) carry non-default-stance evidence (soft target is "
+            f"{min_total_papers}). Recorded as a caveat, not a blocker."
+        ),
+        priority=GapPriority.LOW,
+    )
+    return "sufficient", gap, False
 
 
 def _check_sufficiency_llm(
@@ -1894,6 +2032,7 @@ def _check_sufficiency_llm(
     llm,
     threshold: float,
     min_total_papers: int,
+    hard_min_paper_gate: bool = False,
 ) -> SufficiencyResult:
     """LLM-based sufficiency check (Qwen subagent backend)."""
     from proclaim.verification.llm_sufficiency import check_sufficiency_llm
@@ -1934,34 +2073,25 @@ def _check_sufficiency_llm(
 
     label, score, raw_response = check_sufficiency_llm(state, llm, threshold)
 
-    override_reason = None
-    if (
-        label == "sufficient"
-        and min_total_papers > 0
-        and current_paper_count < min_total_papers
-        and state.iteration < state.MAX_ITERATIONS
-    ):
-        override_reason = (
-            f"Minimum paper requirement not met: only {current_paper_count} papers "
-            f"(need at least {min_total_papers}). Continue searching."
-        )
-        label = "insufficient"
+    label, gate_gap, hard_override = _low_diversity_gate(
+        label,
+        current_paper_count=current_paper_count,
+        min_total_papers=min_total_papers,
+        hard_min_paper_gate=hard_min_paper_gate,
+        iteration=state.iteration,
+        max_iterations=state.MAX_ITERATIONS,
+        claim=state.claim,
+    )
 
     gaps: list = []
     if label == "insufficient":
-        if override_reason:
-            from proclaim.verification.data_models import Gap, GapType, GapPriority
-            gaps = [Gap(
-                subclaim=state.claim,
-                gap_type=GapType.LOW_DIVERSITY,
-                description=override_reason,
-                priority=GapPriority.HIGH,
-            )]
-        else:
-            gaps = identify_gaps(
-                llm=llm, claim=state.claim,
-                subclaims=state.subclaims, facts=state.facts,
-            )
+        gaps = [gate_gap] if gate_gap is not None else identify_gaps(
+            llm=llm, claim=state.claim,
+            subclaims=state.subclaims, facts=state.facts,
+        )
+    elif gate_gap is not None:
+        # Sufficient but low diversity — attach the soft caveat (non-blocking).
+        gaps = [gate_gap]
 
     result = SufficiencyResult(label=label, confidence=score, gaps=gaps)
     state.sufficiency_history.append(result)
@@ -1971,8 +2101,10 @@ def _check_sufficiency_llm(
     logger.info("check_sufficiency: iter=%d papers=%d score=%.4f label=%s",
                 state.iteration, current_paper_count, score, label)
     print(f"check_sufficiency: iter={state.iteration} label={label} confidence={score:.4f} papers={current_paper_count}(+{papers_added_this_iteration}) backend=llm")
-    if override_reason:
-        print(f"  override: sufficient → insufficient (need >={min_total_papers} papers, have {current_paper_count})")
+    if hard_override:
+        print(f"  hard gate: sufficient → insufficient (need >={min_total_papers} candidate papers, have {current_paper_count})")
+    elif gate_gap is not None:
+        print(f"  soft warning: low source diversity ({current_paper_count} candidate paper(s) < {min_total_papers}); kept sufficient")
     if gaps:
         print(f"  gaps: {len(gaps)} (top: {gaps[0].gap_type.value} — {gaps[0].description[:80]})")
 
@@ -1984,6 +2116,7 @@ def _check_sufficiency_haiku(
     llm,
     threshold: float,
     min_total_papers: int,
+    hard_min_paper_gate: bool = False,
 ) -> SufficiencyResult:
     """Haiku-based sufficiency check (Claude Haiku via native Anthropic API).
 
@@ -2029,36 +2162,27 @@ def _check_sufficiency_haiku(
     haiku_llm = get_haiku_llm()
     label, score, raw_response = check_sufficiency_llm(state, haiku_llm, threshold)
 
-    override_reason = None
-    if (
-        label == "sufficient"
-        and min_total_papers > 0
-        and current_paper_count < min_total_papers
-        and state.iteration < state.MAX_ITERATIONS
-    ):
-        override_reason = (
-            f"Minimum paper requirement not met: only {current_paper_count} papers "
-            f"(need at least {min_total_papers}). Continue searching."
-        )
-        label = "insufficient"
+    label, gate_gap, hard_override = _low_diversity_gate(
+        label,
+        current_paper_count=current_paper_count,
+        min_total_papers=min_total_papers,
+        hard_min_paper_gate=hard_min_paper_gate,
+        iteration=state.iteration,
+        max_iterations=state.MAX_ITERATIONS,
+        claim=state.claim,
+    )
 
     gaps: list = []
     if label == "insufficient":
-        if override_reason:
-            from proclaim.verification.data_models import Gap, GapType, GapPriority
-            gaps = [Gap(
-                subclaim=state.claim,
-                gap_type=GapType.LOW_DIVERSITY,
-                description=override_reason,
-                priority=GapPriority.HIGH,
-            )]
-        else:
-            gaps = identify_gaps(
-                llm=llm,  # Qwen, not Haiku
-                claim=state.claim,
-                subclaims=state.subclaims,
-                facts=state.facts,
-            )
+        gaps = [gate_gap] if gate_gap is not None else identify_gaps(
+            llm=llm,  # Qwen, not Haiku
+            claim=state.claim,
+            subclaims=state.subclaims,
+            facts=state.facts,
+        )
+    elif gate_gap is not None:
+        # Sufficient but low diversity — attach the soft caveat (non-blocking).
+        gaps = [gate_gap]
 
     result = SufficiencyResult(label=label, confidence=score, gaps=gaps)
     state.sufficiency_history.append(result)
@@ -2068,8 +2192,10 @@ def _check_sufficiency_haiku(
     logger.info("check_sufficiency: iter=%d papers=%d score=%.4f label=%s",
                 state.iteration, current_paper_count, score, label)
     print(f"check_sufficiency: iter={state.iteration} label={label} confidence={score:.4f} papers={current_paper_count}(+{papers_added_this_iteration}) backend=haiku")
-    if override_reason:
-        print(f"  override: sufficient → insufficient (need >={min_total_papers} papers, have {current_paper_count})")
+    if hard_override:
+        print(f"  hard gate: sufficient → insufficient (need >={min_total_papers} candidate papers, have {current_paper_count})")
+    elif gate_gap is not None:
+        print(f"  soft warning: low source diversity ({current_paper_count} candidate paper(s) < {min_total_papers}); kept sufficient")
     if gaps:
         print(f"  gaps: {len(gaps)} (top: {gaps[0].gap_type.value} — {gaps[0].description[:80]})")
 
@@ -2081,6 +2207,7 @@ def _check_sufficiency_mlp(
     llm,
     threshold: float,
     min_total_papers: int,
+    hard_min_paper_gate: bool = False,
 ) -> SufficiencyResult:
     """MLP-based sufficiency check (original implementation)."""
 
@@ -2168,50 +2295,42 @@ def _check_sufficiency_mlp(
     # New classifier returns "sufficient" or "insufficient" (lowercase)
     mlp_label = "sufficient" if prob >= threshold else "insufficient"
 
-    # Override to INSUFFICIENT if minimum paper requirement not met
-    # (but only if MLP would have said SUFFICIENT - don't override INSUFFICIENT)
-    override_reason = None
-    if (
-        mlp_label == "sufficient"
-        and min_total_papers > 0
-        and current_paper_count < min_total_papers
-        and state.iteration < state.MAX_ITERATIONS  # Don't force on last iteration
-    ):
-        override_reason = (
-            f"Minimum paper requirement not met: only {current_paper_count} "
-            f"total papers gathered (need at least {min_total_papers}). "
-            f"Continue searching to gather more evidence."
-        )
-        label = "insufficient"
+    # Soft (default) / hard low-source-diversity gate. Soft keeps a SUFFICIENT
+    # result but attaches a LOW_DIVERSITY caveat; hard flips to INSUFFICIENT.
+    label, gate_gap, hard_override = _low_diversity_gate(
+        mlp_label,
+        current_paper_count=current_paper_count,
+        min_total_papers=min_total_papers,
+        hard_min_paper_gate=hard_min_paper_gate,
+        iteration=state.iteration,
+        max_iterations=state.MAX_ITERATIONS,
+        claim=state.claim,
+    )
+    if hard_override:
         logger.info(
-            "Overriding sufficient → insufficient: %d total papers gathered (need at least %d)",
+            "Hard gate: overriding sufficient → insufficient: %d candidate papers (need at least %d)",
             current_paper_count, min_total_papers
         )
-    else:
-        label = mlp_label
 
     # LLM-driven gap identification for insufficient results
     gaps: list = []
     if label == "insufficient":
         from proclaim.verification.subagents import identify_gaps
 
-        # If we overrode due to min papers, add a synthetic gap
-        if override_reason:
-            from proclaim.verification.data_models import Gap, GapType, GapPriority
-            gaps = [Gap(
-                subclaim=state.claim,
-                gap_type=GapType.LOW_DIVERSITY,
-                description=override_reason,
-                priority=GapPriority.HIGH,
-            )]
+        # If the hard gate fired, surface its synthetic LOW_DIVERSITY gap;
+        # otherwise run normal gap identification.
+        if gate_gap is not None:
+            gaps = [gate_gap]
         else:
-            # Normal gap identification
             gaps = identify_gaps(
                 llm=llm,
                 claim=state.claim,
                 subclaims=state.subclaims,
                 facts=state.facts,
             )
+    elif gate_gap is not None:
+        # Sufficient but low diversity — attach the soft caveat (non-blocking).
+        gaps = [gate_gap]
 
     result = SufficiencyResult(label=label, confidence=prob, gaps=gaps)
 
@@ -2220,18 +2339,23 @@ def _check_sufficiency_mlp(
     state._auto_save()  # Persist sufficiency check result to disk
 
     # Print compact feedback for the agent
-    override_note = " (overridden: min papers)" if override_reason else ""
+    if hard_override:
+        gate_note = " (hard gate: min papers)"
+    elif gate_gap is not None:
+        gate_note = " (soft warning: low diversity)"
+    else:
+        gate_note = ""
     print(
         f"Sufficiency: {label} (confidence={prob:.4f}, "
         f"papers={current_paper_count}+{papers_added_this_iteration}, "
-        f"gaps={len(gaps)}{override_note})"
+        f"gaps={len(gaps)}{gate_note})"
     )
     # Verbose details only in debug mode
     _debug_print(f"=== SUFFICIENCY CHECK (iteration {state.iteration}) ===")
     _debug_print(f"MLP Prediction: {mlp_label} (confidence: {prob:.6f})")
     _debug_print(f"Threshold: {threshold}")
-    if override_reason:
-        _debug_print(f"Override reason: {override_reason}")
+    if gate_gap is not None:
+        _debug_print(f"Low-diversity gate ({'hard' if hard_override else 'soft'}): {gate_gap.description}")
     if gaps:
         _debug_print(f"Gaps ({len(gaps)}):")
         for i, gap in enumerate(gaps, 1):
@@ -2333,23 +2457,33 @@ def filter_papers_by_stance(
     state: EvidenceState,
     keep_stances: Optional[list[str]] = None,
 ) -> None:
-    """Filter papers in-place, keeping only those with facts matching specified stances.
+    """Record which papers are eligible for the sufficiency classifier — non-destructively.
 
     Args:
         state: EvidenceState to filter
         keep_stances: List of stances to keep. Defaults to ["SUPPORT", "REFUTE"]
                      (excludes papers with only NEUTRAL facts)
 
-    This function removes papers from state.papers that don't have at least one
-    fact with a stance in keep_stances. Papers with no facts are also removed.
+    This function does NOT remove papers or facts from ``state``. The full
+    retrieved corpus survives until verdict. Instead it computes which PMIDs
+    carry at least one fact whose stance is in ``keep_stances`` and persists
+    that decision as a *view* on the state:
 
-    The filtering is recorded in state.trace for auditability.
+        - ``state.sufficiency_candidate_pmids`` — eligible for classifier input
+        - ``state.stance_filter_removed_pmids`` — retained but excluded from the view
+        - ``state.stance_filter_keep_stances``  — the stance labels used
+
+    Papers that are excluded here remain in ``state.papers`` and remain
+    resolvable by the curation / re-extract workflow. Excluding a paper means
+    "not a sufficiency candidate", not "removed from the run's memory".
+
+    The decision is recorded in state.trace for auditability.
 
     Example:
-        # Remove papers with only NEUTRAL facts
-        filter_papers_by_stance(state)  # keeps SUPPORT and REFUTE only
+        # Candidates = papers with SUPPORT or REFUTE facts (default)
+        filter_papers_by_stance(state)
 
-        # Keep all papers with any facts
+        # Candidates = papers with any non-default fact
         filter_papers_by_stance(state, keep_stances=["SUPPORT", "REFUTE", "NEUTRAL"])
     """
     if keep_stances is None:
@@ -2368,46 +2502,51 @@ def filter_papers_by_stance(
             facts_by_paper[pmid] = []
         facts_by_paper[pmid].append(fact)
 
-    # Identify papers to keep
-    papers_to_keep = set()
-    papers_to_remove = set()
+    # Partition papers into sufficiency candidates and excluded (but retained).
+    candidate_pmids: list[str] = []
+    excluded_pmids: list[str] = []
 
     for pmid in state.papers.keys():
         paper_facts = facts_by_paper.get(pmid, [])
 
-        # Check if paper has at least one fact with a stance in keep_stances
+        # Candidate if it has at least one fact with a stance in keep_stances
         has_relevant_fact = any(
             f.stance.upper() in keep_stances_set for f in paper_facts
         )
 
         if has_relevant_fact:
-            papers_to_keep.add(pmid)
+            candidate_pmids.append(pmid)
         else:
-            papers_to_remove.add(pmid)
+            excluded_pmids.append(pmid)
 
-    # Remove papers
-    for pmid in papers_to_remove:
-        del state.papers[pmid]
+    papers_total = len(state.papers)
 
-    # Log the filtering operation
+    # Persist the view onto the state — without touching state.papers or state.facts.
+    state.sufficiency_candidate_pmids = candidate_pmids
+    state.stance_filter_removed_pmids = excluded_pmids
+    state.stance_filter_keep_stances = list(keep_stances)
+
+    # Log the (non-destructive) filtering decision.
     state.append_trace("filter_papers_by_stance", {
         "keep_stances": keep_stances,
-        "papers_before": len(papers_to_keep) + len(papers_to_remove),
-        "papers_after": len(papers_to_keep),
-        "papers_removed": len(papers_to_remove),
-        "removed_pmids": list(papers_to_remove),
+        "papers_total": papers_total,
+        "candidate_pmids": list(candidate_pmids),
+        "excluded_pmids": list(excluded_pmids),
+        "papers_removed": 0,
+        "non_destructive": True,
     })
 
-    # Auto-enqueue removed PMIDs into the filtered_to_revisit curation bucket
-    # (best-effort — never let queue maintenance break filtering).
+    # Auto-enqueue excluded PMIDs into the filtered_to_revisit curation bucket
+    # (best-effort — never let queue maintenance break filtering). These PMIDs
+    # remain in state.papers, so revisit/re-extract can still resolve them.
     workspace = getattr(state, "_workspace", None)
-    if workspace is not None and papers_to_remove:
+    if workspace is not None and excluded_pmids:
         try:
             from proclaim.verification.curation import auto_enqueue_filtered
             auto_enqueue_filtered(
                 workspace,
-                papers_to_remove,
-                reason=f"filtered_by_stance: had no facts in {keep_stances}",
+                set(excluded_pmids),
+                reason=f"excluded_from_sufficiency_view: no facts in {keep_stances}",
                 source="auto",
             )
         except Exception as exc:
@@ -2418,11 +2557,12 @@ def filter_papers_by_stance(
 
     # Print summary
     print(
-        f"Paper filter: {len(papers_to_keep) + len(papers_to_remove)} → {len(papers_to_keep)} "
-        f"(removed {len(papers_to_remove)}, keep={', '.join(keep_stances)})"
+        f"Paper filter: {papers_total} total, {len(candidate_pmids)} candidate for "
+        f"sufficiency, {len(excluded_pmids)} retained but excluded from classifier "
+        f"(keep={', '.join(keep_stances)})"
     )
-    if papers_to_remove:
-        _debug_print(f"Removed PMIDs: {', '.join(sorted(papers_to_remove))}")
+    if excluded_pmids:
+        _debug_print(f"Excluded PMIDs: {', '.join(sorted(excluded_pmids))}")
 
 
 # ---------------------------------------------------------------------------

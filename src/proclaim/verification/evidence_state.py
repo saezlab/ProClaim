@@ -52,6 +52,16 @@ class EvidenceState(BaseModel):
     token_estimate: int = 0
     # Track paper count per iteration for minimum paper requirements
     papers_per_iteration: list[int] = Field(default_factory=list)
+    # Non-destructive stance filtering (workbook recovery, Phase 1).
+    # filter_papers_by_stance records its decisions here instead of deleting
+    # papers from `papers`, so the full retrieved corpus survives until verdict.
+    #   sufficiency_candidate_pmids: PMIDs eligible for sufficiency classifier input.
+    #   stance_filter_removed_pmids: PMIDs excluded from the sufficiency view but
+    #                                still retained in `papers`.
+    #   stance_filter_keep_stances:  last stance labels used by the filter.
+    sufficiency_candidate_pmids: list[str] = Field(default_factory=list)
+    stance_filter_removed_pmids: list[str] = Field(default_factory=list)
+    stance_filter_keep_stances: list[str] = Field(default_factory=list)
     # In-memory trace log — accumulated during REPL sessions,
     # written to disk only by checkpoint_save() (excluded from evidence_state.json).
     trace: list[dict] = Field(default_factory=list, exclude=True)

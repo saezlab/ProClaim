@@ -712,6 +712,16 @@ fields:
   before re-running extract.  If the turn budget is nearly exhausted or
   sufficiency is already met, propose "emit_verdict".
 
+  Stagnation escape (IMPORTANT): when the Verdict Readiness section already
+  shows directional (SUPPORT/REFUTE) facts AND sufficiency confidence is flat
+  or declining across the recent checks, do NOT propose more search,
+  re_extract, or even another check_sufficiency — further retrieval will not
+  move a stuck classifier.  Propose "emit_verdict" and base the verdict on the
+  facts already extracted.  A low-source-diversity caveat (one or two
+  candidate papers) is a caveat to note in the verdict, not a reason to keep
+  searching.  Only propose "check_sufficiency" when features have not yet been
+  populated or no sufficiency check has run at all.
+
 - override_invoked: set only when this reflection authorises a specific
   guardrail's override condition.  Examples:
   - GR1 "do not rerun the same query" — override when classification is
@@ -806,26 +816,22 @@ Output ONLY the EXPLANATION block followed by the EVALUATION JSON block. No othe
 # Forced verdict  (used by evidence_programming_direct.py::_force_verdict)
 # Prompts the subagent LLM to decide the final verdict when the turn budget
 # is exhausted.  Filled via .format() inside the generated subprocess script.
-# Placeholders: claim, verdict_definitions, summary, facts_text, gaps_text,
-#               verdict_names
+# The single ``verdict_packet`` placeholder carries the Phase 4 clean,
+# fact-centered evidence view (claim, label definitions, full-corpus facts
+# grouped by stance/PMID, and sufficiency as metadata) so the LLM reasons over
+# the actual extracted facts rather than gap/control text.
+# Placeholders: verdict_packet, verdict_names
 # ---------------------------------------------------------------------------
 FORCE_VERDICT_PROMPT = """\
-You are a scientific evidence evaluator. Based on the evidence below,
+You are a scientific evidence evaluator. Based ONLY on the verdict packet below,
 determine the verdict for this claim using exactly one of the defined labels.
 
-Claim: {claim}
+Base your REASONING and KEY_EVIDENCE on the extracted facts in the Known
+Evidence Digest — check each fact's direction against the claim. Treat the
+sufficiency classifier result and the remaining caveats as metadata, NOT as
+evidence for or against the claim.
 
-Verdict label definitions:
-{verdict_definitions}
-
-Evidence summary:
-{summary}
-
-Extracted facts:
-{facts_text}
-
-Gaps identified:
-{gaps_text}
+{verdict_packet}
 
 Output your answer in this exact format:
 VERDICT: <one of {verdict_names}>
