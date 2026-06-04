@@ -1,0 +1,43 @@
+# ──────────────────────────────────────────────────────────────────────
+# FIRE Baseline Config
+#
+# Iterative retrieval-augmented fact-checking via the FIRE pipeline.
+# FIRE dynamically searches the configured backend and decides when it has enough
+# evidence to classify the claim.  Binary output (True/False) is
+# mapped to SUPPORT / REFUTE; failures default to UNCERTAIN.
+#
+# Usage:
+#   uv run python experiments/run_baselines_datasets.py \
+#       --config experiments/configs/fire_config.yaml
+#
+# Prerequisites:
+#   - ddgs installed for web search
+#   - OPENAI_API_KEY or ANTHROPIC_API_KEY set (depending on model)
+#
+# Any CLI flag overrides the value set here.
+# ──────────────────────────────────────────────────────────────────────
+
+# ── Data ──────────────────────────────────────────────────────────────
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+datasets:
+  - signor
+  - connectomedb
+
+# ── Baseline ──────────────────────────────────────────────────────────
+baseline: fire
+
+# ── Model (LiteLLM format: "provider/model-id") ──────────────────────
+model: anthropic/claude-sonnet-4-6
+
+# Maximum iterative search steps
+max_steps: 5
+
+# ── Reproducibility ───────────────────────────────────────────────────
+seed: 100
+repeats: 1       # FIRE is quasi-deterministic (temperature=0.5 by default)
+
+# ── Sampling ──────────────────────────────────────────────────────────
+limit: 0         # 0 = all claims
+
+# ── Output ────────────────────────────────────────────────────────────
+output_dir: results/baselines

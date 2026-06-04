@@ -1,0 +1,32 @@
+# ──────────────────────────────────────────────────────────────────────
+# Random Baseline Config
+#
+# Chance-floor baseline: uniform draw from {SUPPORT, REFUTE, UNCERTAIN}.
+# Multiple repeats are used to estimate mean ± std.
+#
+# Usage:
+#   uv run python experiments/run_baselines_datasets.py \
+#       --config experiments/configs/random_baseline_config.yaml
+#
+# Any CLI flag overrides the value set here.
+# ──────────────────────────────────────────────────────────────────────
+
+# ── Data ──────────────────────────────────────────────────────────────
+# datasets_dir: /home/ail/workspace/claim_datasets/datasets
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+datasets:
+  - signor
+  - connectomedb
+
+# ── Baseline ──────────────────────────────────────────────────────────
+baseline: random
+
+# ── Reproducibility ───────────────────────────────────────────────────
+seed: 100      # base seed; repeat i uses seed + i
+repeats: 10    # number of independent draws per dataset
+
+# ── Sampling ──────────────────────────────────────────────────────────
+limit: 0       # 0 = all claims
+
+# ── Output ────────────────────────────────────────────────────────────
+output_dir: results/baselines

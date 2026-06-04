@@ -1,0 +1,45 @@
+# ──────────────────────────────────────────────────────────────────────
+# Retrieval Baseline Config (S2 backend)
+#
+# Fixed-k RAG: search Semantic Scholar with the raw claim, retrieve
+# top-k abstracts, pass them to the LLM in a single call.
+#
+# Usage:
+#   uv run python experiments/run_baselines_datasets.py \
+#       --config experiments/configs/s2_retrieval_config.yaml
+#
+# Prerequisites:
+#   - S2_API_KEY set for higher throughput (anonymous access is rate-limited)
+#   - ANTHROPIC_API_KEY (or matching provider key) set
+#
+# Any CLI flag overrides the value set here.
+# ──────────────────────────────────────────────────────────────────────
+
+# ── Data ──────────────────────────────────────────────────────────────
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+datasets:
+  - signor
+  - connectomedb
+
+# ── Baseline ──────────────────────────────────────────────────────────
+baseline: retrieval
+
+# ── Search backend ────────────────────────────────────────────────────
+search_backend: s2                     # 'web' or 's2' (Semantic Scholar)
+
+# ── Model & retrieval ─────────────────────────────────────────────────
+model: anthropic/claude-sonnet-4-6   # LiteLLM model string
+top_k: 5                              # number of S2 abstracts to retrieve
+
+# ── Reproducibility ───────────────────────────────────────────────────
+seed: 100      # base seed; repeat i uses seed + i
+repeats: 1     # deterministic retrieval + temperature=0 → 1 repeat usually sufficient
+
+# ── Sampling ──────────────────────────────────────────────────────────
+limit: 0       # 0 = all claims
+
+# ── Temperature ───────────────────────────────────────────────────────
+temperature: 0.0
+
+# ── Output ────────────────────────────────────────────────────────────
+output_dir: results/baselines

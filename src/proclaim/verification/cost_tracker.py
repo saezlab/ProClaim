@@ -1,0 +1,202 @@
+"""
+Cost tracker for evidence programming baselines.
+
+Wraps every LLM call to automatically record token usage and cost.
+Attach one ``CostTracker`` per baseline run; reset between claims.
+
+Pricing note for Anthropic models with prompt caching
+------------------------------------------------------
+litellm's ``prompt_tokens`` field = non_cached + cache_creation + cache_read
+(i.e. the *total* input-side tokens, all tiers).  The correct billing is:
+
+  true_non_cached = prompt_tokens - cache_creation_tokens - cache_read_tokens
+  cost = true_non_cached         * in_price          / 1e6
+       + cache_creation_tokens   * in_price * 1.25   / 1e6   (write surcharge)
+       + cache_read_tokens       * in_price * 0.10   / 1e6   (read discount)
+       + output_tokens           * out_price          / 1e6
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+
+@dataclass
+class TraceEntry:
+    step: int
+    action: str
+    non_cached_input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float = 0.0
+    cost_non_cached_usd: float = 0.0
+    latency_seconds: float = 0.0
+    details: dict = field(default_factory=dict)
+
+
+class CostTracker:
+    """Accumulates token usage and cost across all operations in one claim run."""
+
+    # Pricing per 1M tokens (input, output) in USD.
+    # Source: https://cloud.google.com/vertex-ai/generative-ai/pricing (2026-04-02)
+    # Keys are model IDs without provider prefix (e.g. "gemini-3.1-pro-preview",
+    # "claude-sonnet-4-6"). Provider prefix is stripped before lookup.
+    DEFAULT_PRICING: dict[str, tuple[float, float]] = {
+        # --- Anthropic ---
+        "claude-opus-4-6": (5.00, 25.00),
+        "claude-sonnet-4-6": (3.00, 15.00),
+        "claude-haiku-4-5": (1.00, 5.00),
+        "claude-haiku-4-5-20251001": (1.00, 5.00),
+        # --- Gemini 3 (standard tier, per 1M tokens) ---
+        "gemini-3.1-pro-preview": (2.00, 12.00),
+        "gemini-3-pro-preview": (2.00, 12.00),
+        "gemini-2.5-pro": (1.25, 10.00),
+        "gemini-2.5-flash": (0.3, 2.50),
+    }
+    FALLBACK_PRICING = (3.00, 15.00)
+
+    def __init__(self, model: str = ""):
+        self.model = model
+        self._trace: list[TraceEntry] = []
+        self._step = 0
+        # Strip provider prefix (e.g. "vertex_ai/", "anthropic/") before lookup
+        model_key = model.split("/", 1)[-1] if "/" in model else model
+        in_price, out_price = self.DEFAULT_PRICING.get(model_key, self.FALLBACK_PRICING)
+        self._in_price = in_price
+        self._out_price = out_price
+
+    # ------------------------------------------------------------------
+    # Accumulation
+
+    def record(
+        self,
+        action: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        latency: float = 0.0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        **details: Any,
+    ) -> None:
+        """Record one LLM call.
+
+        ``input_tokens`` is litellm's ``prompt_tokens``, which for Anthropic
+        models equals non_cached + cache_creation + cache_read.  We decompose
+        it into the three tiers and apply the correct per-tier price.
+        """
+        non_cached = max(0, input_tokens - cache_read_tokens - cache_write_tokens)
+
+        cost = (
+            non_cached           / 1_000_000 * self._in_price
+            + cache_write_tokens / 1_000_000 * self._in_price * 1.25
+            + cache_read_tokens  / 1_000_000 * self._in_price * 0.10
+            + output_tokens      / 1_000_000 * self._out_price
+        )
+        cost_non_cached = (
+            non_cached  / 1_000_000 * self._in_price
+            + output_tokens / 1_000_000 * self._out_price
+        )
+
+        self._trace.append(
+            TraceEntry(
+                step=self._step,
+                action=action,
+                non_cached_input_tokens=non_cached,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                cost_usd=cost,
+                cost_non_cached_usd=cost_non_cached,
+                latency_seconds=latency,
+                details=dict(details),
+            )
+        )
+        self._step += 1
+
+    def reset(self) -> None:
+        self._trace.clear()
+        self._step = 0
+
+    # ------------------------------------------------------------------
+    # Aggregates
+
+    @property
+    def total_non_cached_input_tokens(self) -> int:
+        return sum(e.non_cached_input_tokens for e in self._trace)
+
+    @property
+    def total_output_tokens(self) -> int:
+        return sum(e.output_tokens for e in self._trace)
+
+    @property
+    def total_cache_read_tokens(self) -> int:
+        return sum(e.cache_read_tokens for e in self._trace)
+
+    @property
+    def total_cache_write_tokens(self) -> int:
+        return sum(e.cache_write_tokens for e in self._trace)
+
+    @property
+    def total_cost_usd(self) -> float:
+        return sum(e.cost_usd for e in self._trace)
+
+    @property
+    def total_cost_non_cached_usd(self) -> float:
+        return sum(e.cost_non_cached_usd for e in self._trace)
+
+    @property
+    def total_latency_seconds(self) -> float:
+        return sum(e.latency_seconds for e in self._trace)
+
+    @property
+    def num_llm_calls(self) -> int:
+        return sum(1 for e in self._trace if e.action == "llm_call")
+
+    def summary(self) -> dict:
+        return {
+            "non_cached_input_tokens": self.total_non_cached_input_tokens,
+            "cache_read_tokens": self.total_cache_read_tokens,
+            "cache_write_tokens": self.total_cache_write_tokens,
+            "output_tokens": self.total_output_tokens,
+            "cost_usd": round(self.total_cost_usd, 6),
+            "cost_non_cached_usd": round(self.total_cost_non_cached_usd, 6),
+            "latency_seconds": round(self.total_latency_seconds, 2),
+            "num_llm_calls": self.num_llm_calls,
+        }
+
+    def trace_as_dicts(self) -> list[dict]:
+        """Return per-step trace as a list of plain dicts for JSON serialization."""
+        return [
+            {
+                "step": e.step,
+                "action": e.action,
+                "non_cached_input_tokens": e.non_cached_input_tokens,
+                "cache_read_tokens": e.cache_read_tokens,
+                "cache_write_tokens": e.cache_write_tokens,
+                "output_tokens": e.output_tokens,
+                "cost_usd": round(e.cost_usd, 6),
+                "cost_non_cached_usd": round(e.cost_non_cached_usd, 6),
+                "latency_seconds": round(e.latency_seconds, 3),
+                **e.details,
+            }
+            for e in self._trace
+        ]
+
+    # ------------------------------------------------------------------
+    # Decorator / context helper
+
+    def tracked_llm_call(self, fn: Callable[..., tuple[str, int, int]]):
+        """Wrap a function that returns (text, input_tokens, output_tokens)."""
+
+        def wrapper(*args, **kwargs):
+            t0 = time.monotonic()
+            result = fn(*args, **kwargs)
+            latency = time.monotonic() - t0
+            text, in_tok, out_tok = result
+            self.record("llm_call", in_tok, out_tok, latency)
+            return text
+
+        return wrapper

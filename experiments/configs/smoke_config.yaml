@@ -1,0 +1,35 @@
+# Smoke-test config
+#
+# Default behaviour: no local endpoint required.
+# - Outer agent uses Anthropic via LiteLLM.
+# - Subagent calls also use Anthropic via LiteLLM.
+# - The default outer model is a frontier model to maximize single-claim quality.
+# - Use the commented Sonnet line below if you want a cheaper or faster smoke run.
+#
+# Optional local override:
+# - Set LLM_BASE_URL to an OpenAI-compatible endpoint.
+# - Override llm.subagent_model to the model ID exposed by that endpoint.
+#   Keeping an anthropic/... model string will ignore LLM_BASE_URL.
+
+mode: direct
+
+max_iterations: 4
+sufficiency_threshold: 0.80
+max_turns: 6
+
+llm:
+  model: anthropic/claude-opus-4-7
+  # model: anthropic/claude-sonnet-4-6
+  subagent_model: anthropic/claude-haiku-4-5
+  subagent_base_url: ""
+  temperature: 0.0
+  disable_thinking: true
+
+sufficiency_backend: mlp
+
+output_dir: results/signor_smoke_eval
+mlp_model_dir: results/ablation/models/tau_0.50_seed_42
+
+include_subclaim_examples: false
+verbose: false
+disable_web_search: false

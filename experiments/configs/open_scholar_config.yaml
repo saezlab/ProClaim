@@ -1,0 +1,54 @@
+# ──────────────────────────────────────────────────────────────────────
+# OpenScholar Baseline Config
+#
+# RAG baseline: routes each claim through the OpenScholar pipeline.
+# When the dataset CSV provides an `evidence` column (e.g. SIGNOR,
+# ConnectomeDB) it is forwarded as a pre-retrieved passage.
+#
+# Usage (with live S2 retrieval and self-feedback loop):
+#   uv run python experiments/run_baselines_datasets.py \
+#       --config experiments/configs/open_scholar_config.yaml
+#
+# Prerequisites:
+#   - ANTHROPIC_API_KEY set (or in grn-llm-correct/.env)
+#   - S2_API_KEY set for higher throughput (anonymous access is rate-limited)
+#   - OpenScholar checked out at <workspace>/OpenScholar with .venv intact
+#
+# Any CLI flag overrides the value set here.
+# ──────────────────────────────────────────────────────────────────────
+
+# ── Data ──────────────────────────────────────────────────────────────
+datasets_dir: /hps/nobackup/saezrodriguez/shared_datasets/claims/datasets
+# datasets_dir: /home/ail/workspace/claim_datasets/datasets
+datasets:
+  - signor
+  - connectomedb
+
+# ── Baseline ──────────────────────────────────────────────────────────
+baseline: open_scholar
+
+# ── Model (LiteLLM format: "provider/model-id") ──────────────────────
+# The provider prefix is automatically split into --model_name / --api
+# for the OpenScholar subprocess.
+model: anthropic/claude-sonnet-4-6
+
+# ── Retrieval ─────────────────────────────────────────────────────────
+retrieval: true       # S2 adaptive retrieval + self-feedback loop
+reranker: OpenScholar/OpenScholar_Reranker  # set to "" to disable reranker
+task_name: claim_verdict_question  # claim_verdict_question (framed as yes/no query) or claim_verdict (raw claim)
+
+# ── Context ───────────────────────────────────────────────────────────
+top_k: 10              # number of passages forwarded to the generator
+# max_tokens: 0          # 0 = no constraint 
+max_tokens: 3000     # OpenScholar default: 3000
+oracle_context: false # inject CSV evidence as oracle context (leaks labels — for ablation only)
+
+# ── Reproducibility ───────────────────────────────────────────────────
+seed: 100     # base seed; repeat i uses seed + i
+repeats: 1     # OpenScholar is expensive; 1 repeat is standard
+
+# ── Sampling ──────────────────────────────────────────────────────────
+limit: 0       # 0 = all claims
+
+# ── Output ────────────────────────────────────────────────────────────
+output_dir: results/baselines
