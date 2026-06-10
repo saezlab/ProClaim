@@ -699,7 +699,11 @@ fields:
   - retrieval  : papers are missing or wrong (search problem)
   - extraction : papers exist but facts are not coming out (extraction prompt / synonyms)
   - framing    : the claim or extraction context needs revision
-  - budget     : turns are running out; pivot to verdict
+  - budget     : turns are running out in this iteration; if Verdict Readiness
+                 shows "check-sufficiency-imminent" (non-final iteration), propose
+                 "check_sufficiency" to close out the iteration — do NOT emit_verdict
+                 yet, further iterations remain.  Only propose "emit_verdict" when
+                 Verdict Readiness shows "forced-verdict-imminent" (final iteration).
   - other      : routine progress, no diagnosis needed (use this on
                  non-stall turns)
 
@@ -709,8 +713,11 @@ fields:
   On a routine turn, point at the next step in that order given current
   state.  If extraction context needs to change first, propose "curate";
   the planner will use enqueue_curation / add_extraction_context_note
-  before re-running extract.  If the turn budget is nearly exhausted or
-  sufficiency is already met, propose "emit_verdict".
+  before re-running extract.  If sufficiency is already met, propose
+  "emit_verdict".  If the turn budget is nearly exhausted, check Verdict
+  Readiness: "forced-verdict-imminent" → propose "emit_verdict";
+  "check-sufficiency-imminent" → propose "check_sufficiency" (iteration
+  will close and a new one will begin — do NOT skip to verdict).
 
   Stagnation escape (IMPORTANT): when the Verdict Readiness section already
   shows directional (SUPPORT/REFUTE) facts AND sufficiency confidence is flat

@@ -304,7 +304,11 @@ def _extract_call_target(command: str, fn_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def summarize_observation(raw_output: str, delta: dict[str, Any]) -> str:
+def summarize_observation(
+    raw_output: str,
+    delta: dict[str, Any],
+    target: str = "",
+) -> str:
     """Build a one-line, planner-friendly observation string.
 
     Preference order:
@@ -340,6 +344,8 @@ def summarize_observation(raw_output: str, delta: dict[str, Any]) -> str:
     if not raw_output:
         return "(no output)"
     head = raw_output.strip().splitlines()[0] if raw_output.strip() else ""
+    if target.lower().startswith("web_search"):
+        head = f"web snippets: {head}" if head else "web snippets: (no results)"
     head = head.strip()
     if len(head) > 160:
         head = head[:157] + "..."
@@ -369,6 +375,8 @@ def diagnose(
         return "error: tool returned an error"
 
     tlow = target.lower()
+    if tlow.startswith("web_search"):
+        return None
     if "search" in tlow and not delta.get("papers"):
         return "no new papers retained"
     if ("extract_and_add_facts" in tlow or "add_facts_from_dicts" in tlow) and not delta.get(
@@ -527,8 +535,9 @@ def record_action(
     action_id = ledger.next_action_id()
     target = extract_target(tool_name, arguments)
     delta = compute_delta(before, after)
-    observation = summarize_observation(raw_output, delta)
-    diag = diagnose(target, delta, raw_output)
+    diagnostic_target = "web_search" if tool_name == "web_search" else target
+    observation = summarize_observation(raw_output, delta, diagnostic_target)
+    diag = diagnose(diagnostic_target, delta, raw_output)
     handle = spill_to_artifact(
         workspace,
         raw_output,

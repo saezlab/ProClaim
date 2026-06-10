@@ -470,6 +470,7 @@ def main():
     parser.add_argument("--reps", type=int, default=3, help="Number of repetitions per claim variation.")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of input CSV rows to process (0=all).")
     parser.add_argument("--row-start", type=int, default=0, help="Start row index for parallel chunking (default: 0).")
+    parser.add_argument("--ids", type=str, default="", help="Comma-separated SIGNOR IDs to run (e.g. SIGNOR-123,SIGNOR-456). Empty = all rows.")
     parser.add_argument(
         "--workers",
         type=int,
@@ -518,6 +519,11 @@ def main():
     df = pd.read_csv(input_path)
     validate_input_schema(df)
     
+    if args.ids:
+        ids_set = {s.strip() for s in args.ids.split(",") if s.strip()}
+        df = df[df["id"].isin(ids_set)].reset_index(drop=True)
+        logger.info("Filtered to %d rows matching --ids (%d IDs requested)", len(df), len(ids_set))
+
     if args.limit > 0:
         df = df.iloc[args.row_start:args.row_start + args.limit]
     elif args.row_start > 0:
