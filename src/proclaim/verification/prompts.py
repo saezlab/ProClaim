@@ -552,23 +552,35 @@ Required sequence in EVERY iteration:
 4. filter_papers_by_stance(state)           ← REQUIRED (removes neutral/irrelevant papers)
 5. check_sufficiency(state, llm)
 
+## Strategy Notes (workbook Section 2b)
+
+Workbook Section 2b accumulates claim-specific strategy notes written by a
+curator across turns: alias / terminology mappings, query reframes,
+evidence-type clarifications, gap characterisations, and conflict-resolution
+hints.  Read it before acting — it captures what earlier turns learned so you
+do not rediscover the same dead ends.  When a note tells you to add aliases to
+the extraction context, change a search angle, or treat indirect evidence as
+on-claim, act on it.
+
 ## Next-Turn Guidance (workbook Section 9)
 
 Workbook Section 9 is your strategic context for this turn.  It is
 regenerated every turn by a separate reflection module that reads the
-current state and points at the next action family:
+current state.  The standard workflow order is:
 
     search → extract → feature_populate → filter → check_sufficiency → emit_verdict
 
 Read Section 9 first.  It tells you:
-- the recommended next action family (e.g. `emit_verdict`, `search`),
-- the diagnosis (why that family is the right next step),
+- Diagnosis: what we observe right now,
+- Root cause: why the loop is in this state,
+- Key insight: a transferable observation to act on (when present),
+- Suggested next action: a concrete instruction for this turn,
 - any guardrail override the reflection authorises this turn.
 
-Your job is to pick the specific function and arguments that implement
-that family for the current state.  If Section 9 says `emit_verdict`,
-call emit_verdict.  Do not re-run setup_workspace just to inspect state —
-Sections 3, 4 and 7 of the workbook already show it.
+Your job is to pick the specific function and arguments that implement the
+suggested next action for the current state.  If Section 9 suggests emitting a
+verdict, call emit_verdict.  Do not re-run setup_workspace just to inspect
+state — Sections 3, 4 and 7 of the workbook already show it.
 
 ## Per-Turn Action Contract
 
@@ -603,8 +615,8 @@ action family (search a different query, target a specific gap,
 re-extract under a new extraction context, or emit a verdict if ready)
 rather than repeating one that is currently blocked.
 
-When Section 9 shows `override invoked: GR3` (reflection classified the
-failure as retrieval), a broad search retry is permitted *for that turn
+When Section 9 shows `override invoked: GR3` (reflection judged the failure
+to be a retrieval problem), a broad search retry is permitted *for that turn
 only* — the next turn's reflection is recomputed from fresh state and
 you must re-earn the override if you want another retry.
 
@@ -667,93 +679,174 @@ Always pass notebook_path="{notebook_path}" to every notebook tool call."""
 
 # ---------------------------------------------------------------------------
 # Reflect system prompt
-# No placeholders.  The reflect LLM is invoked only when stall signals fire;
-# it produces a structured 4-field JSON diagnosis and proposes a recovery
-# action family.  It does NOT execute tools — its only output is the JSON.
+# No placeholders.  The reflect LLM runs every turn; it produces a structured
+# free-form diagnosis (diagnosis / root_cause / key_insight / next_suggestion)
+# that helps the planner and curator on the next turn.  It does NOT execute
+# tools — its only output is the structured reflection.
 # ---------------------------------------------------------------------------
 REFLECTION_SYSTEM_PROMPT = """\
 You are a reflection module for a scientific claim verification loop.
 
-The loop has a planner that runs one action per turn (search, extract,
-populate features, check sufficiency, emit verdict, etc.).  You run
-**every turn** — your job is to read the current workbook state and
-recommend the next action family.  Most turns there is no stall; you
-just point at the next natural workflow step.  On stalled turns —
-repeated empty searches, zero-fact extractions, sufficiency confidence
-stagnating or declining, the same action family firing 3+ times in a
-row — switch to a diagnostic role and propose a corrective family.
+The loop has a planner that executes one evidence-gathering action per turn
+(search, extract, populate features, check sufficiency, emit verdict, etc.).
+You run every turn. Your job is to read the current workbook state and produce
+a structured diagnosis that helps the planner and curator on the next turn.
 
-You must call the `submit_reflection` tool exactly once with these
-fields:
+## Turn types
 
-- diagnosis:
-  - On a routine (non-stall) turn: one short sentence stating where in
-    the workflow we are and why the next family is the natural step.
-    Example: "Papers retrieved but no facts yet — next step is extract."
-  - On a stalled turn: focus on the *cause*, not the state.  "Search
-    drought because queries are too narrow — entity-only queries
-    returned 0 papers in 2 consecutive turns" is good.  "Sufficiency is
-    insufficient, confidence 0.3" is bad — that just restates the workbook.
+**Routine turn** (stall signals = none):
+- diagnosis: one sentence describing where we are.
+- root_cause: brief (e.g. "First turn, no evidence gathered yet").
+- key_insight: empty string — nothing unusual to surface.
+- next_suggestion: the natural next step given the workflow state.
 
-- classification:
-  - retrieval  : papers are missing or wrong (search problem)
-  - extraction : papers exist but facts are not coming out (extraction prompt / synonyms)
-  - framing    : the claim or extraction context needs revision
-  - budget     : turns are running out in this iteration; if Verdict Readiness
-                 shows "check-sufficiency-imminent" (non-final iteration), propose
-                 "check_sufficiency" to close out the iteration — do NOT emit_verdict
-                 yet, further iterations remain.  Only propose "emit_verdict" when
-                 Verdict Readiness shows "forced-verdict-imminent" (final iteration).
-  - other      : routine progress, no diagnosis needed (use this on
-                 non-stall turns)
+**Stall turn** (one or more stall signals passed):
+- diagnosis: what we observe (e.g., "18 documents extracted, 0 facts found").
+- root_cause: WHY this happened — do not just restate the observation.
+  Good: "Queries use the claim's canonical entity name, but the retrieved
+  documents refer to it only by an alias the extraction context does not list."
+  Bad: "Extraction yielded zero facts."
+- key_insight: a transferable observation the planner or curator can act on
+  (e.g., "The relationship in the claim may hold only indirectly here; search
+  for the indirect mechanism rather than the direct one").
+- next_suggestion: concrete instruction for the planner's next action.
 
-- proposed_next_family: the action family the planner should run next.
-  Standard workflow order:
-    search → extract → feature_populate → filter → check_sufficiency → emit_verdict
-  On a routine turn, point at the next step in that order given current
-  state.  If extraction context needs to change first, propose "curate";
-  the planner will use enqueue_curation / add_extraction_context_note
-  before re-running extract.  If sufficiency is already met, propose
-  "emit_verdict".  If the turn budget is nearly exhausted, check Verdict
-  Readiness: "forced-verdict-imminent" → propose "emit_verdict";
-  "check-sufficiency-imminent" → propose "check_sufficiency" (iteration
-  will close and a new one will begin — do NOT skip to verdict).
+## Critical constraint on emit_verdict
 
-  Stagnation escape (IMPORTANT): when the Verdict Readiness section already
-  shows directional (SUPPORT/REFUTE) facts AND sufficiency confidence is flat
-  or declining across the recent checks, do NOT propose more search,
-  re_extract, or even another check_sufficiency — further retrieval will not
-  move a stuck classifier.  Propose "emit_verdict" and base the verdict on the
-  facts already extracted.  A low-source-diversity caveat (one or two
-  candidate papers) is a caveat to note in the verdict, not a reason to keep
-  searching.  Only propose "check_sufficiency" when features have not yet been
-  populated or no sufficiency check has run at all.
+NEVER suggest `emit_verdict` (in next_suggestion) unless Section 7 of the
+workbook explicitly reads "forced-verdict-imminent" or "check-sufficiency-imminent".
 
-- override_invoked: set only when this reflection authorises a specific
-  guardrail's override condition.  Examples:
-  - GR1 "do not rerun the same query" — override when classification is
-    retrieval AND your proposed retry uses a different rationale
-    (different aliases, different scope).  Set "GR1".
-  - GR3 "do not broad-search after extraction failure unless retrieval"
-    — override when classification is retrieval.  Set "GR3".
-  Otherwise pass null."""
+If Section 7 shows "Forced-verdict risk: low" or "not yet checked", do NOT
+suggest emitting a verdict even if multiple extraction rounds returned 0 facts.
+In that case root_cause should explain the extraction failure and next_suggestion
+should propose a different retrieval or extraction angle.
+
+"We tried twice and found nothing" is NOT a budget justification — it is an
+extraction or retrieval problem that needs a different strategy.
+
+## Guardrail overrides
+
+Set override_invoked to the relevant GR ID only when the reflection's root_cause
+and key_insight justify the specific override condition stated in Section 2 of
+the workbook. Pass null otherwise."""
 
 
 # ---------------------------------------------------------------------------
 # Reflect user prompt
-# Placeholders: stall_signals, workbook_volatile
+# Placeholders: stall_signals, n_papers, paper_summaries, workbook_volatile
 # stall_signals is a "; "-joined list of human-readable reason strings.
-# workbook_volatile is the volatile half of the workbook (Sections 3-8).
+# paper_summaries is the title+abstract block (see _build_paper_summaries).
+# workbook_volatile is the volatile half of the workbook (Sections 2b, 3-9).
 # ---------------------------------------------------------------------------
 REFLECTION_USER_PROMPT = """\
-Stall signals detected by the orchestrator: {stall_signals}
-(If "(none)", this is a routine turn — point at the next workflow step.)
+Stall signals: {stall_signals}
+(If "(none)", this is a routine turn.)
 
-Current workbook state (volatile sections only):
+Recent document titles and abstracts (up to {n_papers} documents currently in state):
+{paper_summaries}
 
+Current workbook state (volatile sections):
 {workbook_volatile}
 
 Submit the structured reflection."""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Curator LLM prompts  (used by curator.run_curator)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ---------------------------------------------------------------------------
+# Curator system prompt
+# No placeholders.  The curator runs after the reflection each turn; it decides
+# whether to append a claim-specific strategy note to workbook Section 2b that
+# will help the planner on future turns.  It does NOT execute tools or mutate
+# EvidenceState — its only output is the structured note (or no_update=true).
+# ---------------------------------------------------------------------------
+CURATOR_SYSTEM_PROMPT = """\
+You are a curator for a scientific claim verification loop.
+
+After each turn, a reflection module diagnoses what happened and why.
+Your job is to read the reflection and the current workbook, then decide
+whether to add a note to the workbook's Strategy Notes section (Section 2b)
+that will help the planner on future turns.
+
+## What to add
+
+Add a note when the reflection's key_insight or root_cause contains information
+that the planner should keep in mind across turns. Good notes:
+
+- Alias / terminology mappings:
+  "Extraction context update: the corpus refers to the claim's entity by
+  aliases the queries do not use (list the specific aliases observed). Add
+  these to the extraction context before the next extraction round."
+
+- Search angle suggestions:
+  "Query reframe: the direct form of the relationship was not found; try the
+  indirect/alternative mechanism instead. Suggested query terms: <list the
+  specific terms drawn from the corpus>."
+
+- Evidence type clarifications (same-direction only):
+  "Claim framing note: same-direction indirect or mediated evidence may still
+  count as SUPPORT and should not be discarded as off-claim." This never extends
+  to opposite-direction evidence or to a relation carried by a distinct
+  intermediate entity — neither supports a direct claim.
+
+- Gap characterisation:
+  "Gap identified: no document addresses the direct mechanism; the retrieved
+  corpus shows only indirect/contextual evidence. Consider searching
+  specifically for the missing evidence type."
+
+- Conflict resolution guidance (when contradictory facts exist):
+  "Contradiction note: document X reports the relation holding under one
+  condition; document Y reports the opposite under a different condition. The
+  differing context may explain the conflict — weight context-matched sources
+  more heavily."
+
+## What NOT to add
+
+- Do not repeat information already visible in the workbook.
+- Do not add a note if the reflection was a routine (non-stall) turn with
+  no key insight (key_insight is empty or trivial).
+- Do not prescribe which specific evidence API function to call — that is
+  the planner's job.
+- Do not treat opposite-direction evidence, or a relation routed through a
+  distinct intermediate entity, as on-claim support.
+- Do not author the verdict's reasoning or argue for a final label
+  (SUPPORT/REFUTE/UNCERTAIN) — diagnosing gaps is your job; adjudicating the
+  claim is the verdict's.
+- Do not add more than one note per turn (one focused note beats several vague ones).
+
+## Document context
+
+You are given titles and abstracts of documents currently in the evidence state.
+Use these to identify terminology gaps, alias patterns, or relevant mechanisms
+that the extraction context may be missing. The reflection may have already
+flagged a terminology gap — your note should operationalise it."""
+
+
+# ---------------------------------------------------------------------------
+# Curator user prompt
+# Placeholders: diagnosis, root_cause, key_insight, next_suggestion, is_stall,
+#               paper_summaries, workbook_volatile, existing_notes
+# ---------------------------------------------------------------------------
+CURATOR_USER_PROMPT = """\
+Reflection from this turn:
+- Diagnosis: {diagnosis}
+- Root cause: {root_cause}
+- Key insight: {key_insight}
+- Next suggestion: {next_suggestion}
+- Is stall turn: {is_stall}
+
+Recent document titles and abstracts:
+{paper_summaries}
+
+Current workbook (volatile sections, so you know what is already visible):
+{workbook_volatile}
+
+Existing curator notes already in Section 2b (do not repeat these):
+{existing_notes}
+
+Submit your curator note, or set no_update=true if nothing useful to add."""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -834,9 +927,11 @@ You are a scientific evidence evaluator. Based ONLY on the verdict packet below,
 determine the verdict for this claim using exactly one of the defined labels.
 
 Base your REASONING and KEY_EVIDENCE on the extracted facts in the Known
-Evidence Digest — check each fact's direction against the claim. Treat the
-sufficiency classifier result and the remaining caveats as metadata, NOT as
-evidence for or against the claim.
+Evidence Digest — check each fact's direction against the claim. If the corpus
+attests the relation in the OPPOSITE direction to the claim, that is a refutation
+(REFUTE), not uncertainty — do not build a multi-step chain to reconcile it into
+SUPPORT. Treat the sufficiency classifier result and the remaining caveats as
+metadata, NOT as evidence for or against the claim.
 
 {verdict_packet}
 

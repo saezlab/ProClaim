@@ -685,6 +685,32 @@ def _force_verdict(workspace: Path, claim: str, sub_env: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Paper summaries (shared by the reflect and curator LLM calls)
+# ---------------------------------------------------------------------------
+
+def _build_paper_summaries(state, *, max_papers: int = 20) -> str:
+    """Return a compact title+abstract block for up to ``max_papers`` papers.
+
+    Both the reflection and curator calls receive this so they can spot
+    terminology/alias gaps and relevant mechanisms from the actual corpus, not
+    just the workbook's fact counts.  Abstracts are clipped to 400 chars to
+    keep the block bounded.
+    """
+    if not state.papers:
+        return "(no papers retrieved yet)"
+    lines = []
+    for pmid, paper in list(state.papers.items())[:max_papers]:
+        title = (paper.title or "").strip() or "(no title)"
+        abstract = (paper.abstract or "").strip()
+        if abstract:
+            abstract = abstract[:400] + ("…" if len(abstract) > 400 else "")
+        else:
+            abstract = "(no abstract)"
+        lines.append(f"PMID {pmid}: {title}\n  {abstract}")
+    return "\n\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
@@ -716,6 +742,7 @@ def verify_claim_direct(cfg) -> Path:
         detect_stall_signals,
         run_reflection,
     )
+    from proclaim.verification.curator import run_curator
     from proclaim.verification.workbook import build_workbook_parts
     EvidenceState.init_new(claim=claim, subclaims=[claim], workspace=workspace)
 
@@ -894,8 +921,11 @@ def verify_claim_direct(cfg) -> Path:
                 from proclaim.verification.reflection import StallSignals
                 signals = StallSignals()
 
+            current_state = None
+            _paper_summaries = "(no papers retrieved yet)"
             try:
                 current_state = EvidenceState.load(state_file)
+                _paper_summaries = _build_paper_summaries(current_state)
                 _, volatile_tail = build_workbook_parts(
                     current_state,
                     workspace=workspace,
@@ -915,6 +945,7 @@ def verify_claim_direct(cfg) -> Path:
                     workspace=workspace,
                     workbook_volatile=volatile_tail,
                     stall_signals=signals,
+                    paper_summaries=_paper_summaries,
                     turn=call_count,
                     model=agent_model,
                 )
@@ -940,11 +971,11 @@ def verify_claim_direct(cfg) -> Path:
 
             if reflect_record is not None:
                 logger.info(
-                    "Reflection recorded (turn %d): classification=%s next_family=%s override=%s (%.2fs)",
+                    "Reflection recorded (turn %d): is_stall=%s override=%s suggestion=%.60s (%.2fs)",
                     call_count,
-                    reflect_record.classification.value,
-                    reflect_record.proposed_next_family.value,
+                    reflect_record.is_stall,
                     reflect_record.override_invoked or "-",
+                    reflect_record.next_suggestion,
                     _reflect_latency,
                 )
                 try:
@@ -954,8 +985,7 @@ def verify_claim_direct(cfg) -> Path:
                         turn=call_count,
                         tool_name="reflect",
                         arguments={
-                            "classification": reflect_record.classification.value,
-                            "proposed_next_family": reflect_record.proposed_next_family.value,
+                            "is_stall": reflect_record.is_stall,
                             "override_invoked": reflect_record.override_invoked or None,
                         },
                         raw_output=reflect_record.diagnosis,
@@ -964,6 +994,44 @@ def verify_claim_direct(cfg) -> Path:
                     )
                 except Exception as _refl_exc:
                     logger.debug("Failed to record reflection in ledger: %s", _refl_exc)
+
+            # Phase 4b: curator.  Reads workbook + reflection + paper abstracts,
+            # optionally appends a note to curator_notes.jsonl (rendered as
+            # workbook Section 2b next turn).  It never mutates EvidenceState.
+            # Failures are non-fatal; the workbook renders without curator notes.
+            curator_note, curator_usage = None, None
+            if reflect_record is not None and current_state is not None:
+                _curator_t0 = time.monotonic()
+                try:
+                    curator_note, curator_usage = run_curator(
+                        workspace=workspace,
+                        workbook_volatile=volatile_tail,
+                        reflection=reflect_record,
+                        paper_summaries=_paper_summaries,
+                        turn=call_count,
+                        model=agent_model,
+                    )
+                except Exception as exc:
+                    logger.warning("Curator LLM call failed: %s", exc)
+                    curator_note, curator_usage = None, None
+                _curator_latency = time.monotonic() - _curator_t0
+
+                if curator_usage:
+                    tracker.record(
+                        "curator_llm",
+                        input_tokens=curator_usage.get("prompt_tokens", 0) or 0,
+                        output_tokens=curator_usage.get("completion_tokens", 0) or 0,
+                        latency=_curator_latency,
+                        call_number=call_count,
+                        cache_read_tokens=curator_usage.get("cache_read_input_tokens", 0) or 0,
+                        cache_write_tokens=curator_usage.get("cache_creation_input_tokens", 0) or 0,
+                    )
+                if curator_note is not None:
+                    logger.info(
+                        "Curator note appended (turn %d): %.80s",
+                        call_count,
+                        curator_note.content,
+                    )
 
         # *** CONTEXT REFRESH: regenerate the workbook from durable state ***
         # The workbook is the planner's primary context.  It is rebuilt from

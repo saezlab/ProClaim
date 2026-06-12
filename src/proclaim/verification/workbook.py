@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import TYPE_CHECKING, Iterable, Optional, Sequence
 
 from proclaim.verification.action_ledger import (
     ARTIFACTS_DIRNAME,
@@ -45,10 +45,12 @@ from proclaim.verification.action_ledger import (
 from proclaim.verification.curation import CurationQueue, render_curation_section
 from proclaim.verification.evidence_state import EvidenceState
 from proclaim.verification.reflection import (
-    ReflectionNextFamily,
     ReflectionRecord,
     load_reflection,
 )
+
+if TYPE_CHECKING:
+    from proclaim.verification.curator import CuratorNote
 
 
 WORKBOOK_SCHEMA_VERSION = "workbook.v1"
@@ -91,7 +93,10 @@ DEFAULT_GUARDRAILS: list[dict[str, str]] = [
         "id": "GR5",
         "rule": "Do not consume the final turns on retrieval if verdict readiness is already high enough for check_sufficiency plus emit_verdict.",
         "source": "migrated from URGENT-turns prompt branch in evidence_programming_direct.py",
-        "override": "turns remaining > 2 and sufficiency still insufficient",
+        "override": (
+            "turns remaining > 2 and sufficiency still insufficient, AND "
+            "Section 7 does not yet show forced-verdict-imminent"
+        ),
     },
     {
         "id": "GR6",
@@ -344,6 +349,25 @@ def _section_guardrails(guardrails: Iterable[dict[str, str]]) -> str:
     return "\n".join(blocks)
 
 
+def _section_curator_notes(notes: list["CuratorNote"]) -> str:
+    """Render Section 2b — accumulated claim-specific strategy notes from the curator.
+
+    These notes are the dynamic, claim-specific constraint layer: the curator
+    appends cross-turn observations (alias gaps, query reframes, evidence-type
+    clarifications) that the planner would otherwise rediscover every turn.
+    Positioned near the top of the volatile context so the planner reads them
+    before deciding its action.
+    """
+    header = "## 2b. Strategy Notes (curator-accumulated)"
+    if not notes:
+        return f"{header}\n- _(no curator notes yet)_"
+    lines = [header]
+    for note in notes:
+        lines.append(f"\n[Turn {note.turn}]")
+        lines.append(note.content.strip())
+    return "\n".join(lines)
+
+
 def _section_recuration_queue(queue: Optional[CurationQueue]) -> str:
     """Render Section 6 from a CurationQueue (or an empty default)."""
     return render_curation_section(queue)
@@ -495,23 +519,24 @@ def _section_next_turn_guidance(reflection: Optional[ReflectionRecord]) -> str:
             "- _(no reflection recorded yet — first turn, or reflect call failed)_"
         )
 
-    classification = reflection.classification.value
-    next_family = reflection.proposed_next_family.value
-    diagnosis = reflection.diagnosis.strip() or "(empty)"
-
+    stall_marker = " [STALL TURN]" if reflection.is_stall else ""
     lines = [
         header,
-        f"- Reflection (turn {reflection.turn}, classification: {classification}):",
-        f"    - Diagnosis: {diagnosis}",
-        f"    - Recommended next action family: `{next_family}`",
+        f"- Reflection (turn {reflection.turn}{stall_marker}):",
+        f"    - Diagnosis: {reflection.diagnosis.strip() or '(empty)'}",
+        f"    - Root cause: {reflection.root_cause.strip() or '(empty)'}",
     ]
+    if reflection.key_insight.strip():
+        lines.append(f"    - Key insight: {reflection.key_insight.strip()}")
+    lines.append(f"    - Suggested next action: {reflection.next_suggestion.strip() or '(empty)'}")
     if reflection.override_invoked:
         lines.append(f"    - Guardrail override invoked: {reflection.override_invoked}")
     # Phase 4: when the recommendation is to emit a verdict, anchor the planner
     # on the fact-centered Known Evidence Digest / verdict packet rather than on
     # this action/reflection history — the latter biases the verdict toward
     # "missing evidence" instead of what the facts actually say.
-    if next_family == ReflectionNextFamily.EMIT_VERDICT.value:
+    _ns = reflection.next_suggestion.lower()
+    if _ns.startswith("emit") or "emit_verdict" in _ns:
         lines.append(
             "    - When emitting the verdict, base `reasoning`, `key_evidence`, and "
             "`gaps_remaining` on Section 4a (Known Evidence Digest) / the verdict "
@@ -677,6 +702,7 @@ def build_workbook_parts(
     action_window: int = DEFAULT_WORKBOOK_WINDOW,
     reflection: Optional[ReflectionRecord] = None,
     curation_queue: Optional[CurationQueue] = None,
+    curator_notes: Optional[list["CuratorNote"]] = None,
     verdict_packet_path: Optional[Path] = None,
 ) -> tuple[str, str]:
     """Build the workbook as a (stable_prefix, volatile_tail) pair.
@@ -685,9 +711,10 @@ def build_workbook_parts(
     cache-friendly portion; the volatile tail is regenerated each turn.
     Both strings already include trailing newlines.
 
-    ``action_records``, ``artifact_handles``, ``reflection`` and
-    ``curation_queue`` default to reading from disk under ``workspace``.
-    Pass explicit values to short-circuit disk I/O in tests.
+    ``action_records``, ``artifact_handles``, ``reflection``,
+    ``curation_queue`` and ``curator_notes`` default to reading from disk
+    under ``workspace``.  Pass explicit values to short-circuit disk I/O in
+    tests.
     """
     # ``turns_used`` / ``turns_remaining`` are per-iteration (reset after each
     # check_sufficiency).  ``is_last_iteration`` decides whether a nearly-spent
@@ -705,6 +732,13 @@ def build_workbook_parts(
         reflection = load_reflection(workspace)
     if curation_queue is None:
         curation_queue = CurationQueue.load(workspace)
+    if curator_notes is None:
+        from proclaim.verification.curator import load_curator_notes
+
+        try:
+            curator_notes = load_curator_notes(workspace)
+        except Exception:
+            curator_notes = []
 
     stable_sections = [
         "# ProClaim Workbook",
@@ -718,6 +752,7 @@ def build_workbook_parts(
     ]
 
     volatile_sections = [
+        _section_curator_notes(curator_notes),
         _section_header(
             state,
             workspace=workspace,
@@ -762,6 +797,7 @@ def build_workbook(
     action_window: int = DEFAULT_WORKBOOK_WINDOW,
     reflection: Optional[ReflectionRecord] = None,
     curation_queue: Optional[CurationQueue] = None,
+    curator_notes: Optional[list["CuratorNote"]] = None,
     verdict_packet_path: Optional[Path] = None,
 ) -> str:
     """Render the full markdown workbook (stable prefix + marker + volatile tail).
@@ -784,6 +820,7 @@ def build_workbook(
         action_window=action_window,
         reflection=reflection,
         curation_queue=curation_queue,
+        curator_notes=curator_notes,
         verdict_packet_path=verdict_packet_path,
     )
     return f"{stable}{STABLE_VOLATILE_MARKER}\n\n{volatile}"
@@ -804,6 +841,7 @@ def write_workbook(
     action_window: int = DEFAULT_WORKBOOK_WINDOW,
     reflection: Optional[ReflectionRecord] = None,
     curation_queue: Optional[CurationQueue] = None,
+    curator_notes: Optional[list["CuratorNote"]] = None,
 ) -> Path:
     """Serialize the workbook to ``workspace/workbook.md`` and return the path.
 
@@ -838,6 +876,7 @@ def write_workbook(
         action_window=action_window,
         reflection=reflection,
         curation_queue=curation_queue,
+        curator_notes=curator_notes,
         verdict_packet_path=verdict_packet_path,
     )
     path = workspace / WORKBOOK_FILENAME

@@ -4,7 +4,7 @@
 Usage
 -----
 uv run python scripts/eval_results_csv.py results/connectomedb_eval_20260424_171117/results.csv
-uv run python scripts/eval_results_csv.py results/signor_direct_eval_20260520_222126/results.csv
+uv run python scripts/eval_results_csv.py results/signor_direct_eval_20260605_163241/results.csv
 uv run python scripts/eval_results_csv.py results/.../results.csv --save
 """
 import argparse

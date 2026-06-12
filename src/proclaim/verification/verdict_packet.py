@@ -203,9 +203,18 @@ def build_verdict_packet(
         "- Judge the claim against the literature consensus, not a single decisive paper."
     )
     lines.append(
-        "- Check fact *direction* against the claim: a fact about the same entities may "
-        "describe a different or opposite relation (e.g. \"A phosphorylates B\" does not "
-        "support \"A inhibits B\")."
+        "- Direction is decisive: if the corpus attests the relation in the OPPOSITE "
+        "direction to the claim, return REFUTE (not UNCERTAIN); do not chain a caveat "
+        "into SUPPORT."
+    )
+    lines.append(
+        "- \"Directly\" is judged between the two named entities; a relation that runs "
+        "through a distinct intermediate entity does not substantiate a direct claim — "
+        "treat mediated-only evidence as UNCERTAIN."
+    )
+    lines.append(
+        "- A direct interaction in the claimed direction is sufficient for SUPPORT even "
+        "if the functional magnitude is unquantified, absent contradicting evidence."
     )
     lines.append(
         "- Synonyms / aliases noted during extraction count as on-claim; scope, mechanism "

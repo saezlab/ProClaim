@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -32,57 +31,39 @@ from proclaim.verification.action_ledger import ActionLedger
 
 REFLECTION_FILENAME = "reflection.json"
 
-# Diagnosis-length cap so the workbook lead-in stays a single short line.
-_DIAGNOSIS_MAX_CHARS = 300
-
-
-class ReflectionClassification(str, Enum):
-    RETRIEVAL = "retrieval"
-    EXTRACTION = "extraction"
-    FRAMING = "framing"
-    BUDGET = "budget"
-    OTHER = "other"
-
-
-class ReflectionNextFamily(str, Enum):
-    SEARCH = "search"
-    EXTRACT = "extract"
-    RE_EXTRACT = "re_extract"
-    FEATURE_POPULATE = "feature_populate"
-    FILTER = "filter"
-    CHECK_SUFFICIENCY = "check_sufficiency"
-    EMIT_VERDICT = "emit_verdict"
-    CURATE = "curate"
-    NONE = "none"
-
 
 class ReflectionRecord(BaseModel):
-    """Minimal 4-field reflection schema (plus turn / timestamp bookkeeping).
+    """Richer free-form reflection schema (plus turn / timestamp bookkeeping).
 
-    Field intent:
-
-    * ``diagnosis``            — short free-text *why* progress stalled.
-    * ``classification``       — coarse cause category.
-    * ``proposed_next_family`` — what action family should run next.
-    * ``override_invoked``     — guardrail id (e.g. ``"GR1"``) whose
-                                 override condition this reflection
-                                 claims to satisfy, or ``None``.
+    Fields:
+      diagnosis       — observable state summary: what we see right now.
+      root_cause      — mechanistic explanation: WHY progress stalled or what
+                        drove the current state (not just restating the state).
+      key_insight     — a transferable observation the planner or curator can act
+                        on this turn and future turns (e.g., alias gap, query
+                        framing issue, evidence type mismatch).
+      next_suggestion — concrete, specific recommendation for the planner's next
+                        action.  Free-form sentence, not an enum family name.
+      override_invoked — optional guardrail ID (e.g. "GR1") whose stated override
+                         condition this reflection claims to satisfy.
+      is_stall        — True when stall signals were passed and this reflection is
+                        a full diagnostic.  False on routine (light) turns.
     """
 
     turn: int
     timestamp: str
     diagnosis: str
-    classification: ReflectionClassification
-    proposed_next_family: ReflectionNextFamily
+    root_cause: str
+    key_insight: str
+    next_suggestion: str
     override_invoked: Optional[str] = None
+    is_stall: bool = False
 
-    @field_validator("diagnosis")
+    @field_validator("diagnosis", "root_cause", "key_insight", "next_suggestion")
     @classmethod
-    def _clip_diagnosis(cls, v: str) -> str:
+    def _clip(cls, v: str) -> str:
         v = (v or "").strip()
-        if len(v) > _DIAGNOSIS_MAX_CHARS:
-            v = v[: _DIAGNOSIS_MAX_CHARS - 1] + "…"
-        return v
+        return v[:399] + "…" if len(v) > 400 else v
 
 
 # ---------------------------------------------------------------------------
@@ -95,22 +76,22 @@ def write_reflection(
     *,
     turn: int,
     diagnosis: str,
-    classification: str,
-    proposed_next_family: str,
+    root_cause: str,
+    key_insight: str,
+    next_suggestion: str,
     override_invoked: Optional[str] = None,
+    is_stall: bool = False,
 ) -> ReflectionRecord:
-    """Persist a reflection record (overwrites any previous file).
-
-    Raises ``ValueError`` for unknown enum values so a malformed planner
-    call surfaces clearly rather than silently storing junk.
-    """
+    """Persist a reflection record (overwrites any previous file)."""
     record = ReflectionRecord(
         turn=turn,
         timestamp=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         diagnosis=diagnosis,
-        classification=ReflectionClassification(classification),
-        proposed_next_family=ReflectionNextFamily(proposed_next_family),
+        root_cause=root_cause,
+        key_insight=key_insight,
+        next_suggestion=next_suggestion,
         override_invoked=override_invoked or None,
+        is_stall=is_stall,
     )
     workspace = Path(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
@@ -278,60 +259,75 @@ def detect_stall_signals(workspace: Path) -> StallSignals:
 # ``submit_reflection`` tool and set ``tool_choice`` so the model has to
 # call it.  The tool arguments come back as a JSON string under
 # ``response.choices[0].message.tool_calls[0].function.arguments``.
-# Anthropic + OpenAI both honour this, and the JSON-schema ``enum``
-# constraints inside the tool definition give us schema validation at the
-# model level — no markdown-fence munging needed.
+# Anthropic + OpenAI both honour this.  The fields are free-form prose
+# (no enums) so the model can describe causes and recommendations in its
+# own words rather than being forced into a coarse category.
 
 
 _REFLECTION_TOOL_NAME = "submit_reflection"
 
 
 def _build_reflection_tools() -> list[dict]:
-    """JSON-schema tool spec used to force a structured reflection output.
-
-    Enum values mirror ``ReflectionClassification`` and
-    ``ReflectionNextFamily`` so the model can't return an unknown label.
-    """
+    """JSON-schema tool spec used to force a structured reflection output."""
     return [
         {
             "type": "function",
             "function": {
                 "name": _REFLECTION_TOOL_NAME,
                 "description": (
-                    "Submit a structured reflection diagnosis for the verification "
-                    "loop's current stall.  All four fields are required; pass "
-                    "override_invoked=null when no guardrail override applies."
+                    "Submit a structured reflection for the current verification turn. "
+                    "On routine (non-stall) turns, diagnosis and next_suggestion are "
+                    "sufficient; root_cause and key_insight may be brief. "
+                    "On stall turns, provide full analysis."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "diagnosis": {
                             "type": "string",
+                            "description": "What we observe right now (state summary, one sentence).",
+                        },
+                        "root_cause": {
+                            "type": "string",
                             "description": (
-                                "One short sentence on why progress stalled. "
-                                "Focus on cause, not state."
+                                "WHY this state occurred. On routine turns: brief (e.g., "
+                                "'First turn, no evidence yet'). On stall turns: mechanistic "
+                                "explanation of the failure."
                             ),
                         },
-                        "classification": {
+                        "key_insight": {
                             "type": "string",
-                            "enum": [c.value for c in ReflectionClassification],
+                            "description": (
+                                "A transferable observation the planner or curator should act "
+                                "on. On routine turns: empty string. On stall turns: e.g., "
+                                "'The retrieved documents refer to the entity by an alias the "
+                                "queries do not use'."
+                            ),
                         },
-                        "proposed_next_family": {
+                        "next_suggestion": {
                             "type": "string",
-                            "enum": [f.value for f in ReflectionNextFamily],
+                            "description": (
+                                "Specific, actionable recommendation for the planner's next "
+                                "action. Not a category label — a concrete instruction, e.g., "
+                                "'Run extract_and_add_facts on the 3 new documents from the "
+                                "latest search' or 'Call emit_verdict — Section 7 shows "
+                                "forced-verdict-imminent and the extracted facts support the "
+                                "claim'."
+                            ),
                         },
                         "override_invoked": {
                             "type": ["string", "null"],
                             "description": (
-                                "Guardrail id (e.g. 'GR1') whose override "
-                                "condition this reflection authorises, or null."
+                                "Guardrail ID (e.g. 'GR1') whose override condition this "
+                                "reflection satisfies, or null."
                             ),
                         },
                     },
                     "required": [
                         "diagnosis",
-                        "classification",
-                        "proposed_next_family",
+                        "root_cause",
+                        "key_insight",
+                        "next_suggestion",
                         "override_invoked",
                     ],
                 },
@@ -345,6 +341,7 @@ def run_reflection(
     workspace: Path,
     workbook_volatile: str,
     stall_signals: StallSignals,
+    paper_summaries: str,
     turn: int,
     model: str,
 ) -> tuple[Optional[ReflectionRecord], Optional[dict]]:
@@ -368,8 +365,14 @@ def run_reflection(
     )
 
     signals_str = "; ".join(stall_signals.reasons) if stall_signals.reasons else "(none)"
+    # Count papers by their leading "PMID " line; abstract lines are indented
+    # (two spaces), so they are not miscounted.
+    summaries = paper_summaries or "(no papers retrieved yet)"
+    n_papers = sum(1 for ln in summaries.splitlines() if ln.startswith("PMID "))
     user_text = REFLECTION_USER_PROMPT.format(
         stall_signals=signals_str,
+        n_papers=n_papers,
+        paper_summaries=summaries,
         workbook_volatile=workbook_volatile,
     )
     messages = [
@@ -418,9 +421,11 @@ def run_reflection(
             turn=turn,
             diagnosis=str(parsed.get("diagnosis", "")).strip()
             or "(reflect LLM returned empty diagnosis)",
-            classification=str(parsed.get("classification", "other")).lower(),
-            proposed_next_family=str(parsed.get("proposed_next_family", "none")).lower(),
+            root_cause=str(parsed.get("root_cause", "")).strip(),
+            key_insight=str(parsed.get("key_insight", "")).strip(),
+            next_suggestion=str(parsed.get("next_suggestion", "")).strip(),
             override_invoked=parsed.get("override_invoked") or None,
+            is_stall=stall_signals.any_fired,
         )
     except Exception:
         return None, usage
@@ -430,8 +435,6 @@ def run_reflection(
 
 __all__ = [
     "REFLECTION_FILENAME",
-    "ReflectionClassification",
-    "ReflectionNextFamily",
     "ReflectionRecord",
     "StallSignals",
     "SEARCH_DROUGHT_WINDOW",

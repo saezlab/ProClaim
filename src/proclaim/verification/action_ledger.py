@@ -252,10 +252,8 @@ def extract_target(tool_name: str, arguments: dict) -> str:
     if tool_name == "read_file":
         return str(arguments.get("path", ""))[:120]
     if tool_name == "reflect":
-        cls_ = arguments.get("classification", "")
-        nxt = arguments.get("proposed_next_family", "")
         ovr = arguments.get("override_invoked")
-        parts = [f"cls:{cls_}", f"next:{nxt}"]
+        parts = [f"stall:{bool(arguments.get('is_stall'))}"]
         if ovr:
             parts.append(f"override:{ovr}")
         return "reflect(" + ", ".join(parts) + ")"
