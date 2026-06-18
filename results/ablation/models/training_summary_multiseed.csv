@@ -1,0 +1,2 @@
+tau,n_seeds,mean_acc,std_acc,mean_f1,std_f1,mean_prec,std_prec,mean_rec,std_rec
+1.00,5,0.9787,0.0067,0.9857,0.0046,0.9914,0.0070,0.9801,0.0070

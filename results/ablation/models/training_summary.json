@@ -1,0 +1,52 @@
+[
+  {
+    "test_accuracy": 0.8817,
+    "test_precision": 0.9091,
+    "test_recall": 0.8511,
+    "test_f1": 0.8791,
+    "tau": 0.0,
+    "status": "success",
+    "elapsed_time": 25.630134344100952,
+    "model_dir": "results/ablation/models/tau_0.00"
+  },
+  {
+    "test_accuracy": 0.9032,
+    "test_precision": 0.9074,
+    "test_recall": 0.9245,
+    "test_f1": 0.9159,
+    "tau": 0.2,
+    "status": "success",
+    "elapsed_time": 17.309235334396362,
+    "model_dir": "results/ablation/models/tau_0.20"
+  },
+  {
+    "test_accuracy": 0.8495,
+    "test_precision": 0.8793,
+    "test_recall": 0.8793,
+    "test_f1": 0.8793,
+    "tau": 0.3,
+    "status": "success",
+    "elapsed_time": 15.963505029678345,
+    "model_dir": "results/ablation/models/tau_0.30"
+  },
+  {
+    "test_accuracy": 0.9462,
+    "test_precision": 0.9403,
+    "test_recall": 0.9844,
+    "test_f1": 0.9618,
+    "tau": 0.4,
+    "status": "success",
+    "elapsed_time": 19.534268140792847,
+    "model_dir": "results/ablation/models/tau_0.40"
+  },
+  {
+    "test_accuracy": 0.8925,
+    "test_precision": 0.9508,
+    "test_recall": 0.8923,
+    "test_f1": 0.9206,
+    "tau": 0.5,
+    "status": "success",
+    "elapsed_time": 22.056488752365112,
+    "model_dir": "results/ablation/models/tau_0.50"
+  }
+]

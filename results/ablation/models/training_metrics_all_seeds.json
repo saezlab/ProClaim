@@ -1,0 +1,57 @@
+[
+  {
+    "test_accuracy": 0.9787,
+    "test_precision": 0.9857,
+    "test_recall": 0.9857,
+    "test_f1": 0.9857,
+    "tau": 1.0,
+    "seed": 42,
+    "status": "success",
+    "elapsed_time": 30.38694977760315,
+    "model_dir": "results/ablation/models/tau_1.00_seed_42"
+  },
+  {
+    "test_accuracy": 0.9681,
+    "test_precision": 0.9855,
+    "test_recall": 0.9714,
+    "test_f1": 0.9784,
+    "tau": 1.0,
+    "seed": 123,
+    "status": "success",
+    "elapsed_time": 17.490342140197754,
+    "model_dir": "results/ablation/models/tau_1.00_seed_123"
+  },
+  {
+    "test_accuracy": 0.9894,
+    "test_precision": 1.0,
+    "test_recall": 0.9859,
+    "test_f1": 0.9929,
+    "tau": 1.0,
+    "seed": 456,
+    "status": "success",
+    "elapsed_time": 18.940019607543945,
+    "model_dir": "results/ablation/models/tau_1.00_seed_456"
+  },
+  {
+    "test_accuracy": 0.9787,
+    "test_precision": 0.9859,
+    "test_recall": 0.9859,
+    "test_f1": 0.9859,
+    "tau": 1.0,
+    "seed": 789,
+    "status": "success",
+    "elapsed_time": 27.70535969734192,
+    "model_dir": "results/ablation/models/tau_1.00_seed_789"
+  },
+  {
+    "test_accuracy": 0.9787,
+    "test_precision": 1.0,
+    "test_recall": 0.9718,
+    "test_f1": 0.9857,
+    "tau": 1.0,
+    "seed": 1011,
+    "status": "success",
+    "elapsed_time": 18.154102325439453,
+    "model_dir": "results/ablation/models/tau_1.00_seed_1011"
+  }
+]
