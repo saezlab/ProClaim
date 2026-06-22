@@ -118,12 +118,13 @@ class LabelConfig(BaseSettings):
                 "not support accepting the claim as true."
             ),
             "UNCERTAIN": (
-                "The retrieved evidence is relevant to the claim but is ambiguous, "
-                "incomplete, or internally conflicting such that neither a clear "
-                "supportive nor a clear refutatory conclusion can be drawn. This "
-                "includes cases where evidence partially supports the claim but "
-                "with meaningful caveats, or where sources of comparable credibility "
-                "disagree."
+                "The retrieved evidence is relevant to the claim but is genuinely "
+                "indeterminate: supporting and contradicting evidence are of comparable "
+                "weight with no clear majority, or the corpus yields essentially no "
+                "directional evidence either way. Reserve UNCERTAIN for true balance or "
+                "near-absence of directional evidence — a one-sided body of evidence is "
+                "not uncertain merely because it is small, comes from few sources, or "
+                "carries caveats."
             ),
         },
         description="Mapping from verdict label name to its description. "

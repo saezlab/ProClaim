@@ -109,6 +109,19 @@ class EvidenceState(BaseModel):
         self.extracted_pmids.clear()
         self._auto_save()
 
+    @property
+    def extraction_context_notes(self) -> list[str]:
+        """Read-only alias for ``extraction_context``.
+
+        The planner LLM frequently introspects this list under the name
+        ``extraction_context_notes`` (conflating the ``add_extraction_context_note``
+        API helper with the field name).  Because such a read often shares a cell
+        with the real ``extract_and_add_facts`` call, an AttributeError here would
+        abort the whole cell and silently zero out extraction.  Exposing the alias
+        keeps diagnostics harmless.
+        """
+        return self.extraction_context
+
     # -- Query methods -----------------------------------------------------
 
     def clone(self) -> "EvidenceState":

@@ -200,7 +200,23 @@ def build_verdict_packet(
     lines.append("")
     lines.append("## Interpretation notes")
     lines.append(
-        "- Judge the claim against the literature consensus, not a single decisive paper."
+        "- Start from the stance balance of the on-claim directional facts above. When one "
+        "stance clearly dominates the opposing stance (a large margin, especially across "
+        "more than one source), COMMIT to that stance — SUPPORT if the dominant stance "
+        "corroborates the claim, REFUTE if it contradicts the claim's direction. Do not "
+        "retreat to UNCERTAIN merely because of caveats, unquantified magnitude, or a few "
+        "dissenting facts."
+    )
+    lines.append(
+        "- UNCERTAIN is reserved for GENUINE indeterminacy: the supporting and contradicting "
+        "directional facts are of comparable weight (no clear majority), OR the corpus yields "
+        "essentially no on-claim directional evidence. A one-sided directional corpus is NOT "
+        "uncertain even if it is small, derives from few sources, or carries caveats."
+    )
+    lines.append(
+        "- Judge the claim against the directional consensus, not a single decisive paper. A "
+        "lone contrarian or null-result paper does not overturn a clear opposing majority; "
+        "weigh it, but do not let it force UNCERTAIN."
     )
     lines.append(
         "- Direction is decisive: if the corpus attests the relation in the OPPOSITE "
@@ -209,12 +225,19 @@ def build_verdict_packet(
     )
     lines.append(
         "- \"Directly\" is judged between the two named entities; a relation that runs "
-        "through a distinct intermediate entity does not substantiate a direct claim — "
-        "treat mediated-only evidence as UNCERTAIN."
+        "ONLY through a distinct intermediate entity does not substantiate a direct claim — "
+        "treat strictly mediated-only evidence as UNCERTAIN. Scaffolding, recruitment, or "
+        "complex-formation between the two named entities is a direct relation, not mediated."
     )
     lines.append(
         "- A direct interaction in the claimed direction is sufficient for SUPPORT even "
-        "if the functional magnitude is unquantified, absent contradicting evidence."
+        "if the functional magnitude is unquantified and even if it rests on a single "
+        "on-claim source, absent contradicting evidence of comparable weight."
+    )
+    lines.append(
+        "- Sufficiency-classifier metadata and the caveats below describe evidence-gathering "
+        "completeness, not the truth of the claim; they must not by themselves downgrade a "
+        "clear directional verdict to UNCERTAIN."
     )
     lines.append(
         "- Synonyms / aliases noted during extraction count as on-claim; scope, mechanism "
