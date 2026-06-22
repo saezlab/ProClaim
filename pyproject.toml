@@ -30,6 +30,7 @@ dependencies = [
     "ipykernel>=6.0",
     "spacy>=3.0",
     "claude-agent-sdk",
+    "transformers>=4.46,<4.53",  # 4.53+ imports torch.float8_e8m0fnu (needs torch>=2.7); we pin torch==2.6.0
     "sentence-transformers",
     "en-core-sci-sm @ https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz",
     "seaborn>=0.13.2",
@@ -38,6 +39,7 @@ dependencies = [
     "langchain-community>=0.4.1",
     "langchain-litellm>=0.6.1",
     "ddgs>=9.14.2",
+    "anthropic>=0.40.0",
 ]
 
 [project.optional-dependencies]

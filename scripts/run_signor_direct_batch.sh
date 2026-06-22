@@ -29,12 +29,14 @@ else
     echo "  Using LLM_BASE_URL=${LLM_BASE_URL}"
 fi
 
-echo "  Config: experiments/configs/signor_direct_config.yaml"
+CONFIG_NAME="${CONFIG_NAME:-signor_direct_config}"
+CONFIG_FILE="experiments/configs/${CONFIG_NAME}.yaml"
+echo "  Config: ${CONFIG_FILE}"
 echo "============================================================"
 echo ""
 
 uv run python experiments/run_signor_eval.py \
-    --config experiments/configs/signor_direct_config.yaml \
+    --config "${CONFIG_FILE}" \
     "$@"
 
 echo ""

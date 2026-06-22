@@ -21,6 +21,7 @@
 #   bash scripts/submit_signor_direct_batch.sh --logs
 #   bash scripts/submit_signor_direct_batch.sh --resume               # Resume last failed run
 #   bash scripts/submit_signor_direct_batch.sh --run-tag <TAG_ID> --reps 1 # Resume specific run
+#   bash scripts/submit_signor_direct_batch.sh --config-name signor_direct_dummy_config  # Ablation: dummy sufficiency
 # =============================================================================
 set -euo pipefail
 
@@ -56,6 +57,7 @@ WORKERS_ARG=""
 WORKER_SHARDS_ARG=""
 MAX_NUM_SEQS=""
 RESUME_TAG=""       # set by --resume or --run-tag; empty = generate fresh tag
+CONFIG_NAME="signor_direct_config"
 
 # ---- Parse arguments --------------------------------------------------------
 while [[ $# -gt 0 ]]; do
@@ -72,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         --worker-shards) WORKER_SHARDS_ARG="--worker-shards"; shift ;;
         --max-num-seqs) MAX_NUM_SEQS="$2"; shift 2 ;;
         --num-tasks) NUM_TASKS="$2"; shift 2 ;;
+        --config-name) CONFIG_NAME="$2"; shift 2 ;;
         --resume)  RESUME_TAG="__auto__"; shift ;;
         --run-tag)
             RESUME_TAG="$2"
@@ -106,6 +109,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --workers N  Concurrent claim repetitions per GPU task (default: 1)"
             echo "  --worker-shards  Write one result CSV per worker, then merge into the task CSV"
             echo "  --max-num-seqs N  vLLM max concurrent sequences per GPU task (default: 8)"
+            echo "  --config-name NAME  Config file stem under experiments/configs/ (default: signor_direct_config)"
             echo "  --user USER  EBI username (default: wuy)"
             echo ""
             echo "  -h, --help   Show this help"
@@ -289,6 +293,7 @@ echo "  GPUs:       ${GPU_COUNT}x ${GPU_TYPE} per task"
 echo "  CPUs:       ${CPUS}"
 echo "  Memory:     ${MEM}"
 echo "  vLLM seqs:  ${VLLM_MAX_NUM_SEQS}"
+echo "  Config:     ${CONFIG_NAME}"
 [[ -n "$EXTRA_ARGS" ]] && echo "  Extra args: ${EXTRA_ARGS}"
 echo "============================================================"
 echo ""
@@ -314,6 +319,7 @@ ARRAY_JOB_ID=$(ssh_login "
     export SINGLE_MODE='${SINGLE_MODE_VAL}'
     export VLLM_MAX_NUM_SEQS='${VLLM_MAX_NUM_SEQS}'
     export NUM_TASKS='${NUM_TASKS}'
+    export CONFIG_NAME='${CONFIG_NAME}'
     export GRN_LLM_CORRECT_PROJECT_ROOT='${PROJECT_ROOT}'
     sbatch \
         --job-name=${JOB_NAME} \

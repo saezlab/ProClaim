@@ -81,6 +81,23 @@ _script_dir = Path(__file__).resolve().parent
 _project_root = _script_dir.parent.parent.parent
 load_dotenv(_project_root / ".env")
 
+# NCBI E-utilities credentials. Supplying an API key raises the rate limit from
+# 3 to 10 requests/sec; without it, concurrent metadata fetches hit HTTP 429.
+_NCBI_API_KEY = os.environ.get("PUBMED_API_KEY")
+_NCBI_EMAIL = os.environ.get("PUBMED_EMAIL")
+
+
+def _eutils_params(**kw):
+    """Build E-utilities request params, injecting the API key/email if set."""
+    params = dict(kw)
+    if _NCBI_API_KEY:
+        params["api_key"] = _NCBI_API_KEY
+    if _NCBI_EMAIL:
+        params["email"] = _NCBI_EMAIL
+    params["tool"] = "proclaim"
+    return params
+
+
 # ============================================================================
 # HTTP Session with Retries
 # ============================================================================
@@ -122,11 +139,7 @@ def get_paper_identifiers(pmid: str) -> Dict[str, Optional[str]]:
             - doi_url: DOI resolver URL if DOI exists
     """
     fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-    params = {
-        'db': 'pubmed',
-        'id': pmid,
-        'retmode': 'xml'
-    }
+    params = _eutils_params(db='pubmed', id=pmid, retmode='xml')
 
     result = {
         'pmid': pmid,
@@ -199,21 +212,13 @@ def enrich_pubmed_papers(papers: List[Any]) -> List[Any]:
             return papers
 
         # 1. Fetch full metadata from efetch
-        fetch_params = {
-            'db': 'pubmed',
-            'id': ','.join(ids),
-            'retmode': 'xml'
-        }
+        fetch_params = _eutils_params(db='pubmed', id=','.join(ids), retmode='xml')
         fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
         fetch_response = get_session().get(fetch_url, params=fetch_params)
         fetch_root = ET.fromstring(fetch_response.content)
 
         # 2. Fetch citation counts from esummary
-        summary_params = {
-            'db': 'pubmed',
-            'id': ','.join(ids),
-            'retmode': 'xml'
-        }
+        summary_params = _eutils_params(db='pubmed', id=','.join(ids), retmode='xml')
         summary_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
         summary_response = get_session().get(summary_url, params=summary_params)
         summary_root = ET.fromstring(summary_response.content)
@@ -349,11 +354,7 @@ def get_journal_info_by_pmid(pmid: str) -> Dict[str, Any]:
         Dict with journal_name, issn, impact_factor, h_index
     """
     fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-    params = {
-        'db': 'pubmed',
-        'id': pmid,
-        'retmode': 'xml'
-    }
+    params = _eutils_params(db='pubmed', id=pmid, retmode='xml')
 
     try:
         response = get_session().get(fetch_url, params=params)
@@ -411,11 +412,7 @@ def get_citation_counts(pmids: List[str]) -> Dict[str, int]:
         return {}
 
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
-    params = {
-        'db': 'pubmed',
-        'id': ','.join(pmids),
-        'retmode': 'xml'
-    }
+    params = _eutils_params(db='pubmed', id=','.join(pmids), retmode='xml')
 
     citation_map = {}
     try:
@@ -842,12 +839,8 @@ def get_pubmed_metadata(pmid: str) -> Dict[str, Optional[str]]:
     Retrieve basic metadata (Title, Abstract, Date) from PubMed.
     """
     fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-    params = {
-        'db': 'pubmed',
-        'id': pmid,
-        'retmode': 'xml'
-    }
-    
+    params = _eutils_params(db='pubmed', id=pmid, retmode='xml')
+
     result = {
         'title': None,
         'abstract': None,

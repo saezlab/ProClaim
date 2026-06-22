@@ -25,6 +25,7 @@ echo "Installing spaCy/scispaCy and sentence-transformer dependencies..."
 uv pip install --python "$PYTHON_BIN" \
     "numpy<2" \
     "spacy>=3.7.4,<3.8" \
+    "click" \
     "sentence-transformers" \
     "$SCI_MODEL_URL"
 

@@ -1843,6 +1843,8 @@ def check_sufficiency(
     """
     import os
     backend = os.environ.get("SUFFICIENCY_BACKEND", "mlp").lower()
+    if backend == "dummy":
+        return _check_sufficiency_dummy(state, llm, threshold, min_total_papers)
     if backend == "haiku":
         return _check_sufficiency_haiku(state, llm, threshold, min_total_papers)
     if backend == "llm":
@@ -2148,6 +2150,56 @@ def _check_sufficiency_mlp(
             _debug_print(f"  {i}. [{gap.priority.value}] {gap.gap_type.value}")
             _debug_print(f"     Subclaim: {gap.subclaim}")
             _debug_print(f"     Action: {gap.description}")
+
+    return result
+
+
+def _check_sufficiency_dummy(
+    state: EvidenceState,
+    llm,
+    threshold: float,
+    min_total_papers: int,
+) -> SufficiencyResult:
+    """Dummy sufficiency check: always returns insufficient (confidence=0.0).
+
+    Forces every case to run to max_iterations, regardless of evidence gathered.
+    Used for ablation studies to measure the effect of the sufficiency classifier.
+    """
+    if state.iteration >= state.MAX_ITERATIONS:
+        print(
+            f"Iteration limit ({state.MAX_ITERATIONS}) reached. "
+            "Proceed to emit_verdict() without calling check_sufficiency() again."
+        )
+        if state.sufficiency_history:
+            return state.sufficiency_history[-1]
+        return SufficiencyResult(label="insufficient", confidence=0.0, gaps=[])
+
+    current_paper_count = len(state.papers)
+    previous_paper_count = (
+        state.papers_per_iteration[-1] if state.papers_per_iteration else 0
+    )
+    papers_added_this_iteration = current_paper_count - previous_paper_count
+    state.papers_per_iteration.append(current_paper_count)
+
+    from proclaim.verification.subagents import identify_gaps
+
+    gaps = identify_gaps(
+        llm=llm,
+        claim=state.claim,
+        subclaims=state.subclaims,
+        facts=state.facts,
+    )
+
+    result = SufficiencyResult(label="insufficient", confidence=0.0, gaps=gaps)
+
+    state.sufficiency_history.append(result)
+    state.iteration += 1
+    state._auto_save()
+
+    print(
+        f"Sufficiency: insufficient (confidence=0.0000, "
+        f"papers={current_paper_count}+{papers_added_this_iteration}, gaps={len(gaps)})"
+    )
 
     return result
 

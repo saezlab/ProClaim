@@ -79,7 +79,9 @@ fi
 # ---------------------------------------------------------------------------
 # Read subagent model from config
 # ---------------------------------------------------------------------------
-CONFIG_FILE="${PROJECT_ROOT}/experiments/configs/signor_direct_config.yaml"
+CONFIG_NAME="${CONFIG_NAME:-signor_direct_config}"
+CONFIG_FILE="${PROJECT_ROOT}/experiments/configs/${CONFIG_NAME}.yaml"
+export CONFIG_NAME
 SUBAGENT_MODEL=$(uv run python3 -c "
 import yaml, sys
 c = yaml.safe_load(open('${CONFIG_FILE}'))
