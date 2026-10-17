@@ -1,0 +1,7 @@
+datasets_dir: datasets     # the repo's copy; run from the repo root
+limit: null                # null = all claims
+evidence_source: s2
+timeout_seconds: 2700
+concurrency: 6
+bridge_port: 4180          # only one Codex run per port at a time
+output_dir: results/baselines/codex/iclr2027

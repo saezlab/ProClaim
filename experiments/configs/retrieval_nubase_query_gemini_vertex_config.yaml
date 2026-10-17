@@ -1,0 +1,15 @@
+datasets_dir: datasets
+datasets:
+  - nubase
+
+baseline: retrieval
+search_backend: s2
+model: vertex_ai/gemini-2.5-flash
+thinking_budget: 0
+top_k: 5
+
+seed: 100
+repeats: 1
+limit: 0
+temperature: 0.0
+output_dir: results/baselines

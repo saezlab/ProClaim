@@ -1,0 +1,9 @@
+datasets_dir: datasets     # the repo's copy; run from the repo root
+limit: null                # null = all claims
+evidence_source: pubmed_s2
+model: claude-sonnet-4-6   # always pin the model
+vertex: true
+max_budget_usd: 3.00
+max_turns: 60
+concurrency: 6
+output_dir: results/baselines/claude_code/iclr2027

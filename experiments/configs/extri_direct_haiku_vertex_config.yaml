@@ -1,0 +1,20 @@
+mode: direct
+
+max_iterations: 4
+sufficiency_threshold: 0.80
+max_turns: 10
+
+llm:
+  model: vertex_ai/claude-sonnet-4-6
+  subagent_model: qwen3.5-9b
+  temperature: 0.0
+  disable_thinking: true
+
+sufficiency_backend: haiku
+haiku_route: vertex
+output_dir: results/extri_direct_eval_haiku_vertex
+mlp_model_dir: results/ablation/models/tau_0.50_seed_42
+include_subclaim_examples: false
+verbose: false
+disable_web_search: true
+disable_pubmed: false

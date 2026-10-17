@@ -1,0 +1,13 @@
+datasets_dir: datasets
+datasets:
+  - signor
+  - connectomedb
+
+baseline: react
+model: anthropic/claude-sonnet-4-6
+search_backend: pubmed_s2
+max_steps: 40
+seed: 100
+repeats: 1       # temperature=0 → deterministic
+limit: 0         # 0 = all claims
+output_dir: results/baselines

@@ -1,0 +1,21 @@
+mode: direct
+
+max_iterations: 4
+sufficiency_threshold: 0.80
+max_turns: 6
+
+llm:
+  model: anthropic/claude-opus-4-7
+  subagent_model: anthropic/claude-haiku-4-5
+  subagent_base_url: ""
+  temperature: 0.0
+  disable_thinking: true
+
+sufficiency_backend: mlp
+
+output_dir: results/signor_smoke_eval
+mlp_model_dir: results/ablation/models/tau_0.50_seed_42
+
+include_subclaim_examples: false
+verbose: false
+disable_web_search: false

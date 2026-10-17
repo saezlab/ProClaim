@@ -1,0 +1,20 @@
+datasets_dir: datasets
+datasets:
+  - nubase
+  - nasa_exoplanet
+
+baseline: react
+model: vertex_ai/claude-sonnet-4-6
+search_backend: s2
+max_steps: 20
+
+subclaims_dir: results/analysis/proclaim_subclaims
+extract_facts: true
+concurrency: 6   # claims in parallel, sharing one vLLM Qwen server
+
+seed: 100
+repeats: 1
+temperature: 0.0
+limit: 0         # 0 = all claims
+
+output_dir: results/baselines

@@ -1,0 +1,8 @@
+datasets_dir: datasets
+limit: null                # null = all claims
+evidence_source: s2
+model: null                # unset = Claude Code's own default (sonnet-4-6)
+max_budget_usd: 3.00
+max_turns: 60
+concurrency: 6
+output_dir: results/baselines/claude_code

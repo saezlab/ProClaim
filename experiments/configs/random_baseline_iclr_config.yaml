@@ -1,0 +1,16 @@
+datasets_dir: datasets
+datasets:
+  - signor
+  - connectomedb
+  - extri
+  - nubase
+  - nasa_exoplanet
+
+baseline: random
+
+seed: 100      # base seed; repeat i uses seed + i
+repeats: 10    # number of independent draws per dataset
+
+limit: 0       # 0 = all claims
+
+output_dir: results/baselines_iclr2027

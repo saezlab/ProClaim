@@ -1,0 +1,23 @@
+datasets_dir: datasets
+datasets:
+  - signor
+  - connectomedb
+
+baseline: open_scholar
+
+model: anthropic/claude-sonnet-4-6
+
+retrieval: true       # S2 adaptive retrieval + self-feedback loop
+reranker: OpenScholar/OpenScholar_Reranker  # set to "" to disable reranker
+task_name: claim_verdict_question  # claim_verdict_question (framed as yes/no query) or claim_verdict (raw claim)
+
+top_k: 10              # number of passages forwarded to the generator
+max_tokens: 3000     # OpenScholar default: 3000
+oracle_context: false # inject CSV evidence as oracle context (leaks labels — for ablation only)
+
+seed: 100     # base seed; repeat i uses seed + i
+repeats: 1     # OpenScholar is expensive; 1 repeat is standard
+
+limit: 0       # 0 = all claims
+
+output_dir: results/baselines
