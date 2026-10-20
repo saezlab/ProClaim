@@ -7,10 +7,6 @@ if not, use the record to direct the next retrieval. Each round's record is the 
 
 ![Recursive knowledge construction](figs/graphic_overview-recursive_knowledge_construction.png)
 
-*Recursive knowledge construction for claim verification: (1) an evidence state that the next
-retrieval is conditioned on, and (2) a judge that takes the state as input and decides to continue
-or stop, after which the verdict is given from the final state.*
-
 Two design axes decide how well this works, and both are usually assumed rather than measured, because such agents are evaluated only end to end:
 
 1. **What the recursion builds**: the evidence state.
