@@ -2,42 +2,21 @@
 
 ## Motivation: recursive knowledge construction
 
-Many scientific agents built on large language models run a common loop: they retrieve evidence,
-build a record of what they have found, judge whether that record is sufficient for the task, and,
-if not, use the record to direct the next retrieval. Each round's record is the next round's input,
-so the process is recursive. We call it *recursive knowledge construction*. For a claim $c$ and a
-literature corpus, the verifier keeps an evidence state $s_t$ and updates it as
+Many scientific agents built on large language models run a common loop - they retrieve evidence, build a record of what they have found, judge whether that record is sufficient for the task, and,
+if not, use the record to direct the next retrieval. Each round's record is the next round's input, so the process is recursive. We call it *recursive knowledge construction*. 
 
-$$s_{t+1} = U\big(s_t,\ R(c, s_t)\big), \qquad t = 0, 1, \ldots$$
+![Recursive knowledge construction](figs/graphic_overview-recursive_knowledge_construction.png)
 
-where $R$ decides what to retrieve given what the state already holds and $U$ records the result.
-The loop stops at the first round where a judge $J(c, s_t)$ says the state is sufficient, and the
-verdict is read off the final state.
+*Recursive knowledge construction for claim verification: (1) an evidence state that the next
+retrieval is conditioned on, and (2) a judge that takes the state as input and decides to continue
+or stop, after which the verdict is given from the final state.*
 
-Two design axes decide how well this works, and both are usually assumed rather than measured,
-because such agents are evaluated only end to end:
+Two design axes decide how well this works, and both are usually assumed rather than measured, because such agents are evaluated only end to end:
 
 1. **What the recursion builds**: the evidence state.
 2. **What controls it**: the judge that decides when to stop.
 
-ProClaim is a minimal instrument that makes both axes explicit, so each can be varied with the
-other held fixed:
-
-- **Evidence state.** A JSON record persisted outside the model's context: retrieved papers and
-  claim-relevant facts linked to their source paper, each with a `SUPPORT` / `REFUTE` / `NEUTRAL`
-  stance. At each step the agent writes a short Python program that calls operations on the state
-  (fact extraction, sub-claim decomposition, the judge), so the state is not compressed or
-  paraphrased as rounds accumulate. Code: `src/proclaim/verification/evidence_state.py`,
-  `evidence_api.py`; the loop is `evidence_programming_direct.py`.
-- **Judge.** A sufficiency score $J(c, s_t) \in [0, 1]$; the agent stops once it reaches
-  $\delta = 0.8$, or after at most 4 rounds (`sufficiency_threshold` and `max_iterations` in the
-  configs). The default judge is a lightweight MLP trained on SciFact-Open over features of the
-  evidence state (`scripts/sufficiency_classifier/`, weights in `results/ablation/models/`); an
-  off-the-shelf LLM judge is the alternative (`src/proclaim/verification/llm_sufficiency.py`).
-
-The task that exercises this loop is *consensus* claim verification: establishing a claim's stance
-from the open literature rather than from a single given passage. ProClaim-eval (`datasets/`)
-provides 718 such claims with `SUPPORT` / `REFUTE` gold labels from five expert-curated databases.
+ProClaim is a minimal instrument that makes both axes explicit, so each can be varied with the other held fixed. It exercises the recursive knowledge construction loop in *consensus* claim verification: establishing a claim's stance from the open literature rather than from a single given passage. ProClaim-eval (`datasets/`) provides 718 such claims with `SUPPORT` / `REFUTE` gold labels from five expert-curated databases.
 
 ## ProClaim
 
